@@ -103,7 +103,7 @@ def read_csv(path: Path) -> list[dict[str, str]]:
 
 
 def insert_id(report_date: str, family: str, key: str) -> str:
-    return f"usage-{report_date}-{family}-{digest_text(f'{report_date}|{family}|{key}')[:24]}"
+    return f"u3-{digest_text(f'{report_date}|{family}|{key}')[:32]}"
 
 
 def session_identity(file_path: str) -> str:
@@ -178,7 +178,7 @@ def with_common(
         "time": epoch,
         "$insert_id": row_id,
         "report_date": report_date,
-        "export_version": os.getenv("USAGE_EXPORT_VERSION", "session_date_v2"),
+        "export_version": os.getenv("USAGE_EXPORT_VERSION", "session_date_v3"),
     }
     base.update(extra)
     return base

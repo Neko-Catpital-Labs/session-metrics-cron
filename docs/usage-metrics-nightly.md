@@ -40,7 +40,8 @@ bash scripts/nightly_usage_pipeline.sh --date 2026-05-25 --env-file config/night
 - Per-session events (`usage_session`, `usage_prompt`, and `usage_tool_attribution`) use each session's `session_date` as Mixpanel `time`/`report_date`; `batch_report_date` records the export batch date.
 - Daily timestamps are set at noon UTC to avoid normal project timezones displaying the event on the previous calendar day.
 - Session rows after the requested `--date` are skipped so a backfill through yesterday does not import current-day/future timestamps.
-- Corrected session-date imports are marked with `export_version = session_date_v2`; dashboards should filter to that value if older batch-date imports exist.
+- Corrected session-date imports are marked with `export_version = session_date_v3`; dashboards should filter to that value if older batch-date imports exist.
+- `$insert_id` values are kept under Mixpanel's practical length limit with the hash near the front, so imports do not collapse high-cardinality rows that share the same date and event family prefix.
 
 ## Cost and attribution events
 
