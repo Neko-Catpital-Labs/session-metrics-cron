@@ -356,6 +356,222 @@ def build_prompt_events(
     return events, skipped
 
 
+def classify_request_pattern(preview: str) -> str:
+    normalized = " ".join(preview.split())
+    lower = normalized.lower()
+    if "a previous agent produced the plan below" in lower:
+        return "previous_agent_plan"
+    if lower.startswith("implement the plan"):
+        return "implement_plan"
+    if "[upstream task:" in lower:
+        return "upstream_task_handoff"
+    if any(marker in lower for marker in ("auto-stamp", "ci", "rebase", "workflow", "mergify")):
+        return "auto_stamp_ci_loop"
+    if any(marker in lower for marker in ("another worktree", "worktree", "ssh machine", "ssh machines")):
+        return "worktree_ssh_delegation"
+    if any(marker in lower for marker in ("keep going", "continue fixing", "fix ci", "run ./run.sh", "root cause", "repro script")):
+        return "run_fix_repro_loop"
+    return "other"
+
+
+def repeated_value_rows(audit: dict[str, Any], model: str) -> list[dict[str, Any]]:
+    key = "topCodexRepeatedValues" if model == "codex" else "topClaudeRepeatedValues" if model == "claude" else ""
+    if not key:
+        return []
+    rows = ((audit.get("repeatBreakdown", {}) or {}).get(key, []) or [])
+    return sorted(rows, key=lambda row: to_float(row.get("tokenEstimateTotal")), reverse=True)
+
+
+def pattern_source(model: str, pattern: str) -> str:
+    prompt_context_patterns = {
+        "previous_agent_plan",
+        "implement_plan",
+        "upstream_task_handoff",
+        "worktree_ssh_delegation",
+        "run_fix_repro_loop",
+    }
+    if pattern not in prompt_context_patterns:
+        return ""
+    if model == "codex":
+        return "codex.user_message_prefix180"
+    if model == "claude":
+        return "claude.enqueue_content"
+    return ""
+
+
+def source_payload(row: dict[str, Any]) -> dict[str, Any]:
+    raw_value = str(row.get("value", ""))
+    return {
+        "source": str(row.get("source", "")),
+        "value_hash": digest_text(raw_value),
+        "source_preview": normalize_preview(raw_value, 120),
+        "source_occurrence_count": to_int(row.get("count")),
+        "source_chars": to_int(row.get("chars")),
+        "estimated_source_tokens_per_request": to_float(row.get("tokenEstimatePerValue")),
+        "source_token_estimate_total": to_float(row.get("tokenEstimateTotal")),
+        "source_shrinkability_score": to_float(row.get("shrinkabilityScore")),
+    }
+
+
+def choose_primary_cache_source(audit: dict[str, Any], model: str, pattern: str) -> tuple[dict[str, Any], str, str]:
+    rows = repeated_value_rows(audit, model)
+    preferred_source = pattern_source(model, pattern)
+    if preferred_source:
+        for row in rows:
+            if str(row.get("source", "")) == preferred_source:
+                return source_payload(row), "prompt_pattern", "medium"
+    if rows:
+        return source_payload(rows[0]), "global_repeated_context", "low"
+    return {}, "none", "low"
+
+
+def request_base_payload(row: dict[str, str], report_date: str) -> tuple[str, str, int, str, dict[str, Any]]:
+    preview = row.get("prompt_preview", "")
+    session_id = session_identity(row.get("file", ""))
+    prompt_index = to_int(row.get("prompt_index"))
+    canonical_key = f"{row.get('model','')}:{row.get('bucket','')}:{session_id}:{prompt_index}"
+    event_date = row_report_date(row, report_date)
+    pattern = classify_request_pattern(preview)
+    payload = {
+        "model": row.get("model", ""),
+        "provider": row.get("provider", ""),
+        "billable_model": row.get("billable_model", ""),
+        "billable_model_source": row.get("billable_model_source", ""),
+        "usage_source": row.get("usage_source", ""),
+        "bucket": row.get("bucket", ""),
+        "batch_report_date": report_date,
+        "session_id": session_id,
+        "session_file": row.get("file", ""),
+        "prompt_index": prompt_index,
+        "prompt_hash": digest_text(preview),
+        "prompt_preview": normalize_preview(preview),
+        "canonical_key": canonical_key,
+        "request_pattern": pattern,
+        "tool_calls": to_int(row.get("tool_calls")),
+        "agent_messages": to_int(row.get("agent_messages")),
+        "response_messages": to_int(row.get("response_messages")),
+        "function_outputs": to_int(row.get("function_outputs")),
+        "input_tokens_delta": to_float(row.get("input_tokens_delta")),
+        "cache_read_tokens_delta": to_float(row.get("cache_read_tokens_delta") or row.get("cached_tokens_delta")),
+        "cached_tokens_delta": to_float(row.get("cached_tokens_delta")),
+        "cache_creation_tokens_delta": to_float(row.get("cache_creation_tokens_delta")),
+        "output_tokens_delta": to_float(row.get("output_tokens_delta")),
+        "reasoning_tokens_delta": to_float(row.get("reasoning_tokens_delta")),
+        "total_tokens_delta": to_float(row.get("total_tokens_delta")),
+        "cache_hit_pct": to_float(row.get("cache_hit_pct")),
+        "estimated_cost_usd": to_float(row.get("estimated_cost_usd")),
+        "derived_input_cost_usd": to_optional_float(row.get("derived_input_cost_usd")),
+        "derived_non_cache_input_cost_usd": to_optional_float(row.get("derived_non_cache_input_cost_usd")),
+        "derived_cache_read_cost_usd": to_optional_float(row.get("derived_cache_read_cost_usd")),
+        "derived_cache_creation_cost_usd": to_optional_float(row.get("derived_cache_creation_cost_usd")),
+        "derived_output_cost_usd": to_optional_float(row.get("derived_output_cost_usd")),
+        "derived_total_cost_usd": to_optional_float(row.get("derived_total_cost_usd")),
+        "pricing_missing": to_bool(row.get("pricing_missing")),
+        "pricing_source": row.get("pricing_source", ""),
+        "diagnosis_version": os.getenv("USAGE_DIAGNOSIS_VERSION", "request_cache_sources_v2"),
+        "source_attribution_method": "provider_metric_exact_source_estimated",
+    }
+    return canonical_key, event_date, prompt_index, pattern, payload
+
+
+def build_request_cache_diagnosis_events(
+    rows: list[dict[str, str]],
+    audit: dict[str, Any],
+    token: str,
+    distinct_id: str,
+    report_date: str,
+    max_unique_prompt_hashes: int,
+) -> tuple[list[ExportEvent], int]:
+    events: list[ExportEvent] = []
+    hashes: set[str] = set()
+    skipped = 0
+    for row in rows:
+        preview_hash = digest_text(row.get("prompt_preview", ""))
+        if preview_hash not in hashes and len(hashes) >= max_unique_prompt_hashes:
+            skipped += 1
+            continue
+        hashes.add(preview_hash)
+
+        canonical_key, event_date, _prompt_index, pattern, payload = request_base_payload(row, report_date)
+        if is_after_report_date(event_date, report_date):
+            continue
+        primary, kind, confidence = choose_primary_cache_source(audit, row.get("model", ""), pattern)
+        row_id = insert_id(event_date, "usage_request_cache_diagnosis", f"{canonical_key}:{payload['diagnosis_version']}")
+        props = with_common(token, distinct_id, report_epoch(event_date), row_id, event_date, {
+            **payload,
+            "primary_cache_driver_source": primary.get("source", ""),
+            "primary_cache_driver_kind": kind,
+            "source_attribution_confidence": confidence,
+            "estimated_source_tokens_per_request": primary.get("estimated_source_tokens_per_request", 0.0),
+            "source_token_estimate_total": primary.get("source_token_estimate_total", 0.0),
+            "source_occurrence_count": primary.get("source_occurrence_count", 0),
+            "source_shrinkability_score": primary.get("source_shrinkability_score", 0.0),
+            "source_value_hash": primary.get("value_hash", ""),
+            "source_preview": primary.get("source_preview", ""),
+        })
+        events.append(ExportEvent("usage_request_cache_diagnosis", "usage_request_cache_diagnosis", row_id, props))
+    return events, skipped
+
+
+def build_request_cache_source_events(
+    rows: list[dict[str, str]],
+    audit: dict[str, Any],
+    token: str,
+    distinct_id: str,
+    report_date: str,
+    max_unique_prompt_hashes: int,
+    max_sources_per_request: int,
+) -> tuple[list[ExportEvent], int]:
+    events: list[ExportEvent] = []
+    hashes: set[str] = set()
+    skipped = 0
+    for row in rows:
+        preview_hash = digest_text(row.get("prompt_preview", ""))
+        if preview_hash not in hashes and len(hashes) >= max_unique_prompt_hashes:
+            skipped += 1
+            continue
+        hashes.add(preview_hash)
+
+        canonical_key, event_date, _prompt_index, pattern, payload = request_base_payload(row, report_date)
+        if is_after_report_date(event_date, report_date):
+            continue
+        candidates = repeated_value_rows(audit, row.get("model", ""))
+        preferred_source = pattern_source(row.get("model", ""), pattern)
+        selected: list[dict[str, Any]] = []
+        if preferred_source:
+            selected.extend(row for row in candidates if str(row.get("source", "")) == preferred_source)
+        for candidate in candidates:
+            if len(selected) >= max_sources_per_request:
+                break
+            candidate_hash = digest_text(str(candidate.get("value", "")))
+            if any(digest_text(str(existing.get("value", ""))) == candidate_hash for existing in selected):
+                continue
+            selected.append(candidate)
+
+        for source_rank, candidate in enumerate(selected[:max_sources_per_request], start=1):
+            source = source_payload(candidate)
+            kind = "prompt_pattern" if preferred_source and source["source"] == preferred_source else "global_repeated_context"
+            confidence = "medium" if kind == "prompt_pattern" else "low"
+            source_key = f"{canonical_key}:{payload['diagnosis_version']}:{source['source']}:{source['value_hash']}"
+            row_id = insert_id(event_date, "usage_request_cache_source", source_key)
+            props = with_common(token, distinct_id, report_epoch(event_date), row_id, event_date, {
+                **payload,
+                "source_rank": source_rank,
+                "cache_driver_source": source["source"],
+                "source_attribution_kind": kind,
+                "source_attribution_confidence": confidence,
+                "estimated_source_tokens_per_request": source["estimated_source_tokens_per_request"],
+                "source_token_estimate_total": source["source_token_estimate_total"],
+                "source_occurrence_count": source["source_occurrence_count"],
+                "source_chars": source["source_chars"],
+                "source_shrinkability_score": source["source_shrinkability_score"],
+                "source_value_hash": source["value_hash"],
+                "source_preview": source["source_preview"],
+            })
+            events.append(ExportEvent("usage_request_cache_source", "usage_request_cache_source", row_id, props))
+    return events, skipped
+
+
 def build_tool_events(rows: list[dict[str, str]], token: str, distinct_id: str, epoch: int, report_date: str) -> list[ExportEvent]:
     events: list[ExportEvent] = []
     for row in rows:
@@ -556,6 +772,7 @@ def build_all_events(
     distinct_id: str,
     max_events_per_family: int,
     max_unique_prompt_hashes: int,
+    max_cache_sources_per_request: int,
 ) -> tuple[dict[str, list[ExportEvent]], dict[str, int]]:
     audit = read_json(input_root / "cache-hit-audit-report.json")
     report = read_json(input_root / "reports/planning-vs-execution-report.json")
@@ -575,11 +792,23 @@ def build_all_events(
         prompts, token, distinct_id, epoch, report_date, max_unique_prompt_hashes
     )
     families["usage_prompt"] = prompt_events
+    diagnosis_events, diagnosis_skipped = build_request_cache_diagnosis_events(
+        prompts, audit, token, distinct_id, report_date, max_unique_prompt_hashes
+    )
+    families["usage_request_cache_diagnosis"] = diagnosis_events
+    source_events, source_skipped = build_request_cache_source_events(
+        prompts, audit, token, distinct_id, report_date, max_unique_prompt_hashes, max_cache_sources_per_request
+    )
+    families["usage_request_cache_source"] = source_events
     families["usage_tool_breakdown"] = build_tool_events(tools, token, distinct_id, epoch, report_date)
     families["usage_tool_attribution"] = build_tool_attribution_events(tool_attribution, token, distinct_id, epoch, report_date)
     families["usage_cache_driver"] = build_cache_driver_events(report, audit, token, distinct_id, epoch, report_date)
     if prompt_skipped:
         capped["usage_prompt_prompt_hash_cap"] = prompt_skipped
+    if diagnosis_skipped:
+        capped["usage_request_cache_diagnosis_prompt_hash_cap"] = diagnosis_skipped
+    if source_skipped:
+        capped["usage_request_cache_source_prompt_hash_cap"] = source_skipped
 
     for name, rows in list(families.items()):
         limited, dropped = limit_family(rows, max_events_per_family)
@@ -602,6 +831,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--max-unique-prompt-hashes",
         type=int,
         default=to_int(os.getenv("MAX_UNIQUE_PROMPT_HASHES_PER_DAY"), 50000),
+    )
+    parser.add_argument(
+        "--max-cache-sources-per-request",
+        type=int,
+        default=to_int(os.getenv("MAX_CACHE_SOURCES_PER_REQUEST"), 3),
     )
     parser.add_argument("--max-state-ids", type=int, default=to_int(os.getenv("MAX_STATE_IDS"), 500000))
     parser.add_argument("--batch-size", type=int, default=to_int(os.getenv("MIXPANEL_BATCH_SIZE"), 2000))
@@ -636,6 +870,7 @@ def main(argv: list[str] | None = None) -> int:
         distinct_id=distinct_id,
         max_events_per_family=args.max_events_per_family,
         max_unique_prompt_hashes=args.max_unique_prompt_hashes,
+        max_cache_sources_per_request=args.max_cache_sources_per_request,
     )
 
     state = StateStore(Path(args.state_file).expanduser(), args.max_state_ids)
@@ -656,7 +891,16 @@ def main(argv: list[str] | None = None) -> int:
         duplicate_counts[family] = dupes
 
     ordered = []
-    for family in ("usage_daily_rollup", "usage_session", "usage_prompt", "usage_tool_breakdown", "usage_tool_attribution", "usage_cache_driver"):
+    for family in (
+        "usage_daily_rollup",
+        "usage_session",
+        "usage_prompt",
+        "usage_request_cache_diagnosis",
+        "usage_request_cache_source",
+        "usage_tool_breakdown",
+        "usage_tool_attribution",
+        "usage_cache_driver",
+    ):
         ordered.extend(to_send.get(family, []))
 
     try:

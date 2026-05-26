@@ -37,6 +37,8 @@ required_families = {
     "usage_daily_rollup",
     "usage_session",
     "usage_prompt",
+    "usage_request_cache_diagnosis",
+    "usage_request_cache_source",
     "usage_tool_breakdown",
     "usage_tool_attribution",
     "usage_cache_driver",
