@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "local": {
+    "name": "local_this_machine",
+    "codexSessionsDir": "~/.codex/sessions",
+    "claudeRootDir": "~/.claude"
+  },
+  "remoteTargets": [
+    {
+      "name": "ssh-source-1",
+      "enabled": false,
+      "host": "example.internal",
+      "user": "invoker",
+      "port": 22,
+      "sshKeyPath": "~/.ssh/id_ed25519",
+      "codexSessionsDir": "/home/invoker/.codex/sessions",
+      "claudeRootDir": "/home/invoker/.claude"
+    }
+  ]
+}

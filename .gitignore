@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.env
+.venv/
+venv/
+
+# Local secrets/runtime state
+config/nightly-usage.env
+reports/
+cache-hit-audit-report.json
+
+# Local pipeline output
+*.log
+tmp/

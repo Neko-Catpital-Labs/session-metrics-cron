@@ -1,0 +1,65 @@
+name: Nightly Session Metrics
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      run_live:
+        description: "Run live Mixpanel export (requires secrets)"
+        required: false
+        default: "false"
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Render source inventory
+        env:
+          SESSION_SOURCES_JSON: ${{ secrets.SESSION_SOURCES_JSON }}
+        run: |
+          if [ -n "${SESSION_SOURCES_JSON:-}" ]; then
+            printf '%s\n' "$SESSION_SOURCES_JSON" > config/sources.ci.json
+          else
+            cp config/sources.json config/sources.ci.json
+          fi
+
+      - name: Render env file
+        env:
+          MIXPANEL_TOKEN: ${{ secrets.MIXPANEL_TOKEN }}
+          MIXPANEL_API_SECRET: ${{ secrets.MIXPANEL_API_SECRET }}
+          MIXPANEL_SERVICE_ACCOUNT_USER: ${{ secrets.MIXPANEL_SERVICE_ACCOUNT_USER }}
+          MIXPANEL_SERVICE_ACCOUNT_PASS: ${{ secrets.MIXPANEL_SERVICE_ACCOUNT_PASS }}
+        run: |
+          cp config/nightly-usage.env.example config/nightly-usage.env
+          cat >> config/nightly-usage.env <<'EOF'
+          USAGE_PIPELINE_SOURCES_CONFIG=$PWD/config/sources.ci.json
+          USAGE_PIPELINE_LOG_DIR=$PWD/tmp/logs
+          EOF
+          if [ -n "${MIXPANEL_TOKEN:-}" ]; then
+            echo "MIXPANEL_TOKEN=${MIXPANEL_TOKEN}" >> config/nightly-usage.env
+          fi
+          if [ -n "${MIXPANEL_API_SECRET:-}" ]; then
+            echo "MIXPANEL_API_SECRET=${MIXPANEL_API_SECRET}" >> config/nightly-usage.env
+          fi
+          if [ -n "${MIXPANEL_SERVICE_ACCOUNT_USER:-}" ]; then
+            echo "MIXPANEL_SERVICE_ACCOUNT_USER=${MIXPANEL_SERVICE_ACCOUNT_USER}" >> config/nightly-usage.env
+          fi
+          if [ -n "${MIXPANEL_SERVICE_ACCOUNT_PASS:-}" ]; then
+            echo "MIXPANEL_SERVICE_ACCOUNT_PASS=${MIXPANEL_SERVICE_ACCOUNT_PASS}" >> config/nightly-usage.env
+          fi
+
+      - name: Dry-run nightly pipeline
+        run: bash scripts/nightly_usage_pipeline.sh --dry-run --env-file config/nightly-usage.env
+
+      - name: Live export nightly pipeline
+        if: github.event_name == 'workflow_dispatch' && inputs.run_live == 'true'
+        run: bash scripts/nightly_usage_pipeline.sh --env-file config/nightly-usage.env
