@@ -20,6 +20,7 @@ import sys
 import urllib.request
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +63,7 @@ class PromptWindow:
 class SessionStats:
     model: str  # codex | claude
     file: str
+    session_date: str
     bucket: str  # planning | execution
     provider: str = ""
     billable_model: str = ""
@@ -93,6 +95,16 @@ def none_if_missing(value: float | None) -> float | None:
 
 def shorten(text: str, n: int = 220) -> str:
     return " ".join(text.split())[:n]
+
+
+def iso_date(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    return parsed.astimezone(timezone.utc).date().isoformat()
 
 
 def percentile(values: list[float], p: float) -> float:
@@ -335,6 +347,7 @@ def parse_codex_session(path: Path) -> SessionStats | None:
     verb_counts: Counter[str] = Counter()
     billable_model = ""
     billable_model_source = ""
+    session_date = ""
 
     try:
         text = path.read_text(errors="ignore")
@@ -348,7 +361,11 @@ def parse_codex_session(path: Path) -> SessionStats | None:
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not session_date:
+            session_date = iso_date(obj.get("timestamp"))
         t = obj.get("type")
+        if t == "session_meta" and not session_date:
+            session_date = iso_date((obj.get("payload") or {}).get("timestamp"))
         if t == "event_msg":
             payload = obj.get("payload") or {}
             ptype = payload.get("type")
@@ -420,6 +437,7 @@ def parse_codex_session(path: Path) -> SessionStats | None:
     return SessionStats(
         model="codex",
         file=str(path),
+        session_date=session_date,
         bucket=bucket,
         provider=provider_for_session_family("codex"),
         billable_model=billable_model,
@@ -471,6 +489,7 @@ def parse_claude_session(path: Path) -> SessionStats | None:
     fi = fc = fcc = fo = fr = ft = 0
     billable_model = ""
     billable_model_source = ""
+    session_date = ""
 
     try:
         text = path.read_text(errors="ignore")
@@ -484,6 +503,8 @@ def parse_claude_session(path: Path) -> SessionStats | None:
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not session_date:
+            session_date = iso_date(obj.get("timestamp"))
 
         typ = obj.get("type")
         if typ == "user":
@@ -566,6 +587,7 @@ def parse_claude_session(path: Path) -> SessionStats | None:
     return SessionStats(
         model="claude",
         file=str(path),
+        session_date=session_date,
         bucket=bucket,
         provider=provider_for_session_family("claude"),
         billable_model=billable_model,
@@ -631,6 +653,7 @@ def build_rows_for_model(
                 "billable_model_source": s.billable_model_source,
                 "usage_source": s.usage_source,
                 "file": s.file,
+                "session_date": s.session_date,
                 "bucket": s.bucket,
                 "user_prompts": s.user_prompts,
                 "agent_messages": s.agent_messages,
@@ -680,6 +703,7 @@ def build_rows_for_model(
                     "billable_model_source": s.billable_model_source,
                     "usage_source": s.usage_source,
                     "file": s.file,
+                    "session_date": s.session_date,
                     "bucket": s.bucket,
                     "prompt_index": w.prompt_index,
                     "prompt_preview": shorten(w.prompt_text, 280),
@@ -720,6 +744,7 @@ def build_rows_for_model(
                             "billable_model_source": s.billable_model_source,
                             "usage_source": s.usage_source,
                             "file": s.file,
+                            "session_date": s.session_date,
                             "bucket": s.bucket,
                             "prompt_index": w.prompt_index,
                             "dimension": dimension,

@@ -69,7 +69,25 @@ def default_report_date() -> str:
 
 def report_epoch(report_date: str) -> int:
     parsed = datetime.strptime(report_date, "%Y-%m-%d").date()
-    return int(datetime.combine(parsed, dt_time(0, 0), tzinfo=timezone.utc).timestamp())
+    return int(datetime.combine(parsed, dt_time(12, 0), tzinfo=timezone.utc).timestamp())
+
+
+def row_report_date(row: dict[str, str], fallback: str) -> str:
+    value = (row.get("session_date") or "").strip()
+    if not value:
+        return fallback
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return fallback
+    return value
+
+
+def is_after_report_date(value: str, report_date: str) -> bool:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date() > datetime.strptime(report_date, "%Y-%m-%d").date()
+    except ValueError:
+        return False
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -160,6 +178,7 @@ def with_common(
         "time": epoch,
         "$insert_id": row_id,
         "report_date": report_date,
+        "export_version": os.getenv("USAGE_EXPORT_VERSION", "session_date_v2"),
     }
     base.update(extra)
     return base
@@ -225,14 +244,18 @@ def build_session_events(rows: list[dict[str, str]], token: str, distinct_id: st
         model = row.get("model", "")
         bucket = row.get("bucket", "")
         canonical_key = f"{model}:{bucket}:{session_id}"
-        row_id = insert_id(report_date, "usage_session", canonical_key)
-        props = with_common(token, distinct_id, epoch, row_id, report_date, {
+        event_date = row_report_date(row, report_date)
+        if is_after_report_date(event_date, report_date):
+            continue
+        row_id = insert_id(event_date, "usage_session", canonical_key)
+        props = with_common(token, distinct_id, report_epoch(event_date), row_id, event_date, {
             "model": model,
             "provider": row.get("provider", ""),
             "billable_model": row.get("billable_model", ""),
             "billable_model_source": row.get("billable_model_source", ""),
             "usage_source": row.get("usage_source", ""),
             "bucket": bucket,
+            "batch_report_date": report_date,
             "session_id": session_id,
             "session_file": session_file,
             "canonical_key": canonical_key,
@@ -285,18 +308,22 @@ def build_prompt_events(
         session_id = session_identity(row.get("file", ""))
         prompt_index = to_int(row.get("prompt_index"))
         canonical_key = f"{row.get('model','')}:{row.get('bucket','')}:{session_id}:{prompt_index}"
+        event_date = row_report_date(row, report_date)
+        if is_after_report_date(event_date, report_date):
+            continue
         row_id = insert_id(
-            report_date,
+            event_date,
             "usage_prompt",
             canonical_key,
         )
-        props = with_common(token, distinct_id, epoch, row_id, report_date, {
+        props = with_common(token, distinct_id, report_epoch(event_date), row_id, event_date, {
             "model": row.get("model", ""),
             "provider": row.get("provider", ""),
             "billable_model": row.get("billable_model", ""),
             "billable_model_source": row.get("billable_model_source", ""),
             "usage_source": row.get("usage_source", ""),
             "bucket": row.get("bucket", ""),
+            "batch_report_date": report_date,
             "session_id": session_id,
             "session_file": row.get("file", ""),
             "prompt_index": prompt_index,
@@ -363,14 +390,18 @@ def build_tool_attribution_events(rows: list[dict[str, str]], token: str, distin
         dimension = row.get("dimension", "")
         name = row.get("name", "")
         canonical_key = f"{row.get('model','')}:{row.get('bucket','')}:{session_id}:{prompt_index}:{dimension}:{name}"
-        row_id = insert_id(report_date, "usage_tool_attribution", canonical_key)
-        props = with_common(token, distinct_id, epoch, row_id, report_date, {
+        event_date = row_report_date(row, report_date)
+        if is_after_report_date(event_date, report_date):
+            continue
+        row_id = insert_id(event_date, "usage_tool_attribution", canonical_key)
+        props = with_common(token, distinct_id, report_epoch(event_date), row_id, event_date, {
             "model": row.get("model", ""),
             "provider": row.get("provider", ""),
             "billable_model": row.get("billable_model", ""),
             "billable_model_source": row.get("billable_model_source", ""),
             "usage_source": row.get("usage_source", ""),
             "bucket": row.get("bucket", ""),
+            "batch_report_date": report_date,
             "session_id": session_id,
             "session_file": row.get("file", ""),
             "prompt_index": prompt_index,
