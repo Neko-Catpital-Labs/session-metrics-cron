@@ -54,6 +54,20 @@ if families.get("usage_request_cache_diagnosis") != families.get("usage_prompt")
     raise SystemExit("Expected request diagnosis count to match prompt count")
 if families.get("usage_request_tool_attribution") != families.get("usage_tool_attribution"):
     raise SystemExit("Expected request tool attribution count to match tool attribution count")
+required_task_fields = {
+    "task_type",
+    "task_type_label",
+    "task_type_confidence",
+    "task_type_classifier",
+    "task_type_reason",
+    "task_type_source",
+    "task_type_config_version",
+}
+sample_props = summary.get("sample_event_properties", {})
+for family in ("usage_request_cache_diagnosis", "usage_request_tool_attribution"):
+    missing_fields = sorted(required_task_fields - set(sample_props.get(family, [])))
+    if missing_fields:
+        raise SystemExit(f"Expected {family} to include task_type fields, missing: {missing_fields}")
 print("OK: nightly usage dry-run summary includes all event families")
 print("event_counts", json.dumps(families, sort_keys=True))
 PY

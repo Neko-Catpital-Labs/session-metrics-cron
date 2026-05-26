@@ -10,6 +10,7 @@ This repository runs a nightly pipeline that:
 
 - `config/nightly-usage.env`
 - `config/sources.json` (or override via env/CLI)
+- `config/task-categorization.yaml` (optional; enables YAML regex rules plus Codex CLI classification for regex misses)
 
 ## Run commands
 
@@ -49,6 +50,7 @@ bash scripts/nightly_usage_pipeline.sh --date 2026-05-25 --env-file config/night
 - `model` remains the client family (`codex` or `claude`); `provider` and `billable_model` identify the billing provider/model.
 - `pricing_missing = true` means the exporter could not find a LiteLLM-style pricing row, so derived costs are null.
 - `usage_request_cache_diagnosis` emits one row per prompt/request with exact per-request cache-read, cache-creation, output, reasoning, total token, cache-hit, and derived cost fields. It also labels the broad request pattern, finer request subpattern, deterministic task label, and a primary likely cache driver.
+- `usage_request_cache_diagnosis` and `usage_request_tool_attribution` include `task_type`, `task_type_label`, `task_type_confidence`, `task_type_classifier`, `task_type_reason`, `task_type_source`, and `task_type_config_version`. If no config path is supplied, the exporter uses built-in regex defaults only; set `USAGE_TASK_CATEGORIZATION_CONFIG=$PWD/config/task-categorization.yaml` or pass `--task-categorization-config` to enable the full YAML taxonomy and Codex fallback.
 - `usage_request_cache_source` emits a bounded top-N source breakdown per request (default 3 via `MAX_CACHE_SOURCES_PER_REQUEST`) for visualizing which repeated context sources are likely contributing to cache hits.
 - Request diagnosis rows are marked with `diagnosis_version = request_cache_sources_v3`; this version is included in diagnosis `$insert_id` keys so future diagnosis-schema changes do not collide with earlier imports.
 - Request cache-source fields use `source_attribution_method = provider_metric_exact_source_estimated`: provider token and cache-hit metrics are exact, but cache-source attribution is derived from repeated-context audit rows because provider logs do not expose exact cache spans.

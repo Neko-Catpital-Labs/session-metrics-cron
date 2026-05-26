@@ -1,0 +1,182 @@
+version: task_taxonomy_v1
+
+defaults:
+  id: uncategorized
+  label: Uncategorized
+  confidence: low
+  reason: no_rule_matched
+
+context:
+  max_chars: 4000
+  fields:
+    - name: prompt_preview
+      weight: 1.0
+    - name: previous_prompt_preview
+      weight: 0.9
+    - name: first_prompt_preview
+      weight: 0.8
+    - name: final_answer_preview
+      weight: 0.4
+    - name: session_cwd
+      weight: 0.3
+
+categories:
+  - id: pr_review
+    label: PR Review
+  - id: invoker_plan_submission
+    label: Invoker Plan Submission
+  - id: git_branch_stack
+    label: Git Branch / Stack
+  - id: debug_repro
+    label: Debug / Repro
+  - id: ui_terminal_visual
+    label: UI / Terminal / Visual Proof
+  - id: dependency_setup
+    label: Dependency / Setup
+  - id: test_ci_failure
+    label: Test / CI Failure
+  - id: release_packaging
+    label: Release / Packaging
+  - id: workflow_repair
+    label: Workflow Repair
+  - id: uncategorized
+    label: Uncategorized
+
+classifiers:
+  - id: regex_v1
+    type: regex
+    enabled: true
+    rules:
+      - id: pr_review
+        priority: 900
+        confidence: high
+        regex:
+          - "\\bpr\\b"
+          - "\\bpull request\\b"
+          - "\\breview\\b"
+          - "pr summary"
+          - "pr body"
+          - "auto-stamp"
+          - "landed"
+          - "merged"
+
+      - id: invoker_plan_submission
+        priority: 850
+        confidence: high
+        regex:
+          - "\\binvoker\\b"
+          - "plan-to-invoker"
+          - "submit to invoker"
+          - "workflow chain"
+          - "workflow submission"
+
+      - id: git_branch_stack
+        priority: 800
+        confidence: high
+        regex:
+          - "\\brebase\\b"
+          - "\\bmerge\\b"
+          - "\\bstack\\b"
+          - "upstream/master"
+          - "origin/master"
+          - "branch stack"
+          - "recreate all workflows"
+
+      - id: debug_repro
+        priority: 750
+        confidence: high
+        regex:
+          - "\\brepro\\b"
+          - "root cause"
+          - "\\bdebug\\b"
+          - "\\binvestigate\\b"
+          - "failure analysis"
+
+      - id: ui_terminal_visual
+        priority: 700
+        confidence: high
+        regex:
+          - "\\bui\\b"
+          - "terminal"
+          - "screenshot"
+          - "visual proof"
+          - "playwright"
+          - "embedded pty"
+          - "graph"
+
+      - id: dependency_setup
+        priority: 650
+        confidence: medium
+        regex:
+          - "\\binstall\\b"
+          - "\\bdependency\\b"
+          - "\\bdependencies\\b"
+          - "\\bpnpm\\b"
+          - "\\bnpm\\b"
+          - "\\bpip\\b"
+          - "\\bbundler\\b"
+
+      - id: test_ci_failure
+        priority: 600
+        confidence: high
+        regex:
+          - "\\bci\\b"
+          - "test failure"
+          - "failing test"
+          - "\\bpytest\\b"
+          - "make test"
+          - "build failed"
+
+      - id: release_packaging
+        priority: 500
+        confidence: medium
+        regex:
+          - "\\brelease\\b"
+          - "\\bpackage\\b"
+          - "\\bversion\\b"
+          - "changelog"
+
+      - id: workflow_repair
+        priority: 450
+        confidence: medium
+        regex:
+          - "task failed"
+          - "workflow failed"
+          - "fix with agent"
+          - "autofix"
+          - "review gate"
+
+  - id: codex_v1
+    type: codex
+    enabled: true
+    model: codex
+    mode: uncategorized_only
+    timeout_seconds: 90
+    command:
+      - codex
+      - exec
+      - --ephemeral
+      - --sandbox
+      - read-only
+      - --ask-for-approval
+      - never
+      - --output-schema
+      - "{schema_path}"
+      - --output-last-message
+      - "{output_path}"
+      - "-"
+    prompt: |
+      Classify this AI coding task into exactly one category.
+
+      Categories:
+      {categories}
+
+      Return JSON only:
+      {
+        "id": "one category id",
+        "confidence": "high|medium|low",
+        "reason": "short reason"
+      }
+
+      Task context:
+      {context}

@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import csv
 import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -20,6 +22,57 @@ from dataclasses import dataclass
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+
+DEFAULT_TASK_CATEGORIZATION_CONFIG: dict[str, Any] = {
+    "version": "builtin_regex_v1",
+    "defaults": {
+        "id": "uncategorized",
+        "label": "Uncategorized",
+        "confidence": "low",
+        "reason": "no_rule_matched",
+    },
+    "context": {
+        "max_chars": 4000,
+        "fields": [
+            {"name": "prompt_preview", "weight": 1.0},
+            {"name": "previous_prompt_preview", "weight": 0.9},
+            {"name": "first_prompt_preview", "weight": 0.8},
+            {"name": "final_answer_preview", "weight": 0.4},
+            {"name": "session_cwd", "weight": 0.3},
+        ],
+    },
+    "categories": [
+        {"id": "pr_review", "label": "PR Review"},
+        {"id": "invoker_plan_submission", "label": "Invoker Plan Submission"},
+        {"id": "git_branch_stack", "label": "Git Branch / Stack"},
+        {"id": "debug_repro", "label": "Debug / Repro"},
+        {"id": "ui_terminal_visual", "label": "UI / Terminal / Visual Proof"},
+        {"id": "dependency_setup", "label": "Dependency / Setup"},
+        {"id": "test_ci_failure", "label": "Test / CI Failure"},
+        {"id": "release_packaging", "label": "Release / Packaging"},
+        {"id": "workflow_repair", "label": "Workflow Repair"},
+        {"id": "uncategorized", "label": "Uncategorized"},
+    ],
+    "classifiers": [
+        {
+            "id": "regex_v1",
+            "type": "regex",
+            "enabled": True,
+            "rules": [
+                {"id": "pr_review", "priority": 900, "confidence": "high", "regex": [r"\bpr\b", r"\bpull request\b", r"\breview\b", "pr summary", "pr body", "auto-stamp", "landed", "merged"]},
+                {"id": "invoker_plan_submission", "priority": 850, "confidence": "high", "regex": [r"\binvoker\b", "plan-to-invoker", "submit to invoker", "workflow chain", "workflow submission"]},
+                {"id": "git_branch_stack", "priority": 800, "confidence": "high", "regex": [r"\brebase\b", r"\bmerge\b", r"\bstack\b", "upstream/master", "origin/master", "branch stack", "recreate all workflows"]},
+                {"id": "debug_repro", "priority": 750, "confidence": "high", "regex": [r"\brepro\b", "root cause", r"\bdebug\b", r"\binvestigate\b", "failure analysis"]},
+                {"id": "ui_terminal_visual", "priority": 700, "confidence": "high", "regex": [r"\bui\b", "terminal", "screenshot", "visual proof", "playwright", "embedded pty", "graph"]},
+                {"id": "dependency_setup", "priority": 650, "confidence": "medium", "regex": [r"\binstall\b", r"\bdependency\b", r"\bdependencies\b", r"\bpnpm\b", r"\bnpm\b", r"\bpip\b", r"\bbundler\b"]},
+                {"id": "test_ci_failure", "priority": 600, "confidence": "high", "regex": [r"\bci\b", "test failure", "failing test", r"\bpytest\b", "make test", "build failed"]},
+                {"id": "release_packaging", "priority": 500, "confidence": "medium", "regex": [r"\brelease\b", r"\bpackage\b", r"\bversion\b", "changelog"]},
+                {"id": "workflow_repair", "priority": 450, "confidence": "medium", "regex": ["task failed", "workflow failed", "fix with agent", "autofix", "review gate"]},
+            ],
+        }
+    ],
+}
 
 
 def to_int(value: Any, default: int = 0) -> int:
@@ -170,6 +223,370 @@ class StateStore:
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps({"sent_insert_ids": self.sent}, indent=2, sort_keys=True))
+
+
+@dataclass
+class TaskClassification:
+    task_type: str
+    task_type_label: str
+    task_type_confidence: str
+    task_type_classifier: str
+    task_type_reason: str
+    task_type_source: str
+    task_type_config_version: str
+
+
+class TaskClassificationCache:
+    def __init__(self, path: Path | None) -> None:
+        self.path = path
+        self.values: dict[str, dict[str, Any]] = {}
+        self.dirty = False
+        if path is None or not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            return
+        values = payload.get("classifications", {})
+        if isinstance(values, dict):
+            self.values = {str(key): value for key, value in values.items() if isinstance(value, dict)}
+
+    def get(self, key: str) -> dict[str, Any] | None:
+        return self.values.get(key)
+
+    def set(self, key: str, value: dict[str, Any]) -> None:
+        self.values[key] = {**value, "cached_at": int(time.time())}
+        self.dirty = True
+
+    def save(self) -> None:
+        if self.path is None or not self.dirty:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps({"classifications": self.values}, indent=2, sort_keys=True))
+
+
+def read_config_file(path: Path) -> dict[str, Any]:
+    text = path.read_text()
+    if path.suffix in {".yaml", ".yml"}:
+        try:
+            import yaml  # type: ignore
+        except ModuleNotFoundError:
+            obj = parse_simple_yaml(text)
+        else:
+            obj = yaml.safe_load(text)
+    else:
+        obj = json.loads(text)
+    if not isinstance(obj, dict):
+        raise RuntimeError(f"Task categorization config must be a mapping: {path}")
+    return obj
+
+
+def yaml_scalar(value: str) -> Any:
+    value = value.strip()
+    if value == "":
+        return ""
+    if value in {"true", "True"}:
+        return True
+    if value in {"false", "False"}:
+        return False
+    if value in {"null", "Null", "~"}:
+        return None
+    if value[0:1] in {"'", '"'}:
+        try:
+            return ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            return value.strip("'\"")
+    try:
+        if "." in value:
+            return float(value)
+        return int(value)
+    except ValueError:
+        return value
+
+
+def parse_simple_yaml(text: str) -> dict[str, Any]:
+    raw_lines = text.splitlines()
+    lines: list[tuple[int, str]] = []
+    for line in raw_lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        lines.append((len(line) - len(line.lstrip(" ")), line.lstrip(" ")))
+
+    def collect_block(index: int, parent_indent: int) -> tuple[str, int]:
+        block_lines: list[str] = []
+        while index < len(lines) and lines[index][0] > parent_indent:
+            indent, content = lines[index]
+            strip_count = min(indent, parent_indent + 2)
+            block_lines.append((" " * max(0, indent - strip_count)) + content)
+            index += 1
+        return "\n".join(block_lines).rstrip() + "\n", index
+
+    def parse_block(index: int, indent: int) -> tuple[Any, int]:
+        if index >= len(lines):
+            return {}, index
+        if lines[index][1].startswith("- "):
+            values: list[Any] = []
+            while index < len(lines) and lines[index][0] == indent and lines[index][1].startswith("- "):
+                item = lines[index][1][2:].strip()
+                index += 1
+                if not item:
+                    child, index = parse_block(index, indent + 2)
+                    values.append(child)
+                elif ":" in item and not item.startswith(("'", '"')):
+                    key, raw_value = item.split(":", 1)
+                    mapping: dict[str, Any] = {}
+                    if raw_value.strip():
+                        mapping[key.strip()] = yaml_scalar(raw_value.strip())
+                    else:
+                        child, index = parse_block(index, indent + 2)
+                        mapping[key.strip()] = child
+                    while index < len(lines) and lines[index][0] == indent + 2 and not lines[index][1].startswith("- "):
+                        key2, raw_value2 = lines[index][1].split(":", 1)
+                        index += 1
+                        raw_value2 = raw_value2.strip()
+                        if raw_value2 == "|":
+                            mapping[key2.strip()], index = collect_block(index, indent + 2)
+                        elif raw_value2:
+                            mapping[key2.strip()] = yaml_scalar(raw_value2)
+                        else:
+                            child, index = parse_block(index, indent + 4)
+                            mapping[key2.strip()] = child
+                    values.append(mapping)
+                else:
+                    values.append(yaml_scalar(item))
+            return values, index
+
+        mapping: dict[str, Any] = {}
+        while index < len(lines) and lines[index][0] == indent and not lines[index][1].startswith("- "):
+            key, raw_value = lines[index][1].split(":", 1)
+            index += 1
+            raw_value = raw_value.strip()
+            if raw_value == "|":
+                mapping[key.strip()], index = collect_block(index, indent)
+            elif raw_value:
+                mapping[key.strip()] = yaml_scalar(raw_value)
+            else:
+                child, index = parse_block(index, indent + 2)
+                mapping[key.strip()] = child
+        return mapping, index
+
+    parsed, final_index = parse_block(0, lines[0][0] if lines else 0)
+    if final_index != len(lines) or not isinstance(parsed, dict):
+        raise RuntimeError("YAML config uses unsupported syntax; install PyYAML for full YAML support.")
+    return parsed
+
+
+def load_task_categorization_config(path_value: str = "") -> dict[str, Any]:
+    if not path_value:
+        return json.loads(json.dumps(DEFAULT_TASK_CATEGORIZATION_CONFIG))
+    path = Path(path_value).expanduser()
+    if not path.exists():
+        return json.loads(json.dumps(DEFAULT_TASK_CATEGORIZATION_CONFIG))
+    return read_config_file(path)
+
+
+def validate_task_categorization_config(config: dict[str, Any]) -> None:
+    category_ids: set[str] = set()
+    for category in config.get("categories", []) or []:
+        if not isinstance(category, dict):
+            raise RuntimeError("Task categorization categories must be mappings.")
+        category_id = str(category.get("id") or "")
+        if not category_id:
+            raise RuntimeError("Task categorization category is missing id.")
+        if category_id in category_ids:
+            raise RuntimeError(f"Duplicate task categorization category id: {category_id}")
+        category_ids.add(category_id)
+    if not category_ids:
+        raise RuntimeError("Task categorization config must define at least one category.")
+    default_id = str((config.get("defaults", {}) or {}).get("id") or "uncategorized")
+    if default_id not in category_ids:
+        raise RuntimeError(f"Task categorization default id references unknown category: {default_id}")
+
+    for classifier in config.get("classifiers", []) or []:
+        if not isinstance(classifier, dict) or not to_bool(classifier.get("enabled", True)):
+            continue
+        if classifier.get("type") != "regex":
+            continue
+        for rule in classifier.get("rules", []) or []:
+            if not isinstance(rule, dict):
+                raise RuntimeError("Task categorization regex rules must be mappings.")
+            rule_id = str(rule.get("id") or "")
+            if rule_id not in category_ids:
+                raise RuntimeError(f"Task categorization rule references unknown category id: {rule_id}")
+            for expr in rule.get("regex", []) or []:
+                try:
+                    re.compile(str(expr), re.IGNORECASE)
+                except re.error as exc:
+                    raise RuntimeError(f"Invalid task categorization regex for {rule_id}: {expr}: {exc}") from exc
+
+
+class TaskCategorizer:
+    def __init__(self, config: dict[str, Any], cache: TaskClassificationCache | None = None) -> None:
+        validate_task_categorization_config(config)
+        self.config = config
+        self.version = str(config.get("version") or "unknown")
+        self.cache = cache or TaskClassificationCache(None)
+        self.categories = {str(item["id"]): str(item.get("label") or item["id"]) for item in config.get("categories", [])}
+        defaults = config.get("defaults", {}) or {}
+        default_id = str(defaults.get("id") or "uncategorized")
+        self.default = TaskClassification(
+            task_type=default_id,
+            task_type_label=self.categories.get(default_id, default_id),
+            task_type_confidence=str(defaults.get("confidence") or "low"),
+            task_type_classifier="default",
+            task_type_reason=str(defaults.get("reason") or "no_rule_matched"),
+            task_type_source="",
+            task_type_config_version=self.version,
+        )
+
+    def configured_fields(self, row: dict[str, str]) -> list[tuple[str, float, str]]:
+        field_specs = ((self.config.get("context", {}) or {}).get("fields", []) or [])
+        fields: list[tuple[str, float, str]] = []
+        for field in field_specs:
+            if not isinstance(field, dict):
+                continue
+            name = str(field.get("name") or "")
+            if not name:
+                continue
+            fields.append((name, to_float(field.get("weight"), 1.0), str(row.get(name, ""))))
+        return fields
+
+    def context_hash(self, row: dict[str, str]) -> str:
+        payload = {name: value for name, _weight, value in self.configured_fields(row)}
+        return digest_text(json.dumps(payload, sort_keys=True))
+
+    def context_text(self, row: dict[str, str]) -> str:
+        max_chars = to_int((self.config.get("context", {}) or {}).get("max_chars"), 4000)
+        parts = []
+        for name, _weight, value in self.configured_fields(row):
+            if value:
+                parts.append(f"{name}: {value}")
+        return "\n".join(parts)[:max_chars]
+
+    def classify_regex(self, classifier: dict[str, Any], row: dict[str, str]) -> TaskClassification | None:
+        winner: tuple[float, dict[str, Any], str] | None = None
+        for rule in classifier.get("rules", []) or []:
+            priority = to_float(rule.get("priority"), 0.0)
+            for name, weight, value in self.configured_fields(row):
+                if not value:
+                    continue
+                for expr in rule.get("regex", []) or []:
+                    if re.search(str(expr), value, re.IGNORECASE):
+                        score = priority + weight
+                        if winner is None or score > winner[0]:
+                            winner = (score, rule, name)
+        if winner is None:
+            return None
+        _score, rule, source = winner
+        task_type = str(rule.get("id") or self.default.task_type)
+        return TaskClassification(
+            task_type=task_type,
+            task_type_label=self.categories.get(task_type, task_type),
+            task_type_confidence=str(rule.get("confidence") or "medium"),
+            task_type_classifier=str(classifier.get("id") or "regex"),
+            task_type_reason=f"regex_rule:{task_type}",
+            task_type_source=source,
+            task_type_config_version=self.version,
+        )
+
+    def classify_codex(self, classifier: dict[str, Any], row: dict[str, str], current: TaskClassification) -> TaskClassification:
+        if classifier.get("mode") == "uncategorized_only" and current.task_type != self.default.task_type:
+            return current
+        cache_key = f"{self.version}:{classifier.get('id')}:{self.context_hash(row)}"
+        cached = self.cache.get(cache_key)
+        if cached:
+            return self.result_from_payload(cached, str(classifier.get("id") or "codex"), "cache")
+
+        result = self.run_codex_classifier(classifier, row)
+        if result is None:
+            return TaskClassification(**{**current.__dict__, "task_type_reason": "codex_failed_fallback"})
+        self.cache.set(cache_key, result.__dict__)
+        return result
+
+    def result_from_payload(self, payload: dict[str, Any], classifier_id: str, source: str) -> TaskClassification:
+        task_type = str(payload.get("task_type") or payload.get("id") or self.default.task_type)
+        return TaskClassification(
+            task_type=task_type,
+            task_type_label=self.categories.get(task_type, task_type),
+            task_type_confidence=str(payload.get("task_type_confidence") or payload.get("confidence") or "low"),
+            task_type_classifier=str(payload.get("task_type_classifier") or classifier_id),
+            task_type_reason=str(payload.get("task_type_reason") or payload.get("reason") or ""),
+            task_type_source=str(payload.get("task_type_source") or source),
+            task_type_config_version=self.version,
+        )
+
+    def run_codex_classifier(self, classifier: dict[str, Any], row: dict[str, str]) -> TaskClassification | None:
+        import tempfile
+
+        classifier_id = str(classifier.get("id") or "codex")
+        categories_text = "\n".join(f"- {category_id}: {label}" for category_id, label in self.categories.items())
+        prompt = (
+            str(classifier.get("prompt") or "")
+            .replace("{categories}", categories_text)
+            .replace("{context}", self.context_text(row))
+        )
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "id": {"type": "string", "enum": sorted(self.categories)},
+                "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+                "reason": {"type": "string"},
+            },
+            "required": ["id", "confidence", "reason"],
+        }
+        try:
+            with tempfile.TemporaryDirectory(prefix="task-classifier-") as tmpdir:
+                schema_path = Path(tmpdir) / "schema.json"
+                output_path = Path(tmpdir) / "output.json"
+                schema_path.write_text(json.dumps(schema))
+                command = [
+                    str(part).format(schema_path=str(schema_path), output_path=str(output_path))
+                    for part in (classifier.get("command") or [])
+                ]
+                if not command:
+                    return None
+                subprocess.run(
+                    command,
+                    input=prompt,
+                    text=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=to_int(classifier.get("timeout_seconds"), 90),
+                    check=True,
+                )
+                payload = json.loads(output_path.read_text())
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError, TimeoutError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        task_type = str(payload.get("id") or "")
+        if task_type not in self.categories:
+            return None
+        return TaskClassification(
+            task_type=task_type,
+            task_type_label=self.categories.get(task_type, task_type),
+            task_type_confidence=str(payload.get("confidence") or "low"),
+            task_type_classifier=classifier_id,
+            task_type_reason=str(payload.get("reason") or ""),
+            task_type_source="codex",
+            task_type_config_version=self.version,
+        )
+
+    def classify(self, row: dict[str, str]) -> TaskClassification:
+        result = self.default
+        for classifier in self.config.get("classifiers", []) or []:
+            if not isinstance(classifier, dict) or not to_bool(classifier.get("enabled", True)):
+                continue
+            classifier_type = classifier.get("type")
+            if classifier_type == "regex":
+                regex_result = self.classify_regex(classifier, row)
+                if regex_result is not None:
+                    result = regex_result
+            elif classifier_type == "codex":
+                result = self.classify_codex(classifier, row, result)
+        return result
 
 
 def with_common(
@@ -521,7 +938,12 @@ def choose_primary_cache_source(audit: dict[str, Any], model: str, pattern: str)
     return {}, "none", "low"
 
 
-def request_base_payload(row: dict[str, str], report_date: str) -> tuple[str, str, int, str, dict[str, Any]]:
+def request_base_payload(
+    row: dict[str, str],
+    report_date: str,
+    task_categorizer: TaskCategorizer,
+    include_task_type: bool = True,
+) -> tuple[str, str, int, str, dict[str, Any]]:
     preview = row.get("prompt_preview", "")
     session_id = session_identity(row.get("file", ""))
     prompt_index = to_int(row.get("prompt_index"))
@@ -577,6 +999,8 @@ def request_base_payload(row: dict[str, str], report_date: str) -> tuple[str, st
         "diagnosis_version": os.getenv("USAGE_DIAGNOSIS_VERSION", "request_cache_sources_v3"),
         "source_attribution_method": "provider_metric_exact_source_estimated",
     }
+    if include_task_type:
+        payload.update(task_categorizer.classify(row).__dict__)
     return canonical_key, event_date, prompt_index, pattern, payload
 
 
@@ -587,6 +1011,7 @@ def build_request_cache_diagnosis_events(
     distinct_id: str,
     report_date: str,
     max_unique_prompt_hashes: int,
+    task_categorizer: TaskCategorizer,
 ) -> tuple[list[ExportEvent], int]:
     events: list[ExportEvent] = []
     hashes: set[str] = set()
@@ -598,7 +1023,7 @@ def build_request_cache_diagnosis_events(
             continue
         hashes.add(preview_hash)
 
-        canonical_key, event_date, _prompt_index, pattern, payload = request_base_payload(row, report_date)
+        canonical_key, event_date, _prompt_index, pattern, payload = request_base_payload(row, report_date, task_categorizer)
         if is_after_report_date(event_date, report_date):
             continue
         primary, kind, confidence = choose_primary_cache_source(audit, row.get("model", ""), pattern)
@@ -627,6 +1052,7 @@ def build_request_cache_source_events(
     report_date: str,
     max_unique_prompt_hashes: int,
     max_sources_per_request: int,
+    task_categorizer: TaskCategorizer,
 ) -> tuple[list[ExportEvent], int]:
     events: list[ExportEvent] = []
     hashes: set[str] = set()
@@ -638,7 +1064,9 @@ def build_request_cache_source_events(
             continue
         hashes.add(preview_hash)
 
-        canonical_key, event_date, _prompt_index, pattern, payload = request_base_payload(row, report_date)
+        canonical_key, event_date, _prompt_index, pattern, payload = request_base_payload(
+            row, report_date, task_categorizer, include_task_type=False
+        )
         if is_after_report_date(event_date, report_date):
             continue
         candidates = repeated_value_rows(audit, row.get("model", ""))
@@ -766,11 +1194,12 @@ def build_request_tool_attribution_events(
     token: str,
     distinct_id: str,
     report_date: str,
+    task_categorizer: TaskCategorizer,
 ) -> list[ExportEvent]:
     events: list[ExportEvent] = []
     prompt_context: dict[tuple[str, str, str, int], dict[str, Any]] = {}
     for prompt in prompt_rows:
-        canonical_key, event_date, prompt_index, _pattern, payload = request_base_payload(prompt, report_date)
+        canonical_key, event_date, prompt_index, _pattern, payload = request_base_payload(prompt, report_date, task_categorizer)
         if is_after_report_date(event_date, report_date):
             continue
         prompt_context[(prompt.get("model", ""), prompt.get("bucket", ""), session_identity(prompt.get("file", "")), prompt_index)] = {
@@ -808,6 +1237,13 @@ def build_request_tool_attribution_events(
             "task_label": context.get("task_label", "uncategorized"),
             "task_label_source": context.get("task_label_source", ""),
             "task_label_confidence": context.get("task_label_confidence", "low"),
+            "task_type": context.get("task_type", "uncategorized"),
+            "task_type_label": context.get("task_type_label", "Uncategorized"),
+            "task_type_confidence": context.get("task_type_confidence", "low"),
+            "task_type_classifier": context.get("task_type_classifier", "default"),
+            "task_type_reason": context.get("task_type_reason", "no_rule_matched"),
+            "task_type_source": context.get("task_type_source", ""),
+            "task_type_config_version": context.get("task_type_config_version", ""),
             "diagnosis_version": diagnosis_version,
             "dimension": dimension,
             "name": name,
@@ -953,6 +1389,7 @@ def build_all_events(
     max_events_per_family: int,
     max_unique_prompt_hashes: int,
     max_cache_sources_per_request: int,
+    task_categorizer: TaskCategorizer,
 ) -> tuple[dict[str, list[ExportEvent]], dict[str, int]]:
     audit = read_json(input_root / "cache-hit-audit-report.json")
     report = read_json(input_root / "reports/planning-vs-execution-report.json")
@@ -973,17 +1410,17 @@ def build_all_events(
     )
     families["usage_prompt"] = prompt_events
     diagnosis_events, diagnosis_skipped = build_request_cache_diagnosis_events(
-        prompts, audit, token, distinct_id, report_date, max_unique_prompt_hashes
+        prompts, audit, token, distinct_id, report_date, max_unique_prompt_hashes, task_categorizer
     )
     families["usage_request_cache_diagnosis"] = diagnosis_events
     source_events, source_skipped = build_request_cache_source_events(
-        prompts, audit, token, distinct_id, report_date, max_unique_prompt_hashes, max_cache_sources_per_request
+        prompts, audit, token, distinct_id, report_date, max_unique_prompt_hashes, max_cache_sources_per_request, task_categorizer
     )
     families["usage_request_cache_source"] = source_events
     families["usage_tool_breakdown"] = build_tool_events(tools, token, distinct_id, epoch, report_date)
     families["usage_tool_attribution"] = build_tool_attribution_events(tool_attribution, token, distinct_id, epoch, report_date)
     families["usage_request_tool_attribution"] = build_request_tool_attribution_events(
-        tool_attribution, prompts, token, distinct_id, report_date
+        tool_attribution, prompts, token, distinct_id, report_date, task_categorizer
     )
     families["usage_cache_driver"] = build_cache_driver_events(report, audit, token, distinct_id, epoch, report_date)
     if prompt_skipped:
@@ -1023,6 +1460,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-state-ids", type=int, default=to_int(os.getenv("MAX_STATE_IDS"), 500000))
     parser.add_argument("--batch-size", type=int, default=to_int(os.getenv("MIXPANEL_BATCH_SIZE"), 2000))
     parser.add_argument("--endpoint", default=os.getenv("MIXPANEL_ENDPOINT", "https://api.mixpanel.com/import"))
+    parser.add_argument(
+        "--task-categorization-config",
+        default=os.getenv("USAGE_TASK_CATEGORIZATION_CONFIG", ""),
+        help="YAML/JSON task categorization config. Missing path falls back to built-in regex defaults.",
+    )
+    parser.add_argument(
+        "--task-classification-cache",
+        default=os.getenv(
+            "USAGE_TASK_CLASSIFICATION_CACHE",
+            os.path.expanduser("~/.session-metrics-cron/usage-metrics/task-classification-cache.json"),
+        ),
+        help="Path for Codex task classification cache.",
+    )
     return parser.parse_args(argv)
 
 
@@ -1035,6 +1485,13 @@ def main(argv: list[str] | None = None) -> int:
 
     distinct_id = os.getenv("MIXPANEL_DISTINCT_ID", "session-metrics-cron")
     input_root = Path(args.input_root).resolve()
+    try:
+        task_config = load_task_categorization_config(args.task_categorization_config)
+        task_cache = TaskClassificationCache(Path(args.task_classification_cache).expanduser())
+        task_categorizer = TaskCategorizer(task_config, task_cache)
+    except RuntimeError as exc:
+        print(f"Invalid task categorization config: {exc}", file=sys.stderr)
+        return 1
     for required in (
         input_root / "cache-hit-audit-report.json",
         input_root / "reports/planning-vs-execution-report.json",
@@ -1054,7 +1511,9 @@ def main(argv: list[str] | None = None) -> int:
         max_events_per_family=args.max_events_per_family,
         max_unique_prompt_hashes=args.max_unique_prompt_hashes,
         max_cache_sources_per_request=args.max_cache_sources_per_request,
+        task_categorizer=task_categorizer,
     )
+    task_cache.save()
 
     state = StateStore(Path(args.state_file).expanduser(), args.max_state_ids)
     to_send: dict[str, list[ExportEvent]] = {}
@@ -1102,10 +1561,15 @@ def main(argv: list[str] | None = None) -> int:
         "dry_run": args.dry_run,
         "total_events_after_dedupe": sent_count,
         "families": {family: len(rows) for family, rows in to_send.items()},
+        "sample_event_properties": {
+            family: sorted(rows[0].properties) if rows else []
+            for family, rows in to_send.items()
+        },
         "duplicates_suppressed": duplicate_counts,
         "capped": capped,
         "ignore_local_state": args.ignore_local_state,
         "state_file": str(Path(args.state_file).expanduser()),
+        "task_type_config_version": task_categorizer.version,
     }
     print(json.dumps(summary, indent=2, sort_keys=True))
     if args.summary_path:
