@@ -12,7 +12,8 @@ for required in \
   reports/planning-vs-execution-report.json \
   reports/planning-vs-execution-sessions.csv \
   reports/planning-vs-execution-prompts.csv \
-  reports/planning-vs-execution-tool-breakdown.csv; do
+  reports/planning-vs-execution-tool-breakdown.csv \
+  reports/planning-vs-execution-tool-attribution.csv; do
   [[ -f "$required" ]] || {
     echo "Missing required artifact: $required" >&2
     echo "Run: bash scripts/nightly_usage_pipeline.sh --dry-run --env-file config/nightly-usage.env" >&2
@@ -37,6 +38,7 @@ required_families = {
     "usage_session",
     "usage_prompt",
     "usage_tool_breakdown",
+    "usage_tool_attribution",
     "usage_cache_driver",
 }
 families = summary.get("families", {})

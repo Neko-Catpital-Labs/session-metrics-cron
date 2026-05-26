@@ -17,6 +17,7 @@ import json
 import re
 import statistics
 import sys
+import urllib.request
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +37,7 @@ PLANNING_PHRASES = [
 ]
 PLANNING_RE = re.compile("|".join(re.escape(p) for p in PLANNING_PHRASES), re.IGNORECASE)
 SHELL_FUNCTION_NAMES = {"exec_command", "shell", "bash"}
+DEFAULT_PRICING_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 
 
 @dataclass
@@ -44,6 +46,7 @@ class PromptWindow:
     prompt_text: str
     input_delta: int = 0
     cached_delta: int = 0
+    cache_creation_delta: int = 0
     output_delta: int = 0
     reasoning_delta: int = 0
     total_delta: int = 0
@@ -51,6 +54,8 @@ class PromptWindow:
     agent_messages: int = 0
     response_messages: int = 0
     function_outputs: int = 0
+    function_name_counts: Counter[str] = field(default_factory=Counter)
+    shell_verb_counts: Counter[str] = field(default_factory=Counter)
 
 
 @dataclass
@@ -58,12 +63,17 @@ class SessionStats:
     model: str  # codex | claude
     file: str
     bucket: str  # planning | execution
+    provider: str = ""
+    billable_model: str = ""
+    billable_model_source: str = ""
+    usage_source: str = ""
     user_prompts: int = 0
     agent_messages: int = 0
     tool_calls: int = 0
     function_outputs: int = 0
     final_input: int = 0
     final_cached: int = 0
+    final_cache_creation: int = 0
     final_output: int = 0
     final_reasoning: int = 0
     final_total: int = 0
@@ -75,6 +85,10 @@ class SessionStats:
 
 def safe_div(num: float, denom: float) -> float:
     return float(num / denom) if denom else 0.0
+
+
+def none_if_missing(value: float | None) -> float | None:
+    return value if value is not None else None
 
 
 def shorten(text: str, n: int = 220) -> str:
@@ -159,6 +173,126 @@ def extract_shell_verb(arguments_raw: Any) -> str | None:
     return verb
 
 
+def normalize_model_name(value: str) -> str:
+    return " ".join(str(value or "").strip().split()).lower()
+
+
+def default_billable_model(provider: str) -> tuple[str, str]:
+    if provider == "codex":
+        return "gpt-5.5", "default_codex"
+    if provider == "claude":
+        return "claude-sonnet-4-5-20250929", "default_claude"
+    return "", "missing"
+
+
+def provider_for_session_family(model: str) -> str:
+    if model == "codex":
+        return "openai"
+    if model == "claude":
+        return "anthropic"
+    return ""
+
+
+def resolve_billable_model(provider: str, observed: str) -> tuple[str, str]:
+    normalized = normalize_model_name(observed)
+    if normalized:
+        return normalized, "session_log"
+    return default_billable_model(provider)
+
+
+def load_pricing_table(path_or_url: str | None) -> dict[str, Any]:
+    source = path_or_url or DEFAULT_PRICING_URL
+    try:
+        if source.startswith(("http://", "https://")):
+            with urllib.request.urlopen(source, timeout=20) as response:  # noqa: S310
+                return json.loads(response.read().decode("utf-8"))
+        path = Path(source).expanduser()
+        if path.exists():
+            return json.loads(path.read_text())
+    except Exception:
+        return {}
+    return {}
+
+
+def pricing_for_model(pricing_table: dict[str, Any], model: str) -> dict[str, Any] | None:
+    if not model:
+        return None
+    candidates = [model, model.lower(), model.replace("openai/", ""), model.replace("anthropic/", "")]
+    for candidate in candidates:
+        row = pricing_table.get(candidate)
+        if isinstance(row, dict):
+            return row
+    return None
+
+
+def price_component(pricing: dict[str, Any] | None, *keys: str) -> float | None:
+    if not pricing:
+        return None
+    for key in keys:
+        value = pricing.get(key)
+        if value not in (None, ""):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def derive_cost(
+    pricing_table: dict[str, Any],
+    billable_model: str,
+    *,
+    input_tokens: float,
+    cache_read_tokens: float,
+    cache_creation_tokens: float,
+    output_tokens: float,
+    input_includes_cache: bool = False,
+) -> dict[str, Any]:
+    pricing = pricing_for_model(pricing_table, billable_model)
+    input_price = price_component(pricing, "input_cost_per_token", "prompt_cost_per_token")
+    output_price = price_component(pricing, "output_cost_per_token", "completion_cost_per_token")
+    cache_read_price = price_component(pricing, "cache_read_input_token_cost", "cache_read_cost_per_token")
+    cache_creation_price = price_component(pricing, "cache_creation_input_token_cost", "cache_creation_cost_per_token")
+    pricing_missing = input_price is None or output_price is None
+    billable_input_tokens = max(0.0, input_tokens - cache_read_tokens - cache_creation_tokens) if input_includes_cache else input_tokens
+    input_cost = billable_input_tokens * input_price if input_price is not None else None
+    cache_read_cost = cache_read_tokens * (cache_read_price if cache_read_price is not None else input_price) if input_price is not None else None
+    cache_creation_cost = (
+        cache_creation_tokens * (cache_creation_price if cache_creation_price is not None else input_price)
+        if input_price is not None
+        else None
+    )
+    output_cost = output_tokens * output_price if output_price is not None else None
+    parts = [input_cost, cache_read_cost, cache_creation_cost, output_cost]
+    return {
+        "derived_input_cost_usd": none_if_missing(input_cost),
+        "derived_non_cache_input_cost_usd": none_if_missing(input_cost),
+        "derived_cache_read_cost_usd": none_if_missing(cache_read_cost),
+        "derived_cache_creation_cost_usd": none_if_missing(cache_creation_cost),
+        "derived_output_cost_usd": none_if_missing(output_cost),
+        "derived_total_cost_usd": sum(p for p in parts if p is not None) if not pricing_missing else None,
+        "pricing_missing": pricing_missing,
+        "pricing_source": "litellm_model_prices" if pricing else "missing",
+    }
+
+
+def raw_total_tokens(
+    model: str,
+    *,
+    input_tokens: int,
+    cache_read_tokens: int,
+    cache_creation_tokens: int,
+    output_tokens: int,
+    reasoning_tokens: int,
+    provider_total_tokens: int,
+) -> int:
+    if provider_total_tokens:
+        return provider_total_tokens
+    if model == "codex":
+        return input_tokens + output_tokens + reasoning_tokens
+    return input_tokens + cache_read_tokens + cache_creation_tokens + output_tokens + reasoning_tokens
+
+
 def load_model_totals(audit_path: Path) -> dict[str, dict[str, float]]:
     obj = json.loads(audit_path.read_text())
     by_host_c = obj.get("baselineCcusage", {}).get("codexDailyByHost", {})
@@ -169,6 +303,7 @@ def load_model_totals(audit_path: Path) -> dict[str, dict[str, float]]:
         "codex": {
             "inputTokens": float(codex.get("inputTokens") or 0),
             "cachedInputTokens": float(codex.get("cachedInputTokens") or 0),
+            "cacheCreationTokens": 0.0,
             "outputTokens": float(codex.get("outputTokens") or 0),
             "reasoningOutputTokens": float(codex.get("reasoningOutputTokens") or 0),
             "costUSD": float(codex.get("costUSD") or 0),
@@ -176,6 +311,7 @@ def load_model_totals(audit_path: Path) -> dict[str, dict[str, float]]:
         "claude": {
             "inputTokens": float(claude.get("inputTokens") or 0),
             "cachedInputTokens": float(claude.get("cacheReadTokens") or 0),
+            "cacheCreationTokens": float(claude.get("cacheCreationTokens") or 0),
             "outputTokens": float(claude.get("outputTokens") or 0),
             "reasoningOutputTokens": 0.0,
             "costUSD": float(claude.get("totalCost") or 0),
@@ -197,6 +333,8 @@ def parse_codex_session(path: Path) -> SessionStats | None:
     agent_message_count = tool_calls_total = func_outputs_total = 0
     fn_counts: Counter[str] = Counter()
     verb_counts: Counter[str] = Counter()
+    billable_model = ""
+    billable_model_source = ""
 
     try:
         text = path.read_text(errors="ignore")
@@ -240,6 +378,11 @@ def parse_codex_session(path: Path) -> SessionStats | None:
                         current.total_delta += dt
                     cum_input, cum_cached, cum_output, cum_reasoning, cum_total = ni, nc, no, nr, nt
                     last_total = {"input": ni, "cached": nc, "output": no, "reasoning": nr, "total": nt}
+        elif t == "turn_context":
+            payload = obj.get("payload") or {}
+            candidate = payload.get("model")
+            if isinstance(candidate, str) and candidate.strip() and not billable_model:
+                billable_model, billable_model_source = resolve_billable_model("codex", candidate)
         elif t == "response_item":
             payload = obj.get("payload") or {}
             ptype = payload.get("type")
@@ -249,10 +392,14 @@ def parse_codex_session(path: Path) -> SessionStats | None:
                     current.tool_calls += 1
                 fname = (payload.get("name") or "unknown").lower()
                 fn_counts[fname] += 1
+                if current is not None:
+                    current.function_name_counts[fname] += 1
                 if fname in SHELL_FUNCTION_NAMES:
                     verb = extract_shell_verb(payload.get("arguments"))
                     if verb:
                         verb_counts[verb] += 1
+                        if current is not None:
+                            current.shell_verb_counts[verb] += 1
             elif ptype == "function_call_output":
                 func_outputs_total += 1
                 if current is not None:
@@ -267,11 +414,17 @@ def parse_codex_session(path: Path) -> SessionStats | None:
         return None
 
     final = last_total or {"input": 0, "cached": 0, "output": 0, "reasoning": 0, "total": 0}
+    if not billable_model:
+        billable_model, billable_model_source = default_billable_model("codex")
     bucket = "planning" if PLANNING_RE.search("\n".join(user_prompts)) else "execution"
     return SessionStats(
         model="codex",
         file=str(path),
         bucket=bucket,
+        provider=provider_for_session_family("codex"),
+        billable_model=billable_model,
+        billable_model_source=billable_model_source,
+        usage_source="codex_token_count",
         user_prompts=len(user_prompts),
         agent_messages=agent_message_count,
         tool_calls=tool_calls_total,
@@ -315,7 +468,9 @@ def parse_claude_session(path: Path) -> SessionStats | None:
     verb_counts: Counter[str] = Counter()
     seen_usage_ids: set[str] = set()
     seen_tool_ids: set[str] = set()
-    fi = fc = fo = fr = ft = 0
+    fi = fc = fcc = fo = fr = ft = 0
+    billable_model = ""
+    billable_model_source = ""
 
     try:
         text = path.read_text(errors="ignore")
@@ -344,6 +499,9 @@ def parse_claude_session(path: Path) -> SessionStats | None:
             msg = obj.get("message") or {}
             if msg.get("role") != "assistant":
                 continue
+            candidate = msg.get("model")
+            if isinstance(candidate, str) and candidate.strip() and not billable_model:
+                billable_model, billable_model_source = resolve_billable_model("claude", candidate)
             agent_message_count += 1
             if current is not None:
                 current.agent_messages += 1
@@ -355,17 +513,20 @@ def parse_claude_session(path: Path) -> SessionStats | None:
                 usage = msg.get("usage") or {}
                 di = int(usage.get("input_tokens") or 0)
                 dc = int(usage.get("cache_read_input_tokens") or 0)
+                dcc = int(usage.get("cache_creation_input_tokens") or 0)
                 do = int(usage.get("output_tokens") or 0)
                 dr = 0
-                dt = di + do
+                dt = di + dc + dcc + do
                 fi += di
                 fc += dc
+                fcc += dcc
                 fo += do
                 fr += dr
                 ft += dt
                 if current is not None:
                     current.input_delta += di
                     current.cached_delta += dc
+                    current.cache_creation_delta += dcc
                     current.output_delta += do
                     current.reasoning_delta += dr
                     current.total_delta += dt
@@ -384,28 +545,39 @@ def parse_claude_session(path: Path) -> SessionStats | None:
                     tool_calls_total += 1
                     fn_counts[name] += 1
                     if current is not None:
+                        current.function_name_counts[name] += 1
+                    if current is not None:
                         current.tool_calls += 1
                     if name in SHELL_FUNCTION_NAMES:
                         verb = extract_shell_verb(item.get("input"))
                         if verb:
                             verb_counts[verb] += 1
+                            if current is not None:
+                                current.shell_verb_counts[verb] += 1
 
     if current is not None:
         windows.append(current)
     if not user_prompts and ft == 0:
         return None
 
+    if not billable_model:
+        billable_model, billable_model_source = default_billable_model("claude")
     bucket = "planning" if PLANNING_RE.search("\n".join(user_prompts)) else "execution"
     return SessionStats(
         model="claude",
         file=str(path),
         bucket=bucket,
+        provider=provider_for_session_family("claude"),
+        billable_model=billable_model,
+        billable_model_source=billable_model_source,
+        usage_source="claude_message_usage",
         user_prompts=len(user_prompts),
         agent_messages=agent_message_count,
         tool_calls=tool_calls_total,
         function_outputs=0,
         final_input=fi,
         final_cached=fc,
+        final_cache_creation=fcc,
         final_output=fo,
         final_reasoning=fr,
         final_total=ft,
@@ -416,21 +588,48 @@ def parse_claude_session(path: Path) -> SessionStats | None:
     )
 
 
-def build_rows_for_model(sessions: list[SessionStats], model_totals: dict[str, float]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def build_rows_for_model(
+    sessions: list[SessionStats],
+    model_totals: dict[str, float],
+    pricing_table: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     eff_corpus = sum(s.final_input + 0.1 * s.final_cached for s in sessions) or 0.0
     cost_total = float(model_totals.get("costUSD", 0.0))
     cost_per_eff = safe_div(cost_total, eff_corpus)
 
     session_rows: list[dict[str, Any]] = []
     prompt_rows: list[dict[str, Any]] = []
+    attribution_rows: list[dict[str, Any]] = []
 
     for s in sessions:
         eff = s.final_input + 0.1 * s.final_cached
         cost = eff * cost_per_eff
         chp = safe_div(s.final_cached, s.final_input + s.final_cached) * 100.0
+        session_cost = derive_cost(
+            pricing_table,
+            s.billable_model,
+            input_tokens=s.final_input,
+            cache_read_tokens=s.final_cached,
+            cache_creation_tokens=s.final_cache_creation,
+            output_tokens=s.final_output,
+            input_includes_cache=s.model == "codex",
+        )
+        session_total_tokens = raw_total_tokens(
+            s.model,
+            input_tokens=s.final_input,
+            cache_read_tokens=s.final_cached,
+            cache_creation_tokens=s.final_cache_creation,
+            output_tokens=s.final_output,
+            reasoning_tokens=s.final_reasoning,
+            provider_total_tokens=s.final_total,
+        )
         session_rows.append(
             {
                 "model": s.model,
+                "provider": s.provider,
+                "billable_model": s.billable_model,
+                "billable_model_source": s.billable_model_source,
+                "usage_source": s.usage_source,
                 "file": s.file,
                 "bucket": s.bucket,
                 "user_prompts": s.user_prompts,
@@ -438,13 +637,16 @@ def build_rows_for_model(sessions: list[SessionStats], model_totals: dict[str, f
                 "tool_calls": s.tool_calls,
                 "function_outputs": s.function_outputs,
                 "input_tokens": s.final_input,
+                "cache_read_input_tokens": s.final_cached,
                 "cached_input_tokens": s.final_cached,
+                "cache_creation_input_tokens": s.final_cache_creation,
                 "output_tokens": s.final_output,
                 "reasoning_output_tokens": s.final_reasoning,
-                "total_tokens": s.final_total,
+                "total_tokens": session_total_tokens or s.final_total,
                 "effective_input_10pct": eff,
                 "cache_hit_pct": chp,
                 "estimated_cost_usd": cost,
+                **session_cost,
                 "first_prompt_preview": shorten(s.first_prompt, 280),
             }
         )
@@ -452,9 +654,31 @@ def build_rows_for_model(sessions: list[SessionStats], model_totals: dict[str, f
             weff = w.input_delta + 0.1 * w.cached_delta
             wcost = weff * cost_per_eff
             wchp = safe_div(w.cached_delta, w.input_delta + w.cached_delta) * 100.0
+            prompt_cost = derive_cost(
+                pricing_table,
+                s.billable_model,
+                input_tokens=w.input_delta,
+                cache_read_tokens=w.cached_delta,
+                cache_creation_tokens=w.cache_creation_delta,
+                output_tokens=w.output_delta,
+                input_includes_cache=s.model == "codex",
+            )
+            prompt_total_tokens = raw_total_tokens(
+                s.model,
+                input_tokens=w.input_delta,
+                cache_read_tokens=w.cached_delta,
+                cache_creation_tokens=w.cache_creation_delta,
+                output_tokens=w.output_delta,
+                reasoning_tokens=w.reasoning_delta,
+                provider_total_tokens=w.total_delta,
+            )
             prompt_rows.append(
                 {
                     "model": s.model,
+                    "provider": s.provider,
+                    "billable_model": s.billable_model,
+                    "billable_model_source": s.billable_model_source,
+                    "usage_source": s.usage_source,
                     "file": s.file,
                     "bucket": s.bucket,
                     "prompt_index": w.prompt_index,
@@ -464,16 +688,70 @@ def build_rows_for_model(sessions: list[SessionStats], model_totals: dict[str, f
                     "response_messages": w.response_messages,
                     "function_outputs": w.function_outputs,
                     "input_tokens_delta": w.input_delta,
+                    "cache_read_tokens_delta": w.cached_delta,
                     "cached_tokens_delta": w.cached_delta,
+                    "cache_creation_tokens_delta": w.cache_creation_delta,
                     "output_tokens_delta": w.output_delta,
                     "reasoning_tokens_delta": w.reasoning_delta,
-                    "total_tokens_delta": w.total_delta,
+                    "total_tokens_delta": prompt_total_tokens or w.total_delta,
                     "effective_input_10pct": weff,
                     "cache_hit_pct": wchp,
                     "estimated_cost_usd": wcost,
+                    **prompt_cost,
                 }
             )
-    return session_rows, prompt_rows
+            prompt_total_cost = prompt_cost["derived_total_cost_usd"]
+            session_total_cost = session_cost["derived_total_cost_usd"]
+
+            for dimension, counts in (
+                ("function_name", w.function_name_counts),
+                ("shell_verb", w.shell_verb_counts),
+            ):
+                total_calls = sum(counts.values())
+                if not total_calls:
+                    continue
+                for name, calls in counts.items():
+                    share = safe_div(calls, total_calls)
+                    attribution_rows.append(
+                        {
+                            "model": s.model,
+                            "provider": s.provider,
+                            "billable_model": s.billable_model,
+                            "billable_model_source": s.billable_model_source,
+                            "usage_source": s.usage_source,
+                            "file": s.file,
+                            "bucket": s.bucket,
+                            "prompt_index": w.prompt_index,
+                            "dimension": dimension,
+                            "name": name,
+                            "calls": calls,
+                            "prompt_input_tokens": w.input_delta,
+                            "prompt_cache_read_tokens": w.cached_delta,
+                            "prompt_cache_creation_tokens": w.cache_creation_delta,
+                            "prompt_output_tokens": w.output_delta,
+                            "prompt_reasoning_tokens": w.reasoning_delta,
+                            "prompt_total_tokens": prompt_total_tokens or w.total_delta,
+                            "session_input_tokens": s.final_input,
+                            "session_cache_read_tokens": s.final_cached,
+                            "session_cache_creation_tokens": s.final_cache_creation,
+                            "session_output_tokens": s.final_output,
+                            "session_reasoning_tokens": s.final_reasoning,
+                            "session_total_tokens": session_total_tokens or s.final_total,
+                            "prompt_derived_total_cost_usd": prompt_total_cost,
+                            "session_derived_total_cost_usd": session_total_cost,
+                            "allocated_input_tokens": w.input_delta * share,
+                            "allocated_cache_read_tokens": w.cached_delta * share,
+                            "allocated_cache_creation_tokens": w.cache_creation_delta * share,
+                            "allocated_output_tokens": w.output_delta * share,
+                            "allocated_reasoning_tokens": w.reasoning_delta * share,
+                            "allocated_total_tokens": (prompt_total_tokens or w.total_delta) * share,
+                            "allocated_total_cost_usd": prompt_total_cost * share if prompt_total_cost is not None else None,
+                            "call_share_pct": share * 100.0,
+                            "allocation_method": "prompt_window_even_split",
+                            "pricing_missing": prompt_cost["pricing_missing"],
+                        }
+                    )
+    return session_rows, prompt_rows, attribution_rows
 
 
 def bucket_view(session_rows: list[dict[str, Any]], prompt_rows: list[dict[str, Any]], bucket_name: str) -> dict[str, Any]:
@@ -490,11 +768,14 @@ def bucket_view(session_rows: list[dict[str, Any]], prompt_rows: list[dict[str, 
 
     inp = total("input_tokens")
     cache = total("cached_input_tokens")
+    cache_creation = total("cache_creation_input_tokens")
     return {
         "session_count": len(b_sessions),
         "totals": {
             "input_tokens": int(inp),
             "cached_input_tokens": int(cache),
+            "cache_read_input_tokens": int(cache),
+            "cache_creation_input_tokens": int(cache_creation),
             "output_tokens": int(total("output_tokens")),
             "reasoning_output_tokens": int(total("reasoning_output_tokens")),
             "total_tokens": int(total("total_tokens")),
@@ -606,17 +887,19 @@ def source_shares(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def build_report(out_dir: Path, audit_path: Path, codex_dir: Path, claude_dir: Path) -> dict[str, Any]:
     model_totals = load_model_totals(audit_path)
+    pricing_table = load_pricing_table(None)
     repeat_breakdown = load_repeat_breakdown(audit_path)
 
     codex_sessions = [s for fp in sorted(codex_dir.rglob("*.jsonl")) if (s := parse_codex_session(fp))]
     claude_sessions = [s for fp in sorted(claude_dir.rglob("*.jsonl")) if (s := parse_claude_session(fp))]
 
-    codex_session_rows, codex_prompt_rows = build_rows_for_model(codex_sessions, model_totals["codex"])
-    claude_session_rows, claude_prompt_rows = build_rows_for_model(claude_sessions, model_totals["claude"])
+    codex_session_rows, codex_prompt_rows, codex_attribution_rows = build_rows_for_model(codex_sessions, model_totals["codex"], pricing_table)
+    claude_session_rows, claude_prompt_rows, claude_attribution_rows = build_rows_for_model(claude_sessions, model_totals["claude"], pricing_table)
 
     all_sessions = codex_sessions + claude_sessions
     all_session_rows = codex_session_rows + claude_session_rows
     all_prompt_rows = codex_prompt_rows + claude_prompt_rows
+    all_attribution_rows = codex_attribution_rows + claude_attribution_rows
 
     codex_section = section_from_rows("codex", codex_sessions, codex_session_rows, codex_prompt_rows)
     claude_section = section_from_rows("claude", claude_sessions, claude_session_rows, claude_prompt_rows)
@@ -636,6 +919,7 @@ def build_report(out_dir: Path, audit_path: Path, codex_dir: Path, claude_dir: P
                 "method": "proportional-to-ccusage",
                 "effective_formula": "input_tokens + 0.1 * cached_input_tokens",
                 "model_totals": model_totals,
+                "pricing_source": DEFAULT_PRICING_URL,
             },
         },
         "combined": combined_section,
@@ -671,6 +955,7 @@ def build_report(out_dir: Path, audit_path: Path, codex_dir: Path, claude_dir: P
 
     write_csv(out_dir / "planning-vs-execution-sessions.csv", all_session_rows)
     write_csv(out_dir / "planning-vs-execution-prompts.csv", all_prompt_rows)
+    write_csv(out_dir / "planning-vs-execution-tool-attribution.csv", all_attribution_rows)
 
     tool_rows: list[dict[str, Any]] = []
     for sec_name, sec in [("combined", combined_section), ("codex", codex_section), ("claude", claude_section)]:

@@ -12,6 +12,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -36,6 +37,21 @@ def to_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def to_optional_float(value: Any) -> float | None:
+    try:
+        if value in ("", None):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def to_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y"}
 
 
 def normalize_preview(text: str, limit: int = 160) -> str:
@@ -212,6 +228,10 @@ def build_session_events(rows: list[dict[str, str]], token: str, distinct_id: st
         row_id = insert_id(report_date, "usage_session", canonical_key)
         props = with_common(token, distinct_id, epoch, row_id, report_date, {
             "model": model,
+            "provider": row.get("provider", ""),
+            "billable_model": row.get("billable_model", ""),
+            "billable_model_source": row.get("billable_model_source", ""),
+            "usage_source": row.get("usage_source", ""),
             "bucket": bucket,
             "session_id": session_id,
             "session_file": session_file,
@@ -221,12 +241,22 @@ def build_session_events(rows: list[dict[str, str]], token: str, distinct_id: st
             "tool_calls": to_int(row.get("tool_calls")),
             "function_outputs": to_int(row.get("function_outputs")),
             "input_tokens": to_float(row.get("input_tokens")),
+            "cache_read_input_tokens": to_float(row.get("cache_read_input_tokens") or row.get("cached_input_tokens")),
             "cached_input_tokens": to_float(row.get("cached_input_tokens")),
+            "cache_creation_input_tokens": to_float(row.get("cache_creation_input_tokens")),
             "output_tokens": to_float(row.get("output_tokens")),
             "reasoning_output_tokens": to_float(row.get("reasoning_output_tokens")),
             "total_tokens": to_float(row.get("total_tokens")),
             "cache_hit_pct": to_float(row.get("cache_hit_pct")),
             "estimated_cost_usd": to_float(row.get("estimated_cost_usd")),
+            "derived_input_cost_usd": to_optional_float(row.get("derived_input_cost_usd")),
+            "derived_non_cache_input_cost_usd": to_optional_float(row.get("derived_non_cache_input_cost_usd")),
+            "derived_cache_read_cost_usd": to_optional_float(row.get("derived_cache_read_cost_usd")),
+            "derived_cache_creation_cost_usd": to_optional_float(row.get("derived_cache_creation_cost_usd")),
+            "derived_output_cost_usd": to_optional_float(row.get("derived_output_cost_usd")),
+            "derived_total_cost_usd": to_optional_float(row.get("derived_total_cost_usd")),
+            "pricing_missing": to_bool(row.get("pricing_missing")),
+            "pricing_source": row.get("pricing_source", ""),
             "first_prompt_preview": normalize_preview(row.get("first_prompt_preview", ""), 120),
         })
         events.append(ExportEvent("usage_session", "usage_session", row_id, props))
@@ -262,6 +292,10 @@ def build_prompt_events(
         )
         props = with_common(token, distinct_id, epoch, row_id, report_date, {
             "model": row.get("model", ""),
+            "provider": row.get("provider", ""),
+            "billable_model": row.get("billable_model", ""),
+            "billable_model_source": row.get("billable_model_source", ""),
+            "usage_source": row.get("usage_source", ""),
             "bucket": row.get("bucket", ""),
             "session_id": session_id,
             "session_file": row.get("file", ""),
@@ -274,12 +308,22 @@ def build_prompt_events(
             "response_messages": to_int(row.get("response_messages")),
             "function_outputs": to_int(row.get("function_outputs")),
             "input_tokens_delta": to_float(row.get("input_tokens_delta")),
+            "cache_read_tokens_delta": to_float(row.get("cache_read_tokens_delta") or row.get("cached_tokens_delta")),
             "cached_tokens_delta": to_float(row.get("cached_tokens_delta")),
+            "cache_creation_tokens_delta": to_float(row.get("cache_creation_tokens_delta")),
             "output_tokens_delta": to_float(row.get("output_tokens_delta")),
             "reasoning_tokens_delta": to_float(row.get("reasoning_tokens_delta")),
             "total_tokens_delta": to_float(row.get("total_tokens_delta")),
             "cache_hit_pct": to_float(row.get("cache_hit_pct")),
             "estimated_cost_usd": to_float(row.get("estimated_cost_usd")),
+            "derived_input_cost_usd": to_optional_float(row.get("derived_input_cost_usd")),
+            "derived_non_cache_input_cost_usd": to_optional_float(row.get("derived_non_cache_input_cost_usd")),
+            "derived_cache_read_cost_usd": to_optional_float(row.get("derived_cache_read_cost_usd")),
+            "derived_cache_creation_cost_usd": to_optional_float(row.get("derived_cache_creation_cost_usd")),
+            "derived_output_cost_usd": to_optional_float(row.get("derived_output_cost_usd")),
+            "derived_total_cost_usd": to_optional_float(row.get("derived_total_cost_usd")),
+            "pricing_missing": to_bool(row.get("pricing_missing")),
+            "pricing_source": row.get("pricing_source", ""),
         })
         events.append(ExportEvent("usage_prompt", "usage_prompt", row_id, props))
     return events, skipped
@@ -308,6 +352,58 @@ def build_tool_events(rows: list[dict[str, str]], token: str, distinct_id: str, 
             "projected_cost_share_pct": to_float(row.get("projected_cost_share_pct")),
         })
         events.append(ExportEvent("usage_tool_breakdown", "usage_tool_breakdown", row_id, props))
+    return events
+
+
+def build_tool_attribution_events(rows: list[dict[str, str]], token: str, distinct_id: str, epoch: int, report_date: str) -> list[ExportEvent]:
+    events: list[ExportEvent] = []
+    for row in rows:
+        session_id = session_identity(row.get("file", ""))
+        prompt_index = to_int(row.get("prompt_index"))
+        dimension = row.get("dimension", "")
+        name = row.get("name", "")
+        canonical_key = f"{row.get('model','')}:{row.get('bucket','')}:{session_id}:{prompt_index}:{dimension}:{name}"
+        row_id = insert_id(report_date, "usage_tool_attribution", canonical_key)
+        props = with_common(token, distinct_id, epoch, row_id, report_date, {
+            "model": row.get("model", ""),
+            "provider": row.get("provider", ""),
+            "billable_model": row.get("billable_model", ""),
+            "billable_model_source": row.get("billable_model_source", ""),
+            "usage_source": row.get("usage_source", ""),
+            "bucket": row.get("bucket", ""),
+            "session_id": session_id,
+            "session_file": row.get("file", ""),
+            "prompt_index": prompt_index,
+            "dimension": dimension,
+            "name": name,
+            "canonical_key": canonical_key,
+            "calls": to_int(row.get("calls")),
+            "prompt_input_tokens": to_float(row.get("prompt_input_tokens")),
+            "prompt_cache_read_tokens": to_float(row.get("prompt_cache_read_tokens")),
+            "prompt_cache_creation_tokens": to_float(row.get("prompt_cache_creation_tokens")),
+            "prompt_output_tokens": to_float(row.get("prompt_output_tokens")),
+            "prompt_reasoning_tokens": to_float(row.get("prompt_reasoning_tokens")),
+            "prompt_total_tokens": to_float(row.get("prompt_total_tokens")),
+            "session_input_tokens": to_float(row.get("session_input_tokens")),
+            "session_cache_read_tokens": to_float(row.get("session_cache_read_tokens")),
+            "session_cache_creation_tokens": to_float(row.get("session_cache_creation_tokens")),
+            "session_output_tokens": to_float(row.get("session_output_tokens")),
+            "session_reasoning_tokens": to_float(row.get("session_reasoning_tokens")),
+            "session_total_tokens": to_float(row.get("session_total_tokens")),
+            "prompt_derived_total_cost_usd": to_optional_float(row.get("prompt_derived_total_cost_usd")),
+            "session_derived_total_cost_usd": to_optional_float(row.get("session_derived_total_cost_usd")),
+            "allocated_input_tokens": to_float(row.get("allocated_input_tokens")),
+            "allocated_cache_read_tokens": to_float(row.get("allocated_cache_read_tokens")),
+            "allocated_cache_creation_tokens": to_float(row.get("allocated_cache_creation_tokens")),
+            "allocated_output_tokens": to_float(row.get("allocated_output_tokens")),
+            "allocated_reasoning_tokens": to_float(row.get("allocated_reasoning_tokens")),
+            "allocated_total_tokens": to_float(row.get("allocated_total_tokens")),
+            "allocated_total_cost_usd": to_optional_float(row.get("allocated_total_cost_usd")),
+            "call_share_pct": to_float(row.get("call_share_pct")),
+            "allocation_method": row.get("allocation_method", "prompt_window_even_split"),
+            "pricing_missing": to_bool(row.get("pricing_missing")),
+        })
+        events.append(ExportEvent("usage_tool_attribution", "usage_tool_attribution", row_id, props))
     return events
 
 
@@ -374,9 +470,19 @@ def auth_header() -> str:
     return "Basic " + base64.b64encode(raw).decode("ascii")
 
 
+def import_url(endpoint: str) -> str:
+    parsed = urllib.parse.urlparse(endpoint)
+    query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
+    query["strict"] = "1"
+    project_id = os.getenv("MIXPANEL_PROJECT_ID", "")
+    if project_id:
+        query["project_id"] = project_id
+    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
+
+
 def send_import_batch(endpoint: str, headers: dict[str, str], batch: list[dict[str, Any]]) -> None:
     body = json.dumps(batch).encode("utf-8")
-    request = urllib.request.Request(f"{endpoint}?strict=1", data=body, headers=headers, method="POST")
+    request = urllib.request.Request(import_url(endpoint), data=body, headers=headers, method="POST")
     with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
         payload = response.read().decode("utf-8", errors="replace").strip()
         if response.status >= 400:
@@ -403,6 +509,9 @@ def emit_batches(
         batch = rows[idx : idx + batch_size]
         try:
             send_import_batch(endpoint, headers, batch)
+        except urllib.error.HTTPError as exc:
+            payload = exc.read().decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"Mixpanel import failed status={exc.code} body={payload}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"Network error while sending Mixpanel batch: {exc}") from exc
         sent += len(batch)
@@ -422,6 +531,8 @@ def build_all_events(
     sessions = read_csv(input_root / "reports/planning-vs-execution-sessions.csv")
     prompts = read_csv(input_root / "reports/planning-vs-execution-prompts.csv")
     tools = read_csv(input_root / "reports/planning-vs-execution-tool-breakdown.csv")
+    attribution_path = input_root / "reports/planning-vs-execution-tool-attribution.csv"
+    tool_attribution = read_csv(attribution_path) if attribution_path.exists() else []
 
     epoch = report_epoch(report_date)
     families: dict[str, list[ExportEvent]] = {}
@@ -434,6 +545,7 @@ def build_all_events(
     )
     families["usage_prompt"] = prompt_events
     families["usage_tool_breakdown"] = build_tool_events(tools, token, distinct_id, epoch, report_date)
+    families["usage_tool_attribution"] = build_tool_attribution_events(tool_attribution, token, distinct_id, epoch, report_date)
     families["usage_cache_driver"] = build_cache_driver_events(report, audit, token, distinct_id, epoch, report_date)
     if prompt_skipped:
         capped["usage_prompt_prompt_hash_cap"] = prompt_skipped
@@ -513,7 +625,7 @@ def main(argv: list[str] | None = None) -> int:
         duplicate_counts[family] = dupes
 
     ordered = []
-    for family in ("usage_daily_rollup", "usage_session", "usage_prompt", "usage_tool_breakdown", "usage_cache_driver"):
+    for family in ("usage_daily_rollup", "usage_session", "usage_prompt", "usage_tool_breakdown", "usage_tool_attribution", "usage_cache_driver"):
         ordered.extend(to_send.get(family, []))
 
     try:
