@@ -10,6 +10,7 @@ Board name: `Usage Cost Ops`
 - `usage_session`
 - `usage_prompt`
 - `usage_tool_attribution`
+- `usage_request_tool_attribution`
 - `usage_tool_breakdown`
 - `usage_cache_driver`
 
@@ -45,6 +46,7 @@ Board name: `Usage Cost Ops`
 - Session table: event `usage_session`, properties `session_id`, `bucket`, `provider`, `billable_model`; metrics sum `derived_total_cost_usd`, sum `total_tokens`, sum `tool_calls`.
 - Prompt table: event `usage_prompt`, properties `session_id`, `prompt_index`, `bucket`, `provider`, `billable_model`; metrics sum `derived_total_cost_usd`, sum `total_tokens_delta`, sum `tool_calls`.
 - Tool attribution table: event `usage_tool_attribution`, properties `session_id`, `prompt_index`, `dimension`, `name`; metrics sum `calls`, sum `allocated_total_cost_usd`, sum `allocated_total_tokens`.
+- Request command cost table: event `usage_request_tool_attribution`, properties `task_label`, `request_subpattern`, `session_id`, `dimension`, `name`; metrics sum `calls`, sum `allocated_total_cost_usd`, sum `allocated_total_tokens`.
 
 ## Notes
 
@@ -55,3 +57,4 @@ Board name: `Usage Cost Ops`
 - `derived_*_cost_usd` fields are calculated from LiteLLM-style pricing rows when available.
 - Missing pricing emits null derived costs with `pricing_missing = true`.
 - `usage_tool_attribution` uses `allocation_method = prompt_window_even_split`; these are allocation estimates, not exact provider billing records.
+- `usage_request_tool_attribution` uses the same allocation method and enriches rows with deterministic request labels from nearby prompt/session context.

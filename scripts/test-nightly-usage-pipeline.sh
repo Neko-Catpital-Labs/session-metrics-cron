@@ -41,6 +41,7 @@ required_families = {
     "usage_request_cache_source",
     "usage_tool_breakdown",
     "usage_tool_attribution",
+    "usage_request_tool_attribution",
     "usage_cache_driver",
 }
 families = summary.get("families", {})
@@ -49,6 +50,10 @@ if missing:
     raise SystemExit(f"Missing families in summary: {missing}")
 if summary.get("total_events_after_dedupe", 0) <= 0:
     raise SystemExit("Expected > 0 events in dry-run summary")
+if families.get("usage_request_cache_diagnosis") != families.get("usage_prompt"):
+    raise SystemExit("Expected request diagnosis count to match prompt count")
+if families.get("usage_request_tool_attribution") != families.get("usage_tool_attribution"):
+    raise SystemExit("Expected request tool attribution count to match tool attribution count")
 print("OK: nightly usage dry-run summary includes all event families")
 print("event_counts", json.dumps(families, sort_keys=True))
 PY

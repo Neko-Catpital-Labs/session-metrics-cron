@@ -9,6 +9,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -57,6 +58,13 @@ def to_bool(value: Any) -> bool:
 def normalize_preview(text: str, limit: int = 160) -> str:
     text = " ".join(text.split())
     return text[:limit]
+
+
+def normalize_label(text: str, limit: int = 72) -> str:
+    text = " ".join(text.split())
+    text = re.sub(r"^#+\s*", "", text).strip(" :-#`'\"")
+    text = re.sub(r"[^A-Za-z0-9]+", "_", text.lower()).strip("_")
+    return text[:limit].strip("_") or "uncategorized"
 
 
 def digest_text(text: str) -> str:
@@ -280,6 +288,7 @@ def build_session_events(rows: list[dict[str, str]], token: str, distinct_id: st
             "derived_total_cost_usd": to_optional_float(row.get("derived_total_cost_usd")),
             "pricing_missing": to_bool(row.get("pricing_missing")),
             "pricing_source": row.get("pricing_source", ""),
+            "session_cwd": row.get("session_cwd", ""),
             "first_prompt_preview": normalize_preview(row.get("first_prompt_preview", ""), 120),
         })
         events.append(ExportEvent("usage_session", "usage_session", row_id, props))
@@ -329,6 +338,10 @@ def build_prompt_events(
             "prompt_index": prompt_index,
             "prompt_hash": preview_hash,
             "prompt_preview": normalize_preview(preview),
+            "session_cwd": row.get("session_cwd", ""),
+            "previous_prompt_preview": normalize_preview(row.get("previous_prompt_preview", ""), 160),
+            "first_prompt_preview": normalize_preview(row.get("first_prompt_preview", ""), 160),
+            "final_answer_preview": normalize_preview(row.get("final_answer_preview", ""), 160),
             "canonical_key": canonical_key,
             "tool_calls": to_int(row.get("tool_calls")),
             "agent_messages": to_int(row.get("agent_messages")),
@@ -365,13 +378,96 @@ def classify_request_pattern(preview: str) -> str:
         return "implement_plan"
     if "[upstream task:" in lower:
         return "upstream_task_handoff"
-    if any(marker in lower for marker in ("auto-stamp", "ci", "rebase", "workflow", "mergify")):
+    if "auto-stamp" in lower or re.search(r"\b(ci|rebase|workflow|mergify)\b", lower):
         return "auto_stamp_ci_loop"
     if any(marker in lower for marker in ("another worktree", "worktree", "ssh machine", "ssh machines")):
         return "worktree_ssh_delegation"
     if any(marker in lower for marker in ("keep going", "continue fixing", "fix ci", "run ./run.sh", "root cause", "repro script")):
         return "run_fix_repro_loop"
     return "other"
+
+
+def classify_request_subpattern(preview: str, pattern: str) -> str:
+    lower = " ".join(preview.split()).lower()
+    checks = (
+        ("release_packaging", (r"\brelease\b", r"\bpackage\b", r"\bversion\b", r"\bchangelog\b")),
+        ("dependency_setup", (r"\bdependency\b", r"\bdependencies\b", r"\binstall\b", r"\bpnpm\b", r"\bnpm\b", r"\bpip\b", r"\bbundler\b")),
+        ("pr_review", (r"\breview\b", r"\bpr\b", r"\bpull request\b")),
+        ("invoker_plan_submission", (r"\binvoker\b", r"\bplan-to-invoker\b", r"\bsubmit to invoker\b")),
+        ("ui_terminal_visual", (r"\bterminal\b", r"\bscreenshot\b", r"\bvisual\b", r"\bplaywright\b", r"\bui\b")),
+        ("git_branch_stack", (r"\bgit\b", r"\bbranch\b", r"\bstack\b", r"\bmerge\b", r"\brebase\b")),
+        ("debug_repro", (r"\brepro\b", r"\broot cause\b", r"\bdebug\b", r"\binvestigate\b")),
+        ("test_ci_failure", (r"\bci\b", r"\btest failure\b", r"\bfailing test\b", r"\bmake test\b", r"\bpytest\b")),
+    )
+    for label, patterns in checks:
+        if any(re.search(expr, lower) for expr in patterns):
+            return label
+    if pattern in {"auto_stamp_ci_loop", "run_fix_repro_loop"}:
+        return "test_ci_failure" if re.search(r"\bci\b|\btest\b", lower) else "debug_repro"
+    if pattern == "worktree_ssh_delegation":
+        return "git_branch_stack"
+    return "uncategorized"
+
+
+def first_markdown_heading(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            candidate = stripped.lstrip("#").strip()
+            if candidate:
+                return candidate
+    return ""
+
+
+def first_meaningful_line(text: str) -> str:
+    for line in text.splitlines():
+        candidate = line.strip(" -#`:\t")
+        if not candidate:
+            continue
+        lower = candidate.lower()
+        if lower.startswith(("<environment_context>", "summary", "key changes", "tests and validation", "assumptions")):
+            continue
+        if len(candidate) > 3:
+            return candidate
+    return ""
+
+
+def cwd_label(cwd: str) -> str:
+    if not cwd:
+        return ""
+    path = Path(cwd)
+    parts = [part for part in path.parts if part and part not in {"/", "Users", "edbertchan", ".invoker", "worktrees", "merge-clones"}]
+    if not parts:
+        return path.name
+    return parts[-1]
+
+
+def derive_task_label(row: dict[str, str], pattern: str) -> tuple[str, str, str]:
+    preview = row.get("prompt_preview", "")
+    previous = row.get("previous_prompt_preview", "")
+    first = row.get("first_prompt_preview", "")
+    final = row.get("final_answer_preview", "")
+    cwd = row.get("session_cwd", "")
+
+    candidates: list[tuple[str, str, str]] = []
+    if pattern == "implement_plan" and previous:
+        candidates.append((previous, "previous_prompt", "high"))
+    if first:
+        candidates.append((first, "first_prompt", "high" if pattern != "other" else "medium"))
+    if previous:
+        candidates.append((previous, "previous_prompt", "medium"))
+    if cwd:
+        candidates.append((cwd_label(cwd), "session_cwd", "medium"))
+    if final:
+        candidates.append((final, "final_answer", "low"))
+    candidates.append((preview, "prompt_preview", "low"))
+
+    for text, source, confidence in candidates:
+        label_text = first_markdown_heading(text) or first_meaningful_line(text) or text
+        label = normalize_label(label_text)
+        if label and label not in {"implement_the_plan", "other", "continue", "keep_going"}:
+            return label, source, confidence
+    return "uncategorized", "prompt_preview", "low"
 
 
 def repeated_value_rows(audit: dict[str, Any], model: str) -> list[dict[str, Any]]:
@@ -432,6 +528,8 @@ def request_base_payload(row: dict[str, str], report_date: str) -> tuple[str, st
     canonical_key = f"{row.get('model','')}:{row.get('bucket','')}:{session_id}:{prompt_index}"
     event_date = row_report_date(row, report_date)
     pattern = classify_request_pattern(preview)
+    subpattern = classify_request_subpattern(preview, pattern)
+    task_label, task_label_source, task_label_confidence = derive_task_label(row, pattern)
     payload = {
         "model": row.get("model", ""),
         "provider": row.get("provider", ""),
@@ -445,8 +543,16 @@ def request_base_payload(row: dict[str, str], report_date: str) -> tuple[str, st
         "prompt_index": prompt_index,
         "prompt_hash": digest_text(preview),
         "prompt_preview": normalize_preview(preview),
+        "session_cwd": row.get("session_cwd", ""),
+        "previous_prompt_preview": normalize_preview(row.get("previous_prompt_preview", ""), 160),
+        "first_prompt_preview": normalize_preview(row.get("first_prompt_preview", ""), 160),
+        "final_answer_preview": normalize_preview(row.get("final_answer_preview", ""), 160),
         "canonical_key": canonical_key,
         "request_pattern": pattern,
+        "request_subpattern": subpattern,
+        "task_label": task_label,
+        "task_label_source": task_label_source,
+        "task_label_confidence": task_label_confidence,
         "tool_calls": to_int(row.get("tool_calls")),
         "agent_messages": to_int(row.get("agent_messages")),
         "response_messages": to_int(row.get("response_messages")),
@@ -468,7 +574,7 @@ def request_base_payload(row: dict[str, str], report_date: str) -> tuple[str, st
         "derived_total_cost_usd": to_optional_float(row.get("derived_total_cost_usd")),
         "pricing_missing": to_bool(row.get("pricing_missing")),
         "pricing_source": row.get("pricing_source", ""),
-        "diagnosis_version": os.getenv("USAGE_DIAGNOSIS_VERSION", "request_cache_sources_v2"),
+        "diagnosis_version": os.getenv("USAGE_DIAGNOSIS_VERSION", "request_cache_sources_v3"),
         "source_attribution_method": "provider_metric_exact_source_estimated",
     }
     return canonical_key, event_date, prompt_index, pattern, payload
@@ -654,6 +760,80 @@ def build_tool_attribution_events(rows: list[dict[str, str]], token: str, distin
     return events
 
 
+def build_request_tool_attribution_events(
+    rows: list[dict[str, str]],
+    prompt_rows: list[dict[str, str]],
+    token: str,
+    distinct_id: str,
+    report_date: str,
+) -> list[ExportEvent]:
+    events: list[ExportEvent] = []
+    prompt_context: dict[tuple[str, str, str, int], dict[str, Any]] = {}
+    for prompt in prompt_rows:
+        canonical_key, event_date, prompt_index, _pattern, payload = request_base_payload(prompt, report_date)
+        if is_after_report_date(event_date, report_date):
+            continue
+        prompt_context[(prompt.get("model", ""), prompt.get("bucket", ""), session_identity(prompt.get("file", "")), prompt_index)] = {
+            **payload,
+            "request_canonical_key": canonical_key,
+        }
+
+    for row in rows:
+        session_id = session_identity(row.get("file", ""))
+        prompt_index = to_int(row.get("prompt_index"))
+        dimension = row.get("dimension", "")
+        name = row.get("name", "")
+        event_date = row_report_date(row, report_date)
+        if is_after_report_date(event_date, report_date):
+            continue
+        key = (row.get("model", ""), row.get("bucket", ""), session_id, prompt_index)
+        context = prompt_context.get(key, {})
+        canonical_key = f"{row.get('model','')}:{row.get('bucket','')}:{session_id}:{prompt_index}:{dimension}:{name}"
+        diagnosis_version = context.get("diagnosis_version", os.getenv("USAGE_DIAGNOSIS_VERSION", "request_cache_sources_v3"))
+        row_id = insert_id(event_date, "usage_request_tool_attribution", f"{canonical_key}:{diagnosis_version}")
+        props = with_common(token, distinct_id, report_epoch(event_date), row_id, event_date, {
+            "model": row.get("model", ""),
+            "provider": row.get("provider", ""),
+            "billable_model": row.get("billable_model", ""),
+            "billable_model_source": row.get("billable_model_source", ""),
+            "usage_source": row.get("usage_source", ""),
+            "bucket": row.get("bucket", ""),
+            "batch_report_date": report_date,
+            "session_id": session_id,
+            "session_file": row.get("file", ""),
+            "prompt_index": prompt_index,
+            "prompt_preview": context.get("prompt_preview", normalize_preview(row.get("prompt_preview", ""))),
+            "request_pattern": context.get("request_pattern", "other"),
+            "request_subpattern": context.get("request_subpattern", "uncategorized"),
+            "task_label": context.get("task_label", "uncategorized"),
+            "task_label_source": context.get("task_label_source", ""),
+            "task_label_confidence": context.get("task_label_confidence", "low"),
+            "diagnosis_version": diagnosis_version,
+            "dimension": dimension,
+            "name": name,
+            "canonical_key": canonical_key,
+            "request_canonical_key": context.get("request_canonical_key", ""),
+            "calls": to_int(row.get("calls")),
+            "prompt_input_tokens": to_float(row.get("prompt_input_tokens")),
+            "prompt_cache_read_tokens": to_float(row.get("prompt_cache_read_tokens")),
+            "prompt_cache_creation_tokens": to_float(row.get("prompt_cache_creation_tokens")),
+            "prompt_output_tokens": to_float(row.get("prompt_output_tokens")),
+            "prompt_reasoning_tokens": to_float(row.get("prompt_reasoning_tokens")),
+            "prompt_total_tokens": to_float(row.get("prompt_total_tokens")),
+            "prompt_derived_total_cost_usd": to_optional_float(row.get("prompt_derived_total_cost_usd")),
+            "allocated_input_tokens": to_float(row.get("allocated_input_tokens")),
+            "allocated_cache_read_tokens": to_float(row.get("allocated_cache_read_tokens")),
+            "allocated_cache_creation_tokens": to_float(row.get("allocated_cache_creation_tokens")),
+            "allocated_output_tokens": to_float(row.get("allocated_output_tokens")),
+            "allocated_reasoning_tokens": to_float(row.get("allocated_reasoning_tokens")),
+            "allocated_total_tokens": to_float(row.get("allocated_total_tokens")),
+            "allocated_total_cost_usd": to_optional_float(row.get("allocated_total_cost_usd")),
+            "allocation_method": row.get("allocation_method", "prompt_window_even_split"),
+        })
+        events.append(ExportEvent("usage_request_tool_attribution", "usage_request_tool_attribution", row_id, props))
+    return events
+
+
 def build_cache_driver_events(report: dict[str, Any], audit: dict[str, Any], token: str, distinct_id: str, epoch: int, report_date: str) -> list[ExportEvent]:
     events: list[ExportEvent] = []
     drivers = report.get("cache_hit_drivers", {}) or {}
@@ -802,6 +982,9 @@ def build_all_events(
     families["usage_request_cache_source"] = source_events
     families["usage_tool_breakdown"] = build_tool_events(tools, token, distinct_id, epoch, report_date)
     families["usage_tool_attribution"] = build_tool_attribution_events(tool_attribution, token, distinct_id, epoch, report_date)
+    families["usage_request_tool_attribution"] = build_request_tool_attribution_events(
+        tool_attribution, prompts, token, distinct_id, report_date
+    )
     families["usage_cache_driver"] = build_cache_driver_events(report, audit, token, distinct_id, epoch, report_date)
     if prompt_skipped:
         capped["usage_prompt_prompt_hash_cap"] = prompt_skipped
@@ -899,6 +1082,7 @@ def main(argv: list[str] | None = None) -> int:
         "usage_request_cache_source",
         "usage_tool_breakdown",
         "usage_tool_attribution",
+        "usage_request_tool_attribution",
         "usage_cache_driver",
     ):
         ordered.extend(to_send.get(family, []))

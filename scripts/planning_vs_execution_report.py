@@ -45,6 +45,9 @@ DEFAULT_PRICING_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/mo
 class PromptWindow:
     prompt_index: int
     prompt_text: str
+    previous_prompt: str = ""
+    first_prompt: str = ""
+    final_answer: str = ""
     input_delta: int = 0
     cached_delta: int = 0
     cache_creation_delta: int = 0
@@ -79,6 +82,7 @@ class SessionStats:
     final_output: int = 0
     final_reasoning: int = 0
     final_total: int = 0
+    session_cwd: str = ""
     first_prompt: str = ""
     prompt_windows: list[PromptWindow] = field(default_factory=list)
     function_name_counts: Counter[str] = field(default_factory=Counter)
@@ -95,6 +99,29 @@ def none_if_missing(value: float | None) -> float | None:
 
 def shorten(text: str, n: int = 220) -> str:
     return " ".join(text.split())[:n]
+
+
+def assistant_text_from_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, dict):
+            if item.get("type") == "text" and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+    return "\n".join(part for part in parts if part.strip())
+
+
+def attach_prompt_context(windows: list[PromptWindow], first_prompt: str) -> None:
+    previous = ""
+    for window in windows:
+        window.previous_prompt = previous
+        window.first_prompt = first_prompt
+        previous = window.prompt_text
 
 
 def iso_date(value: Any) -> str:
@@ -348,6 +375,7 @@ def parse_codex_session(path: Path) -> SessionStats | None:
     billable_model = ""
     billable_model_source = ""
     session_date = ""
+    session_cwd = ""
 
     try:
         text = path.read_text(errors="ignore")
@@ -364,8 +392,12 @@ def parse_codex_session(path: Path) -> SessionStats | None:
         if not session_date:
             session_date = iso_date(obj.get("timestamp"))
         t = obj.get("type")
-        if t == "session_meta" and not session_date:
-            session_date = iso_date((obj.get("payload") or {}).get("timestamp"))
+        if t == "session_meta":
+            payload = obj.get("payload") or {}
+            if not session_date:
+                session_date = iso_date(payload.get("timestamp"))
+            if isinstance(payload.get("cwd"), str) and not session_cwd:
+                session_cwd = payload["cwd"]
         if t == "event_msg":
             payload = obj.get("payload") or {}
             ptype = payload.get("type")
@@ -378,6 +410,8 @@ def parse_codex_session(path: Path) -> SessionStats | None:
                 agent_message_count += 1
                 if current is not None:
                     current.agent_messages += 1
+                    if isinstance(payload.get("message"), str):
+                        current.final_answer = payload["message"]
             elif ptype == "token_count":
                 tt = ((payload.get("info") or {}).get("total_token_usage") or {})
                 if tt:
@@ -424,6 +458,9 @@ def parse_codex_session(path: Path) -> SessionStats | None:
             elif ptype == "message" and payload.get("role") in {"assistant", "agent"}:
                 if current is not None:
                     current.response_messages += 1
+                    text = assistant_text_from_content(payload.get("content"))
+                    if text:
+                        current.final_answer = text
 
     if current is not None:
         windows.append(current)
@@ -434,6 +471,7 @@ def parse_codex_session(path: Path) -> SessionStats | None:
     if not billable_model:
         billable_model, billable_model_source = default_billable_model("codex")
     bucket = "planning" if PLANNING_RE.search("\n".join(user_prompts)) else "execution"
+    attach_prompt_context(windows, user_prompts[0] if user_prompts else "")
     return SessionStats(
         model="codex",
         file=str(path),
@@ -452,6 +490,7 @@ def parse_codex_session(path: Path) -> SessionStats | None:
         final_output=final["output"],
         final_reasoning=final["reasoning"],
         final_total=final["total"],
+        session_cwd=session_cwd,
         first_prompt=user_prompts[0] if user_prompts else "",
         prompt_windows=windows,
         function_name_counts=fn_counts,
@@ -490,6 +529,7 @@ def parse_claude_session(path: Path) -> SessionStats | None:
     billable_model = ""
     billable_model_source = ""
     session_date = ""
+    session_cwd = ""
 
     try:
         text = path.read_text(errors="ignore")
@@ -505,6 +545,10 @@ def parse_claude_session(path: Path) -> SessionStats | None:
             continue
         if not session_date:
             session_date = iso_date(obj.get("timestamp"))
+        for cwd_key in ("cwd", "projectPath"):
+            candidate_cwd = obj.get(cwd_key)
+            if isinstance(candidate_cwd, str) and candidate_cwd.strip() and not session_cwd:
+                session_cwd = candidate_cwd
 
         typ = obj.get("type")
         if typ == "user":
@@ -527,6 +571,9 @@ def parse_claude_session(path: Path) -> SessionStats | None:
             if current is not None:
                 current.agent_messages += 1
                 current.response_messages += 1
+                text = assistant_text_from_content(msg.get("content"))
+                if text:
+                    current.final_answer = text
 
             uid = str(msg.get("id") or obj.get("uuid") or "")
             if uid and uid not in seen_usage_ids:
@@ -584,6 +631,7 @@ def parse_claude_session(path: Path) -> SessionStats | None:
     if not billable_model:
         billable_model, billable_model_source = default_billable_model("claude")
     bucket = "planning" if PLANNING_RE.search("\n".join(user_prompts)) else "execution"
+    attach_prompt_context(windows, user_prompts[0] if user_prompts else "")
     return SessionStats(
         model="claude",
         file=str(path),
@@ -603,6 +651,7 @@ def parse_claude_session(path: Path) -> SessionStats | None:
         final_output=fo,
         final_reasoning=fr,
         final_total=ft,
+        session_cwd=session_cwd,
         first_prompt=user_prompts[0] if user_prompts else "",
         prompt_windows=windows,
         function_name_counts=fn_counts,
@@ -670,6 +719,7 @@ def build_rows_for_model(
                 "cache_hit_pct": chp,
                 "estimated_cost_usd": cost,
                 **session_cost,
+                "session_cwd": s.session_cwd,
                 "first_prompt_preview": shorten(s.first_prompt, 280),
             }
         )
@@ -707,6 +757,10 @@ def build_rows_for_model(
                     "bucket": s.bucket,
                     "prompt_index": w.prompt_index,
                     "prompt_preview": shorten(w.prompt_text, 280),
+                    "session_cwd": s.session_cwd,
+                    "previous_prompt_preview": shorten(w.previous_prompt, 280),
+                    "first_prompt_preview": shorten(w.first_prompt, 280),
+                    "final_answer_preview": shorten(w.final_answer, 280),
                     "tool_calls": w.tool_calls,
                     "agent_messages": w.agent_messages,
                     "response_messages": w.response_messages,
@@ -747,6 +801,11 @@ def build_rows_for_model(
                             "session_date": s.session_date,
                             "bucket": s.bucket,
                             "prompt_index": w.prompt_index,
+                            "prompt_preview": shorten(w.prompt_text, 280),
+                            "session_cwd": s.session_cwd,
+                            "previous_prompt_preview": shorten(w.previous_prompt, 280),
+                            "first_prompt_preview": shorten(w.first_prompt, 280),
+                            "final_answer_preview": shorten(w.final_answer, 280),
                             "dimension": dimension,
                             "name": name,
                             "calls": calls,
