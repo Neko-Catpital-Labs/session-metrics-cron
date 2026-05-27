@@ -75,6 +75,76 @@ DEFAULT_TASK_CATEGORIZATION_CONFIG: dict[str, Any] = {
 }
 
 
+DEFAULT_REQUEST_PATTERN_CONFIG: dict[str, Any] = {
+    "version": "request_pattern_layers_v1",
+    "context": {
+        "fields": [
+            {"name": "prompt_preview", "weight": 1.0},
+            {"name": "previous_prompt_preview", "weight": 0.9},
+            {"name": "first_prompt_preview", "weight": 0.8},
+            {"name": "final_answer_preview", "weight": 0.4},
+            {"name": "session_cwd", "weight": 0.3},
+        ],
+    },
+    "layers": [
+        {
+            "id": "request_origin",
+            "default": "other",
+            "rules": [
+                {"id": "previous_agent_plan", "confidence": "high", "regex": ["a previous agent produced the plan below", "previous agent.*plan"]},
+                {"id": "implement_plan", "confidence": "high", "regex": ["^implement the plan", "implement.*plan"]},
+                {"id": "upstream_task_handoff", "confidence": "high", "regex": ["\\[upstream task:", "upstream task"]},
+                {"id": "auto_stamp_ci_loop", "confidence": "high", "regex": ["auto-stamp", "\\bmergify\\b", "\\bci\\b.*\\b(rebase|workflow|merge)\\b"]},
+                {"id": "worktree_ssh_delegation", "confidence": "high", "regex": ["another worktree", "\\bworktree\\b", "ssh machine", "ssh machines"]},
+                {"id": "run_fix_repro_loop", "confidence": "medium", "regex": ["keep going", "continue fixing", "fix ci", "run ./run.sh", "root cause", "repro script"]},
+            ],
+        },
+        {
+            "id": "request_domain",
+            "default": "uncategorized",
+            "continue_from": ["other"],
+            "rules": [
+                {"id": "pr_review", "confidence": "high", "regex": ["\\bpr\\b", "\\bpull request\\b", "\\breview\\b", "pr summary", "pr body"]},
+                {"id": "invoker_plan_submission", "confidence": "high", "regex": ["\\binvoker\\b", "plan-to-invoker", "submit to invoker", "workflow chain", "workflow submission"]},
+                {"id": "ui_terminal_visual", "confidence": "high", "regex": ["\\bui\\b", "terminal", "screenshot", "visual proof", "playwright", "embedded pty", "graph"]},
+                {"id": "dependency_setup", "confidence": "medium", "regex": ["\\binstall\\b", "\\bdependency\\b", "\\bdependencies\\b", "\\bpnpm\\b", "\\bnpm\\b", "\\bpip\\b", "\\bbundler\\b"]},
+                {"id": "git_branch_stack", "confidence": "high", "regex": ["\\bgit\\b", "\\bbranch\\b", "\\bstack\\b", "\\brebase\\b", "\\bmerge\\b", "upstream/master", "origin/master"]},
+                {"id": "release_packaging", "confidence": "medium", "regex": ["\\brelease\\b", "\\bpackage\\b", "\\bversion\\b", "changelog"]},
+                {"id": "test_ci_failure", "confidence": "high", "regex": ["\\bci\\b", "test failure", "failing test", "\\bpytest\\b", "make test", "build failed"]},
+                {"id": "debug_repro", "confidence": "high", "regex": ["\\brepro\\b", "root cause", "\\bdebug\\b", "\\binvestigate\\b", "failure analysis"]},
+            ],
+        },
+        {
+            "id": "request_leaf",
+            "default": "$current",
+            "continue_from": [
+                "previous_agent_plan",
+                "auto_stamp_ci_loop",
+                "upstream_task_handoff",
+                "implement_plan",
+                "worktree_ssh_delegation",
+                "run_fix_repro_loop",
+                "git_branch_stack",
+                "debug_repro",
+                "ui_terminal_visual",
+                "uncategorized",
+            ],
+            "rules": [
+                {"id": "previous_agent_plan_resume", "confidence": "high", "regex": ["fresh context", "carry the work through", "previous agent produced the plan below"]},
+                {"id": "experiment_proof", "confidence": "high", "regex": ["experiment proof", "proof artifact", "capture.*proof"]},
+                {"id": "workflow_recreate_rebase", "confidence": "high", "regex": ["recreate all workflows", "workflow.*rebase", "rebase.*workflow"]},
+                {"id": "master_branch_sync", "confidence": "high", "regex": ["master branch sync", "sync.*master", "upstream/master", "origin/master"]},
+                {"id": "failure_diagnosis", "confidence": "high", "regex": ["failure diagnosis", "root cause", "failure analysis", "diagnose.*fail"]},
+                {"id": "fix_with_agent_conflict_resolution", "confidence": "high", "regex": ["fix with agent", "agent conflict", "conflict resolution", "merge conflict"]},
+                {"id": "implementation_refactor", "confidence": "medium", "regex": ["\\bimplement\\b", "\\brefactor\\b", "code change", "make the change"]},
+                {"id": "cost_usage_analysis", "confidence": "high", "regex": ["cost usage", "usage metrics", "mixpanel", "token cost", "cost analysis"]},
+                {"id": "demo_video_visual_proof", "confidence": "high", "regex": ["demo video", "video proof", "visual proof", "playwright.*video"]},
+            ],
+        },
+    ],
+}
+
+
 def to_int(value: Any, default: int = 0) -> int:
     try:
         if value in ("", None):
@@ -236,6 +306,16 @@ class TaskClassification:
     task_type_config_version: str
 
 
+@dataclass
+class RequestPatternClassification:
+    request_pattern: str
+    request_pattern_path: str
+    request_pattern_depth: int
+    request_pattern_rule_id: str
+    request_pattern_confidence: str
+    request_pattern_config_version: str
+
+
 class TaskClassificationCache:
     def __init__(self, path: Path | None) -> None:
         self.path = path
@@ -384,6 +464,136 @@ def load_task_categorization_config(path_value: str = "") -> dict[str, Any]:
     if not path.exists():
         return json.loads(json.dumps(DEFAULT_TASK_CATEGORIZATION_CONFIG))
     return read_config_file(path)
+
+
+def load_request_pattern_config(path_value: str = "") -> dict[str, Any]:
+    if not path_value:
+        return json.loads(json.dumps(DEFAULT_REQUEST_PATTERN_CONFIG))
+    path = Path(path_value).expanduser()
+    if not path.exists():
+        return json.loads(json.dumps(DEFAULT_REQUEST_PATTERN_CONFIG))
+    return read_config_file(path)
+
+
+def request_pattern_context_fields(config: dict[str, Any], row: dict[str, str]) -> list[tuple[str, float, str]]:
+    field_specs = ((config.get("context", {}) or {}).get("fields", []) or [])
+    fields: list[tuple[str, float, str]] = []
+    for field in field_specs:
+        if not isinstance(field, dict):
+            continue
+        name = str(field.get("name") or "")
+        if name:
+            fields.append((name, to_float(field.get("weight"), 1.0), str(row.get(name, ""))))
+    if fields:
+        return fields
+    return [("prompt_preview", 1.0, str(row.get("prompt_preview", "")))]
+
+
+def validate_request_pattern_config(config: dict[str, Any]) -> None:
+    layers = config.get("layers", [])
+    if not isinstance(layers, list) or not layers:
+        raise RuntimeError("Request pattern config must define at least one layer.")
+
+    layer_ids: set[str] = set()
+    known_ids = {"$current"}
+    rule_ids: set[str] = set()
+    for layer in layers:
+        if not isinstance(layer, dict):
+            raise RuntimeError("Request pattern layers must be mappings.")
+        layer_id = str(layer.get("id") or "")
+        if not layer_id:
+            raise RuntimeError("Request pattern layer is missing id.")
+        if layer_id in layer_ids:
+            raise RuntimeError(f"Duplicate request pattern layer id: {layer_id}")
+        layer_ids.add(layer_id)
+        default_id = str(layer.get("default") or "")
+        if not default_id:
+            raise RuntimeError(f"Request pattern layer {layer_id} is missing default.")
+        known_ids.add(default_id)
+        rules = layer.get("rules", [])
+        if not isinstance(rules, list):
+            raise RuntimeError(f"Request pattern layer {layer_id} rules must be a list.")
+        for rule in rules:
+            if not isinstance(rule, dict):
+                raise RuntimeError("Request pattern rules must be mappings.")
+            rule_id = str(rule.get("id") or "")
+            if not rule_id:
+                raise RuntimeError(f"Request pattern layer {layer_id} has a rule missing id.")
+            if rule_id in rule_ids:
+                raise RuntimeError(f"Duplicate request pattern rule id: {rule_id}")
+            rule_ids.add(rule_id)
+            known_ids.add(rule_id)
+            regexes = rule.get("regex", [])
+            if not isinstance(regexes, list) or not regexes:
+                raise RuntimeError(f"Request pattern rule {rule_id} must define a non-empty regex list.")
+            for expr in regexes:
+                try:
+                    re.compile(str(expr), re.IGNORECASE)
+                except re.error as exc:
+                    raise RuntimeError(f"Invalid request pattern regex for {rule_id}: {expr}: {exc}") from exc
+
+    for layer in layers[1:]:
+        refs = layer.get("continue_from", [])
+        if refs is None:
+            refs = []
+        if not isinstance(refs, list):
+            raise RuntimeError(f"Request pattern layer {layer.get('id')} continue_from must be a list.")
+        for ref in refs:
+            if str(ref) not in known_ids:
+                raise RuntimeError(f"Request pattern layer {layer.get('id')} has unknown continue_from reference: {ref}")
+
+
+class RequestPatternCategorizer:
+    def __init__(self, config: dict[str, Any]) -> None:
+        validate_request_pattern_config(config)
+        self.config = config
+        self.version = str(config.get("version") or "unknown")
+
+    def classify_layer(self, layer: dict[str, Any], row: dict[str, str]) -> tuple[str, str, str]:
+        winner: tuple[float, str, str, str] | None = None
+        for rule_index, rule in enumerate(layer.get("rules", []) or []):
+            priority = to_float(rule.get("priority"), float(len(layer.get("rules", [])) - rule_index))
+            rule_id = str(rule.get("id") or "")
+            for field_name, weight, value in request_pattern_context_fields(self.config, row):
+                if not value:
+                    continue
+                for expr in rule.get("regex", []) or []:
+                    if re.search(str(expr), value, re.IGNORECASE):
+                        score = priority + weight
+                        if winner is None or score > winner[0]:
+                            winner = (score, rule_id, str(rule.get("confidence") or "medium"), f"{layer.get('id')}:{rule_id}:{field_name}")
+        if winner is None:
+            return str(layer.get("default") or "uncategorized"), "low", f"{layer.get('id')}:default"
+        _score, rule_id, confidence, reason = winner
+        return rule_id, confidence, reason
+
+    def classify(self, row: dict[str, str]) -> RequestPatternClassification:
+        path: list[str] = []
+        current = ""
+        rule_id = "default"
+        confidence = "low"
+        for index, layer in enumerate(self.config.get("layers", []) or []):
+            if index > 0:
+                refs = [str(item) for item in (layer.get("continue_from", []) or [])]
+                if refs and current not in refs:
+                    continue
+            result, confidence, rule_id = self.classify_layer(layer, row)
+            if result == "$current":
+                result = current or "uncategorized"
+            current = result
+            if not path or path[-1] != current:
+                path.append(current)
+        if not current:
+            current = "uncategorized"
+            path = [current]
+        return RequestPatternClassification(
+            request_pattern=current,
+            request_pattern_path="/".join(path),
+            request_pattern_depth=len(path),
+            request_pattern_rule_id=rule_id,
+            request_pattern_confidence=confidence,
+            request_pattern_config_version=self.version,
+        )
 
 
 def validate_task_categorization_config(config: dict[str, Any]) -> None:
@@ -786,46 +996,6 @@ def build_prompt_events(
     return events, skipped
 
 
-def classify_request_pattern(preview: str) -> str:
-    normalized = " ".join(preview.split())
-    lower = normalized.lower()
-    if "a previous agent produced the plan below" in lower:
-        return "previous_agent_plan"
-    if lower.startswith("implement the plan"):
-        return "implement_plan"
-    if "[upstream task:" in lower:
-        return "upstream_task_handoff"
-    if "auto-stamp" in lower or re.search(r"\b(ci|rebase|workflow|mergify)\b", lower):
-        return "auto_stamp_ci_loop"
-    if any(marker in lower for marker in ("another worktree", "worktree", "ssh machine", "ssh machines")):
-        return "worktree_ssh_delegation"
-    if any(marker in lower for marker in ("keep going", "continue fixing", "fix ci", "run ./run.sh", "root cause", "repro script")):
-        return "run_fix_repro_loop"
-    return "other"
-
-
-def classify_request_subpattern(preview: str, pattern: str) -> str:
-    lower = " ".join(preview.split()).lower()
-    checks = (
-        ("release_packaging", (r"\brelease\b", r"\bpackage\b", r"\bversion\b", r"\bchangelog\b")),
-        ("dependency_setup", (r"\bdependency\b", r"\bdependencies\b", r"\binstall\b", r"\bpnpm\b", r"\bnpm\b", r"\bpip\b", r"\bbundler\b")),
-        ("pr_review", (r"\breview\b", r"\bpr\b", r"\bpull request\b")),
-        ("invoker_plan_submission", (r"\binvoker\b", r"\bplan-to-invoker\b", r"\bsubmit to invoker\b")),
-        ("ui_terminal_visual", (r"\bterminal\b", r"\bscreenshot\b", r"\bvisual\b", r"\bplaywright\b", r"\bui\b")),
-        ("git_branch_stack", (r"\bgit\b", r"\bbranch\b", r"\bstack\b", r"\bmerge\b", r"\brebase\b")),
-        ("debug_repro", (r"\brepro\b", r"\broot cause\b", r"\bdebug\b", r"\binvestigate\b")),
-        ("test_ci_failure", (r"\bci\b", r"\btest failure\b", r"\bfailing test\b", r"\bmake test\b", r"\bpytest\b")),
-    )
-    for label, patterns in checks:
-        if any(re.search(expr, lower) for expr in patterns):
-            return label
-    if pattern in {"auto_stamp_ci_loop", "run_fix_repro_loop"}:
-        return "test_ci_failure" if re.search(r"\bci\b|\btest\b", lower) else "debug_repro"
-    if pattern == "worktree_ssh_delegation":
-        return "git_branch_stack"
-    return "uncategorized"
-
-
 def first_markdown_heading(text: str) -> str:
     for line in text.splitlines():
         stripped = line.strip()
@@ -898,10 +1068,16 @@ def repeated_value_rows(audit: dict[str, Any], model: str) -> list[dict[str, Any
 def pattern_source(model: str, pattern: str) -> str:
     prompt_context_patterns = {
         "previous_agent_plan",
+        "previous_agent_plan_resume",
         "implement_plan",
+        "implementation_refactor",
         "upstream_task_handoff",
         "worktree_ssh_delegation",
         "run_fix_repro_loop",
+        "failure_diagnosis",
+        "fix_with_agent_conflict_resolution",
+        "workflow_recreate_rebase",
+        "master_branch_sync",
     }
     if pattern not in prompt_context_patterns:
         return ""
@@ -942,6 +1118,7 @@ def request_base_payload(
     row: dict[str, str],
     report_date: str,
     task_categorizer: TaskCategorizer,
+    request_pattern_categorizer: RequestPatternCategorizer,
     include_task_type: bool = True,
 ) -> tuple[str, str, int, str, dict[str, Any]]:
     preview = row.get("prompt_preview", "")
@@ -949,8 +1126,8 @@ def request_base_payload(
     prompt_index = to_int(row.get("prompt_index"))
     canonical_key = f"{row.get('model','')}:{row.get('bucket','')}:{session_id}:{prompt_index}"
     event_date = row_report_date(row, report_date)
-    pattern = classify_request_pattern(preview)
-    subpattern = classify_request_subpattern(preview, pattern)
+    pattern_result = request_pattern_categorizer.classify(row)
+    pattern = pattern_result.request_pattern
     task_label, task_label_source, task_label_confidence = derive_task_label(row, pattern)
     payload = {
         "model": row.get("model", ""),
@@ -970,8 +1147,7 @@ def request_base_payload(
         "first_prompt_preview": normalize_preview(row.get("first_prompt_preview", ""), 160),
         "final_answer_preview": normalize_preview(row.get("final_answer_preview", ""), 160),
         "canonical_key": canonical_key,
-        "request_pattern": pattern,
-        "request_subpattern": subpattern,
+        **pattern_result.__dict__,
         "task_label": task_label,
         "task_label_source": task_label_source,
         "task_label_confidence": task_label_confidence,
@@ -996,7 +1172,7 @@ def request_base_payload(
         "derived_total_cost_usd": to_optional_float(row.get("derived_total_cost_usd")),
         "pricing_missing": to_bool(row.get("pricing_missing")),
         "pricing_source": row.get("pricing_source", ""),
-        "diagnosis_version": os.getenv("USAGE_DIAGNOSIS_VERSION", "request_cache_sources_v3"),
+        "diagnosis_version": os.getenv("USAGE_DIAGNOSIS_VERSION", "request_pattern_layers_v1"),
         "source_attribution_method": "provider_metric_exact_source_estimated",
     }
     if include_task_type:
@@ -1012,6 +1188,7 @@ def build_request_cache_diagnosis_events(
     report_date: str,
     max_unique_prompt_hashes: int,
     task_categorizer: TaskCategorizer,
+    request_pattern_categorizer: RequestPatternCategorizer,
 ) -> tuple[list[ExportEvent], int]:
     events: list[ExportEvent] = []
     hashes: set[str] = set()
@@ -1023,7 +1200,9 @@ def build_request_cache_diagnosis_events(
             continue
         hashes.add(preview_hash)
 
-        canonical_key, event_date, _prompt_index, pattern, payload = request_base_payload(row, report_date, task_categorizer)
+        canonical_key, event_date, _prompt_index, pattern, payload = request_base_payload(
+            row, report_date, task_categorizer, request_pattern_categorizer
+        )
         if is_after_report_date(event_date, report_date):
             continue
         primary, kind, confidence = choose_primary_cache_source(audit, row.get("model", ""), pattern)
@@ -1053,6 +1232,7 @@ def build_request_cache_source_events(
     max_unique_prompt_hashes: int,
     max_sources_per_request: int,
     task_categorizer: TaskCategorizer,
+    request_pattern_categorizer: RequestPatternCategorizer,
 ) -> tuple[list[ExportEvent], int]:
     events: list[ExportEvent] = []
     hashes: set[str] = set()
@@ -1065,7 +1245,7 @@ def build_request_cache_source_events(
         hashes.add(preview_hash)
 
         canonical_key, event_date, _prompt_index, pattern, payload = request_base_payload(
-            row, report_date, task_categorizer, include_task_type=False
+            row, report_date, task_categorizer, request_pattern_categorizer, include_task_type=False
         )
         if is_after_report_date(event_date, report_date):
             continue
@@ -1195,11 +1375,14 @@ def build_request_tool_attribution_events(
     distinct_id: str,
     report_date: str,
     task_categorizer: TaskCategorizer,
+    request_pattern_categorizer: RequestPatternCategorizer,
 ) -> list[ExportEvent]:
     events: list[ExportEvent] = []
     prompt_context: dict[tuple[str, str, str, int], dict[str, Any]] = {}
     for prompt in prompt_rows:
-        canonical_key, event_date, prompt_index, _pattern, payload = request_base_payload(prompt, report_date, task_categorizer)
+        canonical_key, event_date, prompt_index, _pattern, payload = request_base_payload(
+            prompt, report_date, task_categorizer, request_pattern_categorizer
+        )
         if is_after_report_date(event_date, report_date):
             continue
         prompt_context[(prompt.get("model", ""), prompt.get("bucket", ""), session_identity(prompt.get("file", "")), prompt_index)] = {
@@ -1218,7 +1401,7 @@ def build_request_tool_attribution_events(
         key = (row.get("model", ""), row.get("bucket", ""), session_id, prompt_index)
         context = prompt_context.get(key, {})
         canonical_key = f"{row.get('model','')}:{row.get('bucket','')}:{session_id}:{prompt_index}:{dimension}:{name}"
-        diagnosis_version = context.get("diagnosis_version", os.getenv("USAGE_DIAGNOSIS_VERSION", "request_cache_sources_v3"))
+        diagnosis_version = context.get("diagnosis_version", os.getenv("USAGE_DIAGNOSIS_VERSION", "request_pattern_layers_v1"))
         row_id = insert_id(event_date, "usage_request_tool_attribution", f"{canonical_key}:{diagnosis_version}")
         props = with_common(token, distinct_id, report_epoch(event_date), row_id, event_date, {
             "model": row.get("model", ""),
@@ -1233,7 +1416,11 @@ def build_request_tool_attribution_events(
             "prompt_index": prompt_index,
             "prompt_preview": context.get("prompt_preview", normalize_preview(row.get("prompt_preview", ""))),
             "request_pattern": context.get("request_pattern", "other"),
-            "request_subpattern": context.get("request_subpattern", "uncategorized"),
+            "request_pattern_path": context.get("request_pattern_path", "other"),
+            "request_pattern_depth": context.get("request_pattern_depth", 1),
+            "request_pattern_rule_id": context.get("request_pattern_rule_id", "default"),
+            "request_pattern_confidence": context.get("request_pattern_confidence", "low"),
+            "request_pattern_config_version": context.get("request_pattern_config_version", ""),
             "task_label": context.get("task_label", "uncategorized"),
             "task_label_source": context.get("task_label_source", ""),
             "task_label_confidence": context.get("task_label_confidence", "low"),
@@ -1390,6 +1577,7 @@ def build_all_events(
     max_unique_prompt_hashes: int,
     max_cache_sources_per_request: int,
     task_categorizer: TaskCategorizer,
+    request_pattern_categorizer: RequestPatternCategorizer,
 ) -> tuple[dict[str, list[ExportEvent]], dict[str, int]]:
     audit = read_json(input_root / "cache-hit-audit-report.json")
     report = read_json(input_root / "reports/planning-vs-execution-report.json")
@@ -1410,17 +1598,25 @@ def build_all_events(
     )
     families["usage_prompt"] = prompt_events
     diagnosis_events, diagnosis_skipped = build_request_cache_diagnosis_events(
-        prompts, audit, token, distinct_id, report_date, max_unique_prompt_hashes, task_categorizer
+        prompts, audit, token, distinct_id, report_date, max_unique_prompt_hashes, task_categorizer, request_pattern_categorizer
     )
     families["usage_request_cache_diagnosis"] = diagnosis_events
     source_events, source_skipped = build_request_cache_source_events(
-        prompts, audit, token, distinct_id, report_date, max_unique_prompt_hashes, max_cache_sources_per_request, task_categorizer
+        prompts,
+        audit,
+        token,
+        distinct_id,
+        report_date,
+        max_unique_prompt_hashes,
+        max_cache_sources_per_request,
+        task_categorizer,
+        request_pattern_categorizer,
     )
     families["usage_request_cache_source"] = source_events
     families["usage_tool_breakdown"] = build_tool_events(tools, token, distinct_id, epoch, report_date)
     families["usage_tool_attribution"] = build_tool_attribution_events(tool_attribution, token, distinct_id, epoch, report_date)
     families["usage_request_tool_attribution"] = build_request_tool_attribution_events(
-        tool_attribution, prompts, token, distinct_id, report_date, task_categorizer
+        tool_attribution, prompts, token, distinct_id, report_date, task_categorizer, request_pattern_categorizer
     )
     families["usage_cache_driver"] = build_cache_driver_events(report, audit, token, distinct_id, epoch, report_date)
     if prompt_skipped:
@@ -1466,6 +1662,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="YAML/JSON task categorization config. Missing path falls back to built-in regex defaults.",
     )
     parser.add_argument(
+        "--request-pattern-config",
+        default=os.getenv("USAGE_REQUEST_PATTERN_CONFIG", ""),
+        help="YAML/JSON recursive request pattern config. Missing path falls back to built-in regex defaults.",
+    )
+    parser.add_argument(
         "--task-classification-cache",
         default=os.getenv(
             "USAGE_TASK_CLASSIFICATION_CACHE",
@@ -1489,8 +1690,10 @@ def main(argv: list[str] | None = None) -> int:
         task_config = load_task_categorization_config(args.task_categorization_config)
         task_cache = TaskClassificationCache(Path(args.task_classification_cache).expanduser())
         task_categorizer = TaskCategorizer(task_config, task_cache)
+        request_pattern_config = load_request_pattern_config(args.request_pattern_config)
+        request_pattern_categorizer = RequestPatternCategorizer(request_pattern_config)
     except RuntimeError as exc:
-        print(f"Invalid task categorization config: {exc}", file=sys.stderr)
+        print(f"Invalid categorization config: {exc}", file=sys.stderr)
         return 1
     for required in (
         input_root / "cache-hit-audit-report.json",
@@ -1512,6 +1715,7 @@ def main(argv: list[str] | None = None) -> int:
         max_unique_prompt_hashes=args.max_unique_prompt_hashes,
         max_cache_sources_per_request=args.max_cache_sources_per_request,
         task_categorizer=task_categorizer,
+        request_pattern_categorizer=request_pattern_categorizer,
     )
     task_cache.save()
 
@@ -1570,6 +1774,7 @@ def main(argv: list[str] | None = None) -> int:
         "ignore_local_state": args.ignore_local_state,
         "state_file": str(Path(args.state_file).expanduser()),
         "task_type_config_version": task_categorizer.version,
+        "request_pattern_config_version": request_pattern_categorizer.version,
     }
     print(json.dumps(summary, indent=2, sort_keys=True))
     if args.summary_path:

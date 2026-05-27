@@ -10,10 +10,11 @@ SKIP_REPORT=0
 IGNORE_LOCAL_STATE="${USAGE_PIPELINE_IGNORE_LOCAL_STATE:-0}"
 SOURCES_CONFIG="${USAGE_PIPELINE_SOURCES_CONFIG:-$REPO_ROOT/config/sources.json}"
 TASK_CATEGORIZATION_CONFIG="${USAGE_TASK_CATEGORIZATION_CONFIG:-}"
+REQUEST_PATTERN_CONFIG="${USAGE_REQUEST_PATTERN_CONFIG:-}"
 
 usage() {
   cat <<'EOF'
-Usage: bash scripts/nightly_usage_pipeline.sh [--dry-run] [--date YYYY-MM-DD] [--env-file PATH] [--sources-config PATH] [--task-categorization-config PATH] [--skip-cache-audit] [--skip-report] [--ignore-local-state]
+Usage: bash scripts/nightly_usage_pipeline.sh [--dry-run] [--date YYYY-MM-DD] [--env-file PATH] [--sources-config PATH] [--task-categorization-config PATH] [--request-pattern-config PATH] [--skip-cache-audit] [--skip-report] [--ignore-local-state]
 
 Options:
   --dry-run            Build payloads but do not publish to Mixpanel.
@@ -21,6 +22,7 @@ Options:
   --env-file PATH      Environment file (default: config/nightly-usage.env).
   --sources-config PATH  Source inventory file for cache audit (default: config/sources.json).
   --task-categorization-config PATH  YAML/JSON task taxonomy config for request classification.
+  --request-pattern-config PATH  YAML/JSON recursive request pattern taxonomy config.
   --skip-cache-audit   Reuse existing cache-hit-audit-report.json.
   --skip-report        Reuse existing reports/planning-vs-execution-* artifacts.
   --ignore-local-state Force exporter resubmit; rely on Mixpanel $insert_id dedupe.
@@ -51,6 +53,11 @@ while [[ $# -gt 0 ]]; do
     --task-categorization-config)
       TASK_CATEGORIZATION_CONFIG="${2:-}"
       [[ -n "$TASK_CATEGORIZATION_CONFIG" ]] || { echo "Missing value for --task-categorization-config" >&2; exit 2; }
+      shift 2
+      ;;
+    --request-pattern-config)
+      REQUEST_PATTERN_CONFIG="${2:-}"
+      [[ -n "$REQUEST_PATTERN_CONFIG" ]] || { echo "Missing value for --request-pattern-config" >&2; exit 2; }
       shift 2
       ;;
     --skip-cache-audit)
@@ -152,6 +159,9 @@ if [[ "$IGNORE_LOCAL_STATE" == "1" ]]; then
 fi
 if [[ -n "$TASK_CATEGORIZATION_CONFIG" ]]; then
   EXPORT_ARGS+=(--task-categorization-config "$TASK_CATEGORIZATION_CONFIG")
+fi
+if [[ -n "$REQUEST_PATTERN_CONFIG" ]]; then
+  EXPORT_ARGS+=(--request-pattern-config "$REQUEST_PATTERN_CONFIG")
 fi
 
 run_step "mixpanel_export" "${EXPORT_ARGS[@]}"

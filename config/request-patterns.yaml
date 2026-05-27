@@ -1,0 +1,208 @@
+version: request_pattern_layers_v1
+
+context:
+  fields:
+    - name: prompt_preview
+      weight: 1.0
+    - name: previous_prompt_preview
+      weight: 0.9
+    - name: first_prompt_preview
+      weight: 0.8
+    - name: final_answer_preview
+      weight: 0.4
+    - name: session_cwd
+      weight: 0.3
+
+layers:
+  - id: request_origin
+    default: other
+    rules:
+      - id: previous_agent_plan
+        confidence: high
+        regex:
+          - "a previous agent produced the plan below"
+          - "previous agent.*plan"
+      - id: implement_plan
+        confidence: high
+        regex:
+          - "^implement the plan"
+          - "implement.*plan"
+      - id: upstream_task_handoff
+        confidence: high
+        regex:
+          - "\\[upstream task:"
+          - "upstream task"
+      - id: auto_stamp_ci_loop
+        confidence: high
+        regex:
+          - "auto-stamp"
+          - "\\bmergify\\b"
+          - "\\bci\\b.*\\b(rebase|workflow|merge)\\b"
+      - id: worktree_ssh_delegation
+        confidence: high
+        regex:
+          - "another worktree"
+          - "\\bworktree\\b"
+          - "ssh machine"
+          - "ssh machines"
+      - id: run_fix_repro_loop
+        confidence: medium
+        regex:
+          - "keep going"
+          - "continue fixing"
+          - "fix ci"
+          - "run ./run.sh"
+          - "root cause"
+          - "repro script"
+
+  - id: request_domain
+    default: uncategorized
+    continue_from:
+      - other
+    rules:
+      - id: pr_review
+        confidence: high
+        regex:
+          - "\\bpr\\b"
+          - "\\bpull request\\b"
+          - "\\breview\\b"
+          - "pr summary"
+          - "pr body"
+      - id: invoker_plan_submission
+        confidence: high
+        regex:
+          - "\\binvoker\\b"
+          - "plan-to-invoker"
+          - "submit to invoker"
+          - "workflow chain"
+          - "workflow submission"
+      - id: ui_terminal_visual
+        confidence: high
+        regex:
+          - "\\bui\\b"
+          - "terminal"
+          - "screenshot"
+          - "visual proof"
+          - "playwright"
+          - "embedded pty"
+          - "graph"
+      - id: dependency_setup
+        confidence: medium
+        regex:
+          - "\\binstall\\b"
+          - "\\bdependency\\b"
+          - "\\bdependencies\\b"
+          - "\\bpnpm\\b"
+          - "\\bnpm\\b"
+          - "\\bpip\\b"
+          - "\\bbundler\\b"
+      - id: git_branch_stack
+        confidence: high
+        regex:
+          - "\\bgit\\b"
+          - "\\bbranch\\b"
+          - "\\bstack\\b"
+          - "\\brebase\\b"
+          - "\\bmerge\\b"
+          - "upstream/master"
+          - "origin/master"
+      - id: release_packaging
+        confidence: medium
+        regex:
+          - "\\brelease\\b"
+          - "\\bpackage\\b"
+          - "\\bversion\\b"
+          - "changelog"
+      - id: test_ci_failure
+        confidence: high
+        regex:
+          - "\\bci\\b"
+          - "test failure"
+          - "failing test"
+          - "\\bpytest\\b"
+          - "make test"
+          - "build failed"
+      - id: debug_repro
+        confidence: high
+        regex:
+          - "\\brepro\\b"
+          - "root cause"
+          - "\\bdebug\\b"
+          - "\\binvestigate\\b"
+          - "failure analysis"
+
+  - id: request_leaf
+    default: "$current"
+    continue_from:
+      - previous_agent_plan
+      - auto_stamp_ci_loop
+      - upstream_task_handoff
+      - implement_plan
+      - worktree_ssh_delegation
+      - run_fix_repro_loop
+      - git_branch_stack
+      - debug_repro
+      - ui_terminal_visual
+      - uncategorized
+    rules:
+      - id: previous_agent_plan_resume
+        confidence: high
+        regex:
+          - "fresh context"
+          - "carry the work through"
+          - "previous agent produced the plan below"
+      - id: experiment_proof
+        confidence: high
+        regex:
+          - "experiment proof"
+          - "proof artifact"
+          - "capture.*proof"
+      - id: workflow_recreate_rebase
+        confidence: high
+        regex:
+          - "recreate all workflows"
+          - "workflow.*rebase"
+          - "rebase.*workflow"
+      - id: master_branch_sync
+        confidence: high
+        regex:
+          - "master branch sync"
+          - "sync.*master"
+          - "upstream/master"
+          - "origin/master"
+      - id: failure_diagnosis
+        confidence: high
+        regex:
+          - "failure diagnosis"
+          - "root cause"
+          - "failure analysis"
+          - "diagnose.*fail"
+      - id: fix_with_agent_conflict_resolution
+        confidence: high
+        regex:
+          - "fix with agent"
+          - "agent conflict"
+          - "conflict resolution"
+          - "merge conflict"
+      - id: implementation_refactor
+        confidence: medium
+        regex:
+          - "\\bimplement\\b"
+          - "\\brefactor\\b"
+          - "code change"
+          - "make the change"
+      - id: cost_usage_analysis
+        confidence: high
+        regex:
+          - "cost usage"
+          - "usage metrics"
+          - "mixpanel"
+          - "token cost"
+          - "cost analysis"
+      - id: demo_video_visual_proof
+        confidence: high
+        regex:
+          - "demo video"
+          - "video proof"
+          - "visual proof"
+          - "playwright.*video"

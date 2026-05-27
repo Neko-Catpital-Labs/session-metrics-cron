@@ -14,6 +14,9 @@ Orchestrated by:
 
 - `scripts/nightly_usage_pipeline.sh`
 
+This repo also includes a separate installable Invoker benchmark harness under
+`invoker-benchmarks/` for the nightly 48-session model/mode benchmark launcher.
+
 ## Quickstart
 
 1. Copy env file and edit credentials:
@@ -43,6 +46,7 @@ bash scripts/nightly_usage_pipeline.sh --dry-run --env-file config/nightly-usage
 - `make export-dry-run`
 - `make nightly-dry-run`
 - `make test`
+- `make benchmark-dry-run`
 
 ## Scheduling
 
@@ -60,6 +64,7 @@ bash scripts/nightly_usage_pipeline.sh --dry-run --env-file config/nightly-usage
 - `docs/operations-backfill.md`
 - `docs/reports/planning-vs-execution-tooling.md`
 - `docs/migration-from-invoker.md`
+- `docs/invoker-benchmark-nightly.md`
 
 ## Backfills and replay-safe dedupe
 

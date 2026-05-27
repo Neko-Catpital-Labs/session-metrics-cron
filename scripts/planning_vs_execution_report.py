@@ -17,7 +17,6 @@ import json
 import re
 import statistics
 import sys
-import urllib.request
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -25,6 +24,15 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from usage_costing import (  # noqa: E402
+    DEFAULT_PRICING_URL,
+    default_billable_model,
+    derive_cost,
+    load_pricing_table,
+    provider_for_session_family,
+    resolve_billable_model,
+)
 DEFAULT_AUDIT_REPORT = REPO_ROOT / "cache-hit-audit-report.json"
 DEFAULT_CODEX_DIR = Path.home() / ".codex" / "sessions"
 DEFAULT_CLAUDE_DIR = Path.home() / ".claude" / "projects"
@@ -38,7 +46,6 @@ PLANNING_PHRASES = [
 ]
 PLANNING_RE = re.compile("|".join(re.escape(p) for p in PLANNING_PHRASES), re.IGNORECASE)
 SHELL_FUNCTION_NAMES = {"exec_command", "shell", "bash"}
-DEFAULT_PRICING_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 
 
 @dataclass
@@ -91,10 +98,6 @@ class SessionStats:
 
 def safe_div(num: float, denom: float) -> float:
     return float(num / denom) if denom else 0.0
-
-
-def none_if_missing(value: float | None) -> float | None:
-    return value if value is not None else None
 
 
 def shorten(text: str, n: int = 220) -> str:
@@ -210,109 +213,6 @@ def extract_shell_verb(arguments_raw: Any) -> str | None:
     if verb.startswith("/"):
         return verb.split("/")[-1]
     return verb
-
-
-def normalize_model_name(value: str) -> str:
-    return " ".join(str(value or "").strip().split()).lower()
-
-
-def default_billable_model(provider: str) -> tuple[str, str]:
-    if provider == "codex":
-        return "gpt-5.5", "default_codex"
-    if provider == "claude":
-        return "claude-sonnet-4-5-20250929", "default_claude"
-    return "", "missing"
-
-
-def provider_for_session_family(model: str) -> str:
-    if model == "codex":
-        return "openai"
-    if model == "claude":
-        return "anthropic"
-    return ""
-
-
-def resolve_billable_model(provider: str, observed: str) -> tuple[str, str]:
-    normalized = normalize_model_name(observed)
-    if normalized:
-        return normalized, "session_log"
-    return default_billable_model(provider)
-
-
-def load_pricing_table(path_or_url: str | None) -> dict[str, Any]:
-    source = path_or_url or DEFAULT_PRICING_URL
-    try:
-        if source.startswith(("http://", "https://")):
-            with urllib.request.urlopen(source, timeout=20) as response:  # noqa: S310
-                return json.loads(response.read().decode("utf-8"))
-        path = Path(source).expanduser()
-        if path.exists():
-            return json.loads(path.read_text())
-    except Exception:
-        return {}
-    return {}
-
-
-def pricing_for_model(pricing_table: dict[str, Any], model: str) -> dict[str, Any] | None:
-    if not model:
-        return None
-    candidates = [model, model.lower(), model.replace("openai/", ""), model.replace("anthropic/", "")]
-    for candidate in candidates:
-        row = pricing_table.get(candidate)
-        if isinstance(row, dict):
-            return row
-    return None
-
-
-def price_component(pricing: dict[str, Any] | None, *keys: str) -> float | None:
-    if not pricing:
-        return None
-    for key in keys:
-        value = pricing.get(key)
-        if value not in (None, ""):
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                continue
-    return None
-
-
-def derive_cost(
-    pricing_table: dict[str, Any],
-    billable_model: str,
-    *,
-    input_tokens: float,
-    cache_read_tokens: float,
-    cache_creation_tokens: float,
-    output_tokens: float,
-    input_includes_cache: bool = False,
-) -> dict[str, Any]:
-    pricing = pricing_for_model(pricing_table, billable_model)
-    input_price = price_component(pricing, "input_cost_per_token", "prompt_cost_per_token")
-    output_price = price_component(pricing, "output_cost_per_token", "completion_cost_per_token")
-    cache_read_price = price_component(pricing, "cache_read_input_token_cost", "cache_read_cost_per_token")
-    cache_creation_price = price_component(pricing, "cache_creation_input_token_cost", "cache_creation_cost_per_token")
-    pricing_missing = input_price is None or output_price is None
-    billable_input_tokens = max(0.0, input_tokens - cache_read_tokens - cache_creation_tokens) if input_includes_cache else input_tokens
-    input_cost = billable_input_tokens * input_price if input_price is not None else None
-    cache_read_cost = cache_read_tokens * (cache_read_price if cache_read_price is not None else input_price) if input_price is not None else None
-    cache_creation_cost = (
-        cache_creation_tokens * (cache_creation_price if cache_creation_price is not None else input_price)
-        if input_price is not None
-        else None
-    )
-    output_cost = output_tokens * output_price if output_price is not None else None
-    parts = [input_cost, cache_read_cost, cache_creation_cost, output_cost]
-    return {
-        "derived_input_cost_usd": none_if_missing(input_cost),
-        "derived_non_cache_input_cost_usd": none_if_missing(input_cost),
-        "derived_cache_read_cost_usd": none_if_missing(cache_read_cost),
-        "derived_cache_creation_cost_usd": none_if_missing(cache_creation_cost),
-        "derived_output_cost_usd": none_if_missing(output_cost),
-        "derived_total_cost_usd": sum(p for p in parts if p is not None) if not pricing_missing else None,
-        "pricing_missing": pricing_missing,
-        "pricing_source": "litellm_model_prices" if pricing else "missing",
-    }
 
 
 def raw_total_tokens(

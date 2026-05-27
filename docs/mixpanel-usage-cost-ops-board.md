@@ -35,18 +35,26 @@ Board name: `Usage Cost Ops`
 
 ### Planning Tool Attribution
 
-- Planning tool allocated cost: event `usage_tool_attribution`, filter `bucket = planning`, sum `allocated_total_cost_usd`, breakdown `name`.
-- Planning tool allocated tokens: event `usage_tool_attribution`, filter `bucket = planning`, sum `allocated_total_tokens`, breakdown `name`.
-- Function calls: event `usage_tool_attribution`, filters `bucket = planning` and `dimension = function_name`, sum `calls`, breakdown `name`.
-- Shell verbs: event `usage_tool_attribution`, filters `bucket = planning` and `dimension = shell_verb`, sum `calls`, breakdown `name`.
-- Shell cost share: event `usage_tool_attribution`, filters `bucket = planning`, `dimension = shell_verb`, and `name in git,sed,rg,cat`, sum `allocated_total_cost_usd`, breakdown `name`.
+- Planning execution footprint cost: event `usage_tool_attribution`, filter `bucket = planning`, sum `allocated_total_cost_usd`, breakdown `name`.
+- Planning execution footprint tokens: event `usage_tool_attribution`, filter `bucket = planning`, sum `allocated_total_tokens`, breakdown `name`.
+- Function-call footprint: event `usage_tool_attribution`, filters `bucket = planning` and `dimension = function_name`, sum `calls`, breakdown `name`.
+- Shell-verb footprint: event `usage_tool_attribution`, filters `bucket = planning` and `dimension = shell_verb`, sum `calls`, breakdown `name`.
+- Shell footprint cost share: event `usage_tool_attribution`, filters `bucket = planning`, `dimension = shell_verb`, and `name in git,sed,rg,cat`, sum `allocated_total_cost_usd`, breakdown `name`.
+
+### Request Pattern Taxonomy
+
+- Final request pattern cost: event `usage_request_cache_diagnosis`, filter `diagnosis_version = request_pattern_layers_v1`, sum `derived_total_cost_usd`, breakdown `request_pattern`.
+- Request pattern hierarchy cost: event `usage_request_cache_diagnosis`, filter `diagnosis_version = request_pattern_layers_v1`, sum `derived_total_cost_usd`, breakdown `request_pattern_path`.
+- Request pattern hierarchy calls: event `usage_request_cache_diagnosis`, filter `diagnosis_version = request_pattern_layers_v1`, count events, breakdown `request_pattern_path`.
+- Final uncategorized share: event `usage_request_cache_diagnosis`, filter `diagnosis_version = request_pattern_layers_v1` and `request_pattern = uncategorized`, sum `derived_total_cost_usd`; compare against all `request_pattern_layers_v1` diagnosis cost.
+- Request command cost by pattern path: event `usage_request_tool_attribution`, filter `diagnosis_version = request_pattern_layers_v1`, sum `allocated_total_cost_usd`, breakdowns `request_pattern_path`, `dimension`, `name`.
 
 ### Drilldowns
 
 - Session table: event `usage_session`, properties `session_id`, `bucket`, `provider`, `billable_model`; metrics sum `derived_total_cost_usd`, sum `total_tokens`, sum `tool_calls`.
 - Prompt table: event `usage_prompt`, properties `session_id`, `prompt_index`, `bucket`, `provider`, `billable_model`; metrics sum `derived_total_cost_usd`, sum `total_tokens_delta`, sum `tool_calls`.
 - Tool attribution table: event `usage_tool_attribution`, properties `session_id`, `prompt_index`, `dimension`, `name`; metrics sum `calls`, sum `allocated_total_cost_usd`, sum `allocated_total_tokens`.
-- Request command cost table: event `usage_request_tool_attribution`, properties `task_label`, `request_subpattern`, `session_id`, `dimension`, `name`; metrics sum `calls`, sum `allocated_total_cost_usd`, sum `allocated_total_tokens`.
+- Request command cost table: event `usage_request_tool_attribution`, properties `task_label`, `request_pattern_path`, `request_pattern`, `session_id`, `dimension`, `name`; metrics sum `calls`, sum `allocated_total_cost_usd`, sum `allocated_total_tokens`.
 
 ## Notes
 
@@ -58,3 +66,5 @@ Board name: `Usage Cost Ops`
 - Missing pricing emits null derived costs with `pricing_missing = true`.
 - `usage_tool_attribution` uses `allocation_method = prompt_window_even_split`; these are allocation estimates, not exact provider billing records.
 - `usage_request_tool_attribution` uses the same allocation method and enriches rows with deterministic request labels from nearby prompt/session context.
+- `name` on tool-attribution panels describes execution footprint. Use `request_pattern` and `request_pattern_path` for semantic request hierarchy.
+- `request_subpattern` is legacy historical data only. Do not use it in canonical panels for `diagnosis_version = request_pattern_layers_v1`.

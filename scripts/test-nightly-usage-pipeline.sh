@@ -63,11 +63,25 @@ required_task_fields = {
     "task_type_source",
     "task_type_config_version",
 }
+required_request_pattern_fields = {
+    "request_pattern",
+    "request_pattern_path",
+    "request_pattern_depth",
+    "request_pattern_rule_id",
+    "request_pattern_confidence",
+    "request_pattern_config_version",
+    "diagnosis_version",
+}
 sample_props = summary.get("sample_event_properties", {})
 for family in ("usage_request_cache_diagnosis", "usage_request_tool_attribution"):
     missing_fields = sorted(required_task_fields - set(sample_props.get(family, [])))
     if missing_fields:
         raise SystemExit(f"Expected {family} to include task_type fields, missing: {missing_fields}")
+    missing_fields = sorted(required_request_pattern_fields - set(sample_props.get(family, [])))
+    if missing_fields:
+        raise SystemExit(f"Expected {family} to include request pattern fields, missing: {missing_fields}")
+    if "request_subpattern" in set(sample_props.get(family, [])):
+        raise SystemExit(f"Expected {family} to omit legacy request_subpattern")
 print("OK: nightly usage dry-run summary includes all event families")
 print("event_counts", json.dumps(families, sort_keys=True))
 PY
