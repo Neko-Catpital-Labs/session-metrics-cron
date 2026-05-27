@@ -358,8 +358,14 @@ sync_runtime_to_worker() {
   rsync -az -e "ssh -p $port" "$BENCHMARK_ROOT/bin/" "$target:$BENCHMARK_ROOT/bin/"
   rsync -az -e "ssh -p $port" "$BENCHMARK_ROOT/config/" "$target:$BENCHMARK_ROOT/config/"
   rsync -az -e "ssh -p $port" "$BENCHMARK_ROOT/lib/" "$target:$BENCHMARK_ROOT/lib/"
-  local costing_source="$SCRIPT_DIR/../../scripts/usage_costing.py"
-  if [[ -f "$costing_source" ]]; then
+  local costing_source=""
+  for candidate in "$BENCHMARK_ROOT/scripts/usage_costing.py" "$SCRIPT_DIR/../../scripts/usage_costing.py"; do
+    if [[ -f "$candidate" ]]; then
+      costing_source="$candidate"
+      break
+    fi
+  done
+  if [[ -n "$costing_source" ]]; then
     ssh -p "$port" "$target" "mkdir -p '$BENCHMARK_ROOT/scripts'"
     rsync -az -e "ssh -p $port" "$costing_source" "$target:$BENCHMARK_ROOT/scripts/usage_costing.py"
   fi
