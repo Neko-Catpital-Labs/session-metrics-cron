@@ -461,7 +461,7 @@ run_worker_queue() {
   log "syncing runtime to $worker_name"
   sync_runtime_to_worker "$target" "$port" >>"$worker_log" 2>&1
 
-  while IFS=$'\t' read -r run_id conversation_file session_id model mode; do
+  while IFS=$'\t' read -r -u 3 run_id conversation_file session_id model mode; do
     [[ -n "$run_id" ]] || continue
     log "dispatch worker=$worker_name run_id=$run_id"
     printf '[%s] START worker=%s run_id=%s conversation=%s model=%s mode=%s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$worker_name" "$run_id" "$conversation_file" "$model" "$mode" >>"$BATCH_DIR/job-events.log"
@@ -476,7 +476,7 @@ run_worker_queue() {
     fi
     mkdir -p "$BATCH_DIR/jobs/$run_id"
     rsync -az -e "ssh -p $port" "$target:$BENCHMARK_ROOT/runs/$BATCH_ID/jobs/$run_id/" "$BATCH_DIR/jobs/$run_id/" >>"$worker_log" 2>&1 || true
-  done < "$queue_file"
+  done 3< "$queue_file"
 }
 
 QUEUE_DIR="$BATCH_DIR/queues"
@@ -489,7 +489,7 @@ status=0
 if [[ "$BENCHMARK_SERIAL_JOBS" == "1" ]]; then
   synced_workers_file="$BATCH_DIR/synced-workers.txt"
   touch "$synced_workers_file"
-  while IFS=$'\t' read -r worker_name target port run_id conversation_file session_id model mode; do
+  while IFS=$'\t' read -r -u 3 worker_name target port run_id conversation_file session_id model mode; do
     [[ -n "$run_id" ]] || continue
     worker_log="$BATCH_DIR/${worker_name}.log"
     if ! grep -Fxq "$worker_name" "$synced_workers_file"; then
@@ -516,7 +516,7 @@ if [[ "$BENCHMARK_SERIAL_JOBS" == "1" ]]; then
       log "settle worker=$worker_name run_id=$run_id seconds=$BENCHMARK_JOB_SETTLE_SECONDS"
       sleep "$BENCHMARK_JOB_SETTLE_SECONDS"
     fi
-  done < "$ASSIGNMENTS_FILE"
+  done 3< "$ASSIGNMENTS_FILE"
 else
   pids=()
   for worker in "${WORKERS[@]}"; do
