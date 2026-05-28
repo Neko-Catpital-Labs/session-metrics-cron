@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEFAULT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="$DEFAULT_ROOT/config/benchmark.env"
 WORKERS_FILE=""
+JOB_SET_FILE=""
 DRY_RUN=0
 SMOKE=0
 LIMIT=""
@@ -13,12 +14,13 @@ EMIT_MIXPANEL_SET=0
 
 usage() {
   cat <<'EOF'
-Usage: run-nightly-benchmark.sh [--dry-run] [--smoke] [--limit N] [--emit-mixpanel] [--no-emit-mixpanel] [--env-file PATH] [--workers-file PATH]
+Usage: run-nightly-benchmark.sh [--dry-run] [--smoke] [--limit N] [--job-set PATH] [--emit-mixpanel] [--no-emit-mixpanel] [--env-file PATH] [--workers-file PATH]
 
 Options:
   --dry-run          Validate config and print the job assignment plan only.
   --smoke            Run one conversation across all modes for the first model on one worker.
   --limit N          Run only the first N matrix jobs.
+  --job-set PATH     Run an explicit ordered JSON or TSV job set.
   --emit-mixpanel    Publish Mixpanel events after aggregation.
   --no-emit-mixpanel Write mixpanel-export.jsonl but do not publish.
   --env-file PATH    Benchmark env file. Defaults to config/benchmark.env.
@@ -56,6 +58,11 @@ while [[ $# -gt 0 ]]; do
       [[ -n "$WORKERS_FILE" ]] || die "Missing value for --workers-file"
       shift 2
       ;;
+    --job-set)
+      JOB_SET_FILE="${2:-}"
+      [[ -n "$JOB_SET_FILE" ]] || die "Missing value for --job-set"
+      shift 2
+      ;;
     -h|--help) usage; exit 0 ;;
     *) die "Unknown argument: $1" ;;
   esac
@@ -71,6 +78,7 @@ set +a
 export TZ="${TZ:-Asia/Hong_Kong}"
 BENCHMARK_ROOT="${BENCHMARK_ROOT:-$DEFAULT_ROOT}"
 WORKERS_FILE="${WORKERS_FILE:-$BENCHMARK_ROOT/config/workers.json}"
+JOB_SET_FILE="${JOB_SET_FILE:-${BENCHMARK_JOB_SET_FILE:-}}"
 MANIFEST_FILE="${MANIFEST_FILE:-$BENCHMARK_ROOT/config/corpus-manifest.json}"
 RUNS_DIR="$BENCHMARK_ROOT/runs"
 MODELS="${MODELS:-codex,claude}"
@@ -87,6 +95,9 @@ fi
 [[ -n "${CORPUS_DIR:-}" ]] || die "Missing CORPUS_DIR"
 [[ -n "${INVOKER_REPO:-}" ]] || die "Missing INVOKER_REPO"
 [[ -n "${INVOKER_BRANCH:-}" ]] || die "Missing INVOKER_BRANCH"
+if [[ -n "$JOB_SET_FILE" && ! -f "$JOB_SET_FILE" ]]; then
+  die "Missing job set file: $JOB_SET_FILE"
+fi
 
 if [[ ! -f "$WORKERS_FILE" ]]; then
   if [[ -f "$HOME/.invoker/config.json" ]]; then
@@ -142,7 +153,7 @@ exec > >(tee -a "$BATCH_LOG") 2> >(tee -a "$BATCH_LOG" >&2)
 write_batch_snapshot() {
   local phase="$1"
   local status="$2"
-  python3 - "$CONFIG_SNAPSHOT" "$phase" "$status" "$BATCH_ID" "$BENCHMARK_ROOT" "$CORPUS_DIR" "$MANIFEST_FILE" "$WORKERS_FILE" "$MODELS" "$MODES" "$SMOKE" "${LIMIT:-}" "$DRY_RUN" "$EMIT_MIXPANEL" "$INVOKER_REPO" "$INVOKER_BRANCH" "$INVOKER_SHA" "${WORKERS[@]}" <<'PY'
+  python3 - "$CONFIG_SNAPSHOT" "$phase" "$status" "$BATCH_ID" "$BENCHMARK_ROOT" "$CORPUS_DIR" "$MANIFEST_FILE" "$WORKERS_FILE" "$JOB_SET_FILE" "$MODELS" "$MODES" "$SMOKE" "${LIMIT:-}" "$DRY_RUN" "$EMIT_MIXPANEL" "$INVOKER_REPO" "$INVOKER_BRANCH" "$INVOKER_SHA" "${WORKERS[@]}" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
@@ -157,6 +168,7 @@ from pathlib import Path
     corpus_dir,
     manifest_file,
     workers_file,
+    job_set_file,
     models,
     modes,
     smoke,
@@ -178,6 +190,7 @@ payload = {
     "corpus_dir": corpus_dir,
     "manifest_file": manifest_file,
     "workers_file": workers_file,
+    "job_set_file": job_set_file,
     "models": [item.strip() for item in models.split(",") if item.strip()],
     "modes": [item.strip() for item in modes.split(",") if item.strip()],
     "smoke": smoke == "1",
@@ -244,10 +257,10 @@ trap on_batch_exit EXIT
 
 write_batch_snapshot "initializing" "running"
 log "batch_dir=$BATCH_DIR"
-log "config models=$MODELS modes=$MODES smoke=$SMOKE limit=${LIMIT:-none} dry_run=$DRY_RUN emit_mixpanel=$EMIT_MIXPANEL serial_jobs=$BENCHMARK_SERIAL_JOBS"
+log "config models=$MODELS modes=$MODES smoke=$SMOKE limit=${LIMIT:-none} job_set=${JOB_SET_FILE:-none} dry_run=$DRY_RUN emit_mixpanel=$EMIT_MIXPANEL serial_jobs=$BENCHMARK_SERIAL_JOBS"
 log "config corpus_dir=$CORPUS_DIR manifest=$MANIFEST_FILE workers_file=$WORKERS_FILE invoker_repo=$INVOKER_REPO invoker_branch=$INVOKER_BRANCH invoker_sha=$INVOKER_SHA"
 
-python3 - "$CORPUS_DIR" "$MANIFEST_FILE" "$MODELS" "$MODES" "$SMOKE" "${LIMIT:-}" "$MATRIX_FILE" "$ASSIGNMENTS_FILE" "${WORKERS[@]}" <<'PY'
+python3 - "$CORPUS_DIR" "$MANIFEST_FILE" "$JOB_SET_FILE" "$MODELS" "$MODES" "$SMOKE" "${LIMIT:-}" "$MATRIX_FILE" "$ASSIGNMENTS_FILE" "${WORKERS[@]}" <<'PY'
 import glob
 import json
 import re
@@ -256,13 +269,14 @@ from pathlib import Path
 
 corpus_dir = Path(sys.argv[1])
 manifest_file = Path(sys.argv[2])
-models = [x.strip() for x in sys.argv[3].split(",") if x.strip()]
-modes = [x.strip() for x in sys.argv[4].split(",") if x.strip()]
-smoke = sys.argv[5] == "1"
-limit = int(sys.argv[6]) if sys.argv[6] else None
-matrix_file = Path(sys.argv[7])
-assignments_file = Path(sys.argv[8])
-workers = [item.split("\t", 2) for item in sys.argv[9:]]
+job_set_file = Path(sys.argv[3]) if sys.argv[3] else None
+models = [x.strip() for x in sys.argv[4].split(",") if x.strip()]
+modes = [x.strip() for x in sys.argv[5].split(",") if x.strip()]
+smoke = sys.argv[6] == "1"
+limit = int(sys.argv[7]) if sys.argv[7] else None
+matrix_file = Path(sys.argv[8])
+assignments_file = Path(sys.argv[9])
+workers = [item.split("\t", 2) for item in sys.argv[10:]]
 
 manifest = {}
 if manifest_file.exists():
@@ -317,15 +331,73 @@ if smoke:
     models = models[:1]
 
 jobs = []
-for conversation in conversations:
-    source_item = source_by_file.get(conversation.name, {})
-    session_id = source_session_id(source_item, conversation.stem)
-    for model in models:
-        for mode in modes:
-            run_id = f"{session_id}__{model}__{mode}"
-            jobs.append((run_id, str(conversation), session_id, model, mode))
+conversation_by_name = {conversation.name: conversation for conversation in conversations}
+conversation_by_stem = {conversation.stem: conversation for conversation in conversations}
 
-if limit is not None:
+def resolve_conversation(value):
+    raw = str(value or "").strip()
+    if not raw:
+        raise SystemExit("Job set entry is missing file")
+    path = Path(raw)
+    candidates = []
+    if path.is_absolute():
+        candidates.append(path)
+    else:
+        candidates.append(corpus_dir / path)
+        candidates.append(conversation_by_name.get(raw))
+        candidates.append(conversation_by_stem.get(raw))
+    for candidate in candidates:
+        if candidate and candidate.exists():
+            return candidate
+    raise SystemExit(f"Job set entry references unknown corpus file: {raw}")
+
+def add_job(conversation, model, mode, run_id="", session_id=""):
+    model = str(model or "").strip()
+    mode = str(mode or "").strip()
+    if not model or not mode:
+        raise SystemExit("Job set entries require model and mode")
+    source_item = source_by_file.get(conversation.name, {})
+    resolved_session_id = str(session_id or source_session_id(source_item, conversation.stem)).strip()
+    resolved_run_id = str(run_id or f"{resolved_session_id}__{model}__{mode}").strip()
+    jobs.append((resolved_run_id, str(conversation), resolved_session_id, model, mode))
+
+if job_set_file:
+    raw = job_set_file.read_text()
+    if job_set_file.suffix.lower() == ".json":
+        payload = json.loads(raw)
+        entries = payload.get("jobs", payload) if isinstance(payload, dict) else payload
+        if not isinstance(entries, list):
+            raise SystemExit("JSON job set must be a list or object with a jobs list")
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise SystemExit("JSON job set entries must be objects")
+            conversation = resolve_conversation(entry.get("file") or entry.get("conversation_file") or entry.get("conversation"))
+            add_job(conversation, entry.get("model"), entry.get("mode"), entry.get("run_id", ""), entry.get("session_id", ""))
+    else:
+        for line_number, line in enumerate(raw.splitlines(), start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) == 3:
+                file_value, model, mode = parts
+                run_id = ""
+                session_id = ""
+            elif len(parts) == 5:
+                run_id, file_value, session_id, model, mode = parts
+            else:
+                raise SystemExit(f"Invalid TSV job set line {line_number}: expected 3 or 5 tab-separated fields")
+            add_job(resolve_conversation(file_value), model, mode, run_id, session_id)
+else:
+    for conversation in conversations:
+        source_item = source_by_file.get(conversation.name, {})
+        session_id = source_session_id(source_item, conversation.stem)
+        for model in models:
+            for mode in modes:
+                run_id = f"{session_id}__{model}__{mode}"
+                jobs.append((run_id, str(conversation), session_id, model, mode))
+
+if limit is not None and not job_set_file:
     jobs = jobs[:limit]
 
 matrix_file.write_text("\n".join("\t".join(row) for row in jobs) + ("\n" if jobs else ""))

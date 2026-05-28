@@ -48,6 +48,20 @@ The coordinator only orchestrates and does not run benchmark jobs.
 /home/invoker/invoker-benchmarks/bin/run-nightly-benchmark.sh --dry-run
 /home/invoker/invoker-benchmarks/bin/run-nightly-benchmark.sh --smoke
 /home/invoker/invoker-benchmarks/bin/run-nightly-benchmark.sh --limit 6
+/home/invoker/invoker-benchmarks/bin/run-nightly-benchmark.sh --job-set /home/invoker/invoker-benchmarks/config/job-set.json
+```
+
+Use `--job-set` or `BENCHMARK_JOB_SET_FILE` for an explicit ordered run, for
+example three workflows back to back. JSON job sets use:
+
+```json
+{
+  "jobs": [
+    {"file": "session-01.jsonl", "model": "codex", "mode": "invoker_workflow"},
+    {"file": "session-02.jsonl", "model": "codex", "mode": "invoker_workflow"},
+    {"file": "session-03.jsonl", "model": "codex", "mode": "invoker_workflow"}
+  ]
+}
 ```
 
 No-argument nightly runs publish metrics by default. Add `--no-emit-mixpanel`

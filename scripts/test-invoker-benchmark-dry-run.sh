@@ -76,6 +76,31 @@ limit_output="$("$TMP_ROOT/bin/run-nightly-benchmark.sh" --dry-run --limit 6 --e
 grep -E "conversation_count=|model_count=|mode_count=|job_count=|worker_count=" <<<"$limit_output"
 grep -q "job_count=6" <<<"$limit_output"
 
+cat > "$TMP_ROOT/config/job-set.json" <<'EOF'
+{
+  "jobs": [
+    {"file": "session-03.jsonl", "model": "codex", "mode": "invoker_workflow"},
+    {"file": "session-01.jsonl", "model": "codex", "mode": "baseline_direct"},
+    {"file": "session-02.jsonl", "model": "codex", "mode": "invoker_auto_fix", "run_id": "custom-session-02-autofix"}
+  ]
+}
+EOF
+job_set_output="$("$TMP_ROOT/bin/run-nightly-benchmark.sh" --dry-run --job-set "$TMP_ROOT/config/job-set.json" --env-file "$TMP_ROOT/config/benchmark.env")"
+grep -E "conversation_count=|model_count=|mode_count=|job_count=|worker_count=" <<<"$job_set_output"
+grep -q "job_count=3" <<<"$job_set_output"
+job_set_matrix="$(find "$TMP_ROOT/runs" -name job-matrix.tsv -print | sort | tail -1)"
+python3 - "$job_set_matrix" "$TMP_ROOT/corpus/submit-to-invoker-sessions-2026-05-26" <<'PY'
+import sys
+from pathlib import Path
+rows = [line.split("\t") for line in Path(sys.argv[1]).read_text().splitlines()]
+corpus = Path(sys.argv[2])
+assert rows == [
+    ["session-03__codex__invoker_workflow", str(corpus / "session-03.jsonl"), "session-03", "codex", "invoker_workflow"],
+    ["session-01__codex__baseline_direct", str(corpus / "session-01.jsonl"), "session-01", "codex", "baseline_direct"],
+    ["custom-session-02-autofix", str(corpus / "session-02.jsonl"), "session-02", "codex", "invoker_auto_fix"],
+], rows
+PY
+
 fake_batch="$TMP_ROOT/runs/fake-batch"
 fake_run_id="019e1b94-1c63-7e02-a60f-febd3e3f2ff4__codex__baseline_direct"
 mkdir -p "$fake_batch/jobs/$fake_run_id"
