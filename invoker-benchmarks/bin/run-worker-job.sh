@@ -56,6 +56,7 @@ JOB_DIR="$BENCHMARK_ROOT/runs/$BATCH_ID/jobs/$RUN_ID"
 CHECKOUT_DIR="$JOB_DIR/checkout"
 RAW_SESSIONS_DIR="$JOB_DIR/raw-sessions"
 GENERATED_PLAN="$JOB_DIR/generated-plan.yaml"
+PLAN_INSPECTION="$JOB_DIR/plan-inspection.json"
 INVOKER_DB_DIR_JOB="$JOB_DIR/invoker-db"
 INVOKER_IPC_SOCKET_JOB="$INVOKER_DB_DIR_JOB/ipc-transport.sock"
 INVOKER_CONFIG_JOB="$JOB_DIR/invoker-config.json"
@@ -115,6 +116,13 @@ if token_path.exists():
         token_usage = json.loads(token_path.read_text())
     except Exception:
         token_usage = {}
+plan_inspection_path = job_dir / "plan-inspection.json"
+plan_inspection = {}
+if plan_inspection_path.exists():
+    try:
+        plan_inspection = json.loads(plan_inspection_path.read_text())
+    except Exception:
+        plan_inspection = {}
 source_info = {}
 conv_path = Path(conv)
 for manifest_path in (
@@ -200,7 +208,13 @@ def derive_failure(status_value, exit_code_value, stage_value):
     if stage == "checkout":
         return stage, "checkout_failed", concise_message(stderr, stdout, "Checkout failed")
     if stage == "plan_generation":
-        return stage, "plan_generation_failed", concise_message(stderr, stdout, plan)
+        plan_generation_message = matching_message(
+            combined,
+            "Plan generation failed benchmark inspection",
+            "mergeMode: github",
+            "mergeMode",
+        )
+        return stage, "plan_generation_failed", plan_generation_message or concise_message(stderr, stdout, plan)
     if stage == "token_usage":
         return stage, "token_usage_failed", concise_message(stderr, stdout, "Token usage extraction failed")
     return stage, "unknown", concise_message(stderr, stdout, plan, "Unknown benchmark failure")
@@ -268,6 +282,7 @@ payload = {
     },
     "job_artifact_path": str(job_dir),
     "token_usage": token_usage,
+    "plan_inspection": plan_inspection,
     "artifacts": {
         "stdout": "stdout.log",
         "stderr": "stderr.log",
@@ -275,6 +290,7 @@ payload = {
         "prompt": "prompt.txt",
         "cost_calculation": "cost-calculation.json",
         "generated_plan": "generated-plan.yaml",
+        "plan_inspection": "plan-inspection.json",
         "invoker_events": "invoker-events.jsonl",
         "token_usage": "token-usage.json",
         "raw_sessions": "raw-sessions",
@@ -597,12 +613,14 @@ default_baseline() {
 }
 
 default_plan() {
+  local benchmark_plan_constraint="${BENCHMARK_PLAN_CONSTRAINT:-For this benchmark, generate Invoker YAML with mergeMode: manual. Do not use mergeMode: github.}"
   case "$MODEL" in
     codex)
       if ! run_template "${BENCHMARK_PLAN_CODEX_COMMAND:-}"; then
         command -v codex >/dev/null || die "codex CLI not found and BENCHMARK_PLAN_CODEX_COMMAND is unset"
         {
           printf '/plan-to-invoker\n'
+          printf '%s\n\n' "$benchmark_plan_constraint"
           cat "$PROMPT_FILE"
         } | (cd "$CHECKOUT_DIR" && codex exec --skip-git-repo-check -) > "$GENERATED_PLAN"
       fi
@@ -610,11 +628,110 @@ default_plan() {
     claude)
       if ! run_template "${BENCHMARK_PLAN_CLAUDE_COMMAND:-}"; then
         command -v claude >/dev/null || die "claude CLI not found and BENCHMARK_PLAN_CLAUDE_COMMAND is unset"
-        (cd "$CHECKOUT_DIR" && claude -p "/plan-to-invoker\n$(cat "$PROMPT_FILE")") > "$GENERATED_PLAN"
+        (cd "$CHECKOUT_DIR" && claude -p "/plan-to-invoker
+$benchmark_plan_constraint
+
+$(cat "$PROMPT_FILE")") > "$GENERATED_PLAN"
       fi
       ;;
     *) die "Unsupported model: $MODEL" ;;
   esac
+}
+
+inspect_generated_plan() {
+  python3 - "$GENERATED_PLAN" "$PLAN_INSPECTION" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+plan_path = Path(sys.argv[1])
+inspection_path = Path(sys.argv[2])
+
+raw = plan_path.read_text(errors="ignore") if plan_path.exists() else ""
+
+def looks_like_plan(text):
+    return bool(re.search(r"(?m)^name:\s*\S", text) and re.search(r"(?m)^repoUrl:\s*\S", text) and re.search(r"(?m)^tasks:\s*(?:$|\[)", text))
+
+def fenced_blocks(text):
+    pattern = re.compile(r"```(?:ya?ml|yaml|yml)?[^\n]*\n(.*?)```", re.IGNORECASE | re.DOTALL)
+    return [match.group(1).strip() + "\n" for match in pattern.finditer(text)]
+
+def line_window(text):
+    lines = text.splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if re.match(r"^name:\s*\S", line):
+            start = index
+            break
+    if start is None:
+        return text.strip() + ("\n" if text.strip() else "")
+    return "\n".join(lines[start:]).strip() + "\n"
+
+candidates = fenced_blocks(raw)
+candidates.append(line_window(raw))
+candidates.append(raw.strip() + ("\n" if raw.strip() else ""))
+
+yaml_text = ""
+for candidate in candidates:
+    if looks_like_plan(candidate):
+        yaml_text = candidate
+        break
+if not yaml_text and candidates:
+    yaml_text = candidates[0]
+
+top_level = {}
+for match in re.finditer(r"(?m)^([A-Za-z0-9_-]+):(?:\s*(.*))?$", yaml_text):
+    top_level[match.group(1)] = (match.group(2) or "").strip()
+
+task_count = 0
+in_tasks = False
+for line in yaml_text.splitlines():
+    if re.match(r"^tasks:\s*$", line):
+        in_tasks = True
+        continue
+    if in_tasks and re.match(r"^[A-Za-z0-9_-]+:", line):
+        in_tasks = False
+    if in_tasks and re.match(r"^\s{2}-\s+", line):
+        task_count += 1
+if top_level.get("tasks", "").startswith("["):
+    task_count = max(task_count, top_level["tasks"].count("{"))
+
+merge_mode = top_level.get("mergeMode", "").strip().strip('"\'')
+inspection = {
+    "extracted_yaml": yaml_text != raw,
+    "has_name": bool(top_level.get("name")),
+    "has_repoUrl": bool(top_level.get("repoUrl")),
+    "has_tasks": "tasks" in top_level,
+    "mergeMode": merge_mode,
+    "mergeMode_manual": merge_mode == "manual",
+    "task_count": task_count,
+}
+inspection_path.write_text(json.dumps(inspection, indent=2, sort_keys=True) + "\n")
+
+errors = []
+if not inspection["has_name"]:
+    errors.append("missing top-level name")
+if not inspection["has_repoUrl"]:
+    errors.append("missing top-level repoUrl")
+if not inspection["has_tasks"]:
+    errors.append("missing top-level tasks")
+if task_count <= 0:
+    errors.append("no generated tasks found")
+if merge_mode != "manual":
+    if merge_mode == "github":
+        errors.append("generated plan used mergeMode: github despite benchmark constraint")
+    elif merge_mode:
+        errors.append(f"generated plan used mergeMode: {merge_mode} instead of manual")
+    else:
+        errors.append("generated plan omitted mergeMode: manual")
+
+if yaml_text:
+    plan_path.write_text(yaml_text)
+
+if errors:
+    raise SystemExit("Plan generation failed benchmark inspection: " + "; ".join(errors))
+PY
 }
 
 default_invoker_cli_run() {
@@ -821,6 +938,7 @@ case "$MODE" in
     log_step "TEST_START kind=plan_to_invoker model=$MODEL"
     set_stage "plan_generation"
     default_plan
+    inspect_generated_plan
     log_step "TEST_PASS kind=plan_to_invoker model=$MODEL generated_plan=$GENERATED_PLAN"
     log_step "TEST_START kind=invoker_cli_run autofix=0 model=$MODEL"
     default_invoker_cli_run ""
@@ -831,6 +949,7 @@ case "$MODE" in
     log_step "TEST_START kind=plan_to_invoker model=$MODEL"
     set_stage "plan_generation"
     default_plan
+    inspect_generated_plan
     log_step "TEST_PASS kind=plan_to_invoker model=$MODEL generated_plan=$GENERATED_PLAN"
     log_step "TEST_START kind=invoker_cli_run autofix=1 model=$MODEL"
     default_invoker_cli_run "1"

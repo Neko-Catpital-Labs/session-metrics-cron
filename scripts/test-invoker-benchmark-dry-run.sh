@@ -385,7 +385,7 @@ TZ=Asia/Hong_Kong
 BENCHMARK_ROOT=$worker_root
 INVOKER_REPO=$fake_invoker_repo
 INVOKER_BRANCH=master
-BENCHMARK_PLAN_CODEX_COMMAND='printf "name: fake plan\n" > "\$GENERATED_PLAN"'
+BENCHMARK_PLAN_CODEX_COMMAND='printf "%s\n" "name: fake plan" "repoUrl: https://example.test/repo.git" "mergeMode: manual" "tasks:" "  - id: t1" "    title: T1" > "\$GENERATED_PLAN"'
 BENCHMARK_INVOKER_CLI_BUILD_COMMAND='node packages/cli/build.js'
 EOF
 
@@ -443,9 +443,36 @@ assert payload["status"] == "succeeded"
 assert payload["result"] == "pass"
 assert payload["failure_stage"] == ""
 assert payload["failure_reason"] == ""
+assert payload["plan_inspection"]["mergeMode"] == "manual"
+assert payload["plan_inspection"]["mergeMode_manual"] is True
+assert payload["plan_inspection"]["task_count"] == 1
 job_dir = Path(sys.argv[1]).parent
 assert not (job_dir / "checkout").exists()
 assert not (job_dir / "invoker-db").exists()
+PY
+
+github_merge_env="$worker_root/config/github-merge.env"
+cat > "$github_merge_env" <<EOF
+TZ=Asia/Hong_Kong
+BENCHMARK_ROOT=$worker_root
+INVOKER_REPO=$fake_invoker_repo
+INVOKER_BRANCH=master
+BENCHMARK_PLAN_CODEX_COMMAND='printf "%s\n" "name: fake plan" "repoUrl: https://example.test/repo.git" "mergeMode: github" "tasks:" "  - id: t1" "    title: T1" > "\$GENERATED_PLAN"'
+BENCHMARK_INVOKER_CLI_BUILD_COMMAND='node packages/cli/build.js'
+EOF
+if BENCHMARK_ENV_FILE="$github_merge_env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id github-merge-plan --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/github-merge.out" 2>&1; then
+  echo "Expected github merge plan generation to fail" >&2
+  exit 1
+fi
+python3 - "$worker_root/runs/worker-failures/jobs/github-merge-plan/job.json" <<'PY'
+import json
+import sys
+payload = json.load(open(sys.argv[1]))
+assert payload["failure_stage"] == "plan_generation"
+assert payload["failure_reason"] == "plan_generation_failed"
+assert "mergeMode: github" in payload["failure_message"]
+assert payload["plan_inspection"]["mergeMode"] == "github"
+assert payload["plan_inspection"]["mergeMode_manual"] is False
 PY
 
 BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id successful-autofix --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_auto_fix --invoker-sha "$fake_invoker_sha" >"$worker_root/autofix.out" 2>&1
@@ -508,7 +535,7 @@ TZ=Asia/Hong_Kong
 BENCHMARK_ROOT=$worker_root
 INVOKER_REPO=$fake_invoker_repo
 INVOKER_BRANCH=master
-BENCHMARK_PLAN_CODEX_COMMAND='mkdir -p "\$HOME/.codex/sessions"; printf "%s\n" '"'"'{"usage":{"input_tokens":111,"output_tokens":22,"reasoning_tokens":3,"total_tokens":136}}'"'"' > "\$HOME/.codex/sessions/cleanup-failure.jsonl"; printf "name: fake plan\n" > "\$GENERATED_PLAN"'
+BENCHMARK_PLAN_CODEX_COMMAND='mkdir -p "\$HOME/.codex/sessions"; printf "%s\n" '"'"'{"usage":{"input_tokens":111,"output_tokens":22,"reasoning_tokens":3,"total_tokens":136}}'"'"' > "\$HOME/.codex/sessions/cleanup-failure.jsonl"; printf "%s\n" "name: fake plan" "repoUrl: https://example.test/repo.git" "mergeMode: manual" "tasks:" "  - id: t1" "    title: T1" > "\$GENERATED_PLAN"'
 BENCHMARK_INVOKER_CLI_BUILD_COMMAND='node packages/cli/build.js'
 EOF
 cleanup_failure_run_id="cleanup-failure-with-tokens"
@@ -545,9 +572,9 @@ cat > "$worker_root/runs/worker-failures/summary.json" <<EOF
 {
   "batch_id": "worker-failures",
   "invoker_sha": "$fake_invoker_sha",
-  "job_count": 7,
+  "job_count": 8,
   "setup_status": "succeeded",
-  "status_counts": {"failed": 4, "succeeded": 3}
+  "status_counts": {"failed": 5, "succeeded": 3}
 }
 EOF
 BENCHMARK_ROOT=/home/invoker/invoker-benchmarks "$worker_root/bin/emit-mixpanel-events.sh" --batch-dir "$worker_root/runs/worker-failures" >/dev/null
