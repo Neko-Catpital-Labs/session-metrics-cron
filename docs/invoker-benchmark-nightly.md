@@ -13,6 +13,12 @@ Cron should invoke only:
 /home/invoker/invoker-benchmarks/bin/run-nightly-benchmark.sh
 ```
 
+The coordinator resolves `INVOKER_SHA` from `INVOKER_REPO` and
+`INVOKER_BRANCH`. Worker jobs clone that exact SHA, build `@invoker/cli`, and
+run generated plans through the standalone CLI with a per-job config and DB
+directory. Update `INVOKER_BRANCH` to the Invoker branch under test, including
+stack branches when benchmarking a stack.
+
 Default schedule:
 
 ```cron

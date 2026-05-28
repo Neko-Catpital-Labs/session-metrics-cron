@@ -76,11 +76,14 @@ RUNS_DIR="$BENCHMARK_ROOT/runs"
 MODELS="${MODELS:-codex,claude}"
 MODES="${MODES:-baseline_direct,invoker_workflow,invoker_auto_fix}"
 WORKER_CONCURRENCY_PER_HOST="${WORKER_CONCURRENCY_PER_HOST:-1}"
+BENCHMARK_SERIAL_JOBS="${BENCHMARK_SERIAL_JOBS:-1}"
+BENCHMARK_JOB_SETTLE_SECONDS="${BENCHMARK_JOB_SETTLE_SECONDS:-2}"
 if [[ "$EMIT_MIXPANEL_SET" -eq 0 && "$DRY_RUN" -eq 0 && "$SMOKE" -eq 0 && "${BENCHMARK_EMIT_MIXPANEL_DEFAULT:-1}" != "0" ]]; then
   EMIT_MIXPANEL=1
 fi
 
 [[ "$WORKER_CONCURRENCY_PER_HOST" == "1" ]] || die "Only WORKER_CONCURRENCY_PER_HOST=1 is currently supported"
+[[ "$BENCHMARK_SERIAL_JOBS" == "0" || "$BENCHMARK_SERIAL_JOBS" == "1" ]] || die "BENCHMARK_SERIAL_JOBS must be 0 or 1"
 [[ -n "${CORPUS_DIR:-}" ]] || die "Missing CORPUS_DIR"
 [[ -n "${INVOKER_REPO:-}" ]] || die "Missing INVOKER_REPO"
 [[ -n "${INVOKER_BRANCH:-}" ]] || die "Missing INVOKER_BRANCH"
@@ -241,7 +244,7 @@ trap on_batch_exit EXIT
 
 write_batch_snapshot "initializing" "running"
 log "batch_dir=$BATCH_DIR"
-log "config models=$MODELS modes=$MODES smoke=$SMOKE limit=${LIMIT:-none} dry_run=$DRY_RUN emit_mixpanel=$EMIT_MIXPANEL"
+log "config models=$MODELS modes=$MODES smoke=$SMOKE limit=${LIMIT:-none} dry_run=$DRY_RUN emit_mixpanel=$EMIT_MIXPANEL serial_jobs=$BENCHMARK_SERIAL_JOBS"
 log "config corpus_dir=$CORPUS_DIR manifest=$MANIFEST_FILE workers_file=$WORKERS_FILE invoker_repo=$INVOKER_REPO invoker_branch=$INVOKER_BRANCH invoker_sha=$INVOKER_SHA"
 
 python3 - "$CORPUS_DIR" "$MANIFEST_FILE" "$MODELS" "$MODES" "$SMOKE" "${LIMIT:-}" "$MATRIX_FILE" "$ASSIGNMENTS_FILE" "${WORKERS[@]}" <<'PY'
@@ -410,21 +413,54 @@ while IFS=$'\t' read -r worker_name target port run_id conversation_file session
   printf '%s\t%s\t%s\t%s\t%s\n' "$run_id" "$conversation_file" "$session_id" "$model" "$mode" >>"$QUEUE_DIR/$worker_name.tsv"
 done < "$ASSIGNMENTS_FILE"
 
-pids=()
-for worker in "${WORKERS[@]}"; do
-  IFS=$'\t' read -r worker_name target port <<<"$worker"
-  queue_file="$QUEUE_DIR/$worker_name.tsv"
-  [[ -s "$queue_file" ]] || continue
-  run_worker_queue "$worker_name" "$target" "$port" "$queue_file" &
-  pids+=("$!")
-done
-
 status=0
-for pid in "${pids[@]}"; do
-  if ! wait "$pid"; then
-    status=1
-  fi
-done
+if [[ "$BENCHMARK_SERIAL_JOBS" == "1" ]]; then
+  synced_workers_file="$BATCH_DIR/synced-workers.txt"
+  touch "$synced_workers_file"
+  while IFS=$'\t' read -r worker_name target port run_id conversation_file session_id model mode; do
+    [[ -n "$run_id" ]] || continue
+    worker_log="$BATCH_DIR/${worker_name}.log"
+    if ! grep -Fxq "$worker_name" "$synced_workers_file"; then
+      log "syncing runtime to $worker_name"
+      sync_runtime_to_worker "$target" "$port" >>"$worker_log" 2>&1
+      printf '%s\n' "$worker_name" >>"$synced_workers_file"
+    fi
+
+    log "dispatch worker=$worker_name run_id=$run_id serial=1"
+    printf '[%s] START worker=%s run_id=%s conversation=%s model=%s mode=%s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$worker_name" "$run_id" "$conversation_file" "$model" "$mode" >>"$BATCH_DIR/job-events.log"
+    if ssh -n -p "$port" "$target" \
+      "BENCHMARK_ROOT='$BENCHMARK_ROOT' '$BENCHMARK_ROOT/bin/run-worker-job.sh' --batch-id '$BATCH_ID' --run-id '$run_id' --conversation-file '$conversation_file' --model '$model' --mode '$mode' --invoker-sha '$INVOKER_SHA'" \
+      >>"$worker_log" 2>&1; then
+      log "complete worker=$worker_name run_id=$run_id serial=1"
+      printf '[%s] END worker=%s run_id=%s result=passed\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$worker_name" "$run_id" >>"$BATCH_DIR/job-events.log"
+    else
+      log "failed worker=$worker_name run_id=$run_id serial=1"
+      printf '[%s] END worker=%s run_id=%s result=failed\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$worker_name" "$run_id" >>"$BATCH_DIR/job-events.log"
+      status=1
+    fi
+    mkdir -p "$BATCH_DIR/jobs/$run_id"
+    rsync -az -e "ssh -p $port" "$target:$BENCHMARK_ROOT/runs/$BATCH_ID/jobs/$run_id/" "$BATCH_DIR/jobs/$run_id/" >>"$worker_log" 2>&1 || true
+    if [[ "$BENCHMARK_JOB_SETTLE_SECONDS" =~ ^[0-9]+$ && "$BENCHMARK_JOB_SETTLE_SECONDS" -gt 0 ]]; then
+      log "settle worker=$worker_name run_id=$run_id seconds=$BENCHMARK_JOB_SETTLE_SECONDS"
+      sleep "$BENCHMARK_JOB_SETTLE_SECONDS"
+    fi
+  done < "$ASSIGNMENTS_FILE"
+else
+  pids=()
+  for worker in "${WORKERS[@]}"; do
+    IFS=$'\t' read -r worker_name target port <<<"$worker"
+    queue_file="$QUEUE_DIR/$worker_name.tsv"
+    [[ -s "$queue_file" ]] || continue
+    run_worker_queue "$worker_name" "$target" "$port" "$queue_file" &
+    pids+=("$!")
+  done
+
+  for pid in "${pids[@]}"; do
+    if ! wait "$pid"; then
+      status=1
+    fi
+  done
+fi
 
 write_batch_snapshot "workers_finished" "running"
 

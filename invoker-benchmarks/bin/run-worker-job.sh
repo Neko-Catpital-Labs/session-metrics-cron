@@ -57,6 +57,7 @@ CHECKOUT_DIR="$JOB_DIR/checkout"
 RAW_SESSIONS_DIR="$JOB_DIR/raw-sessions"
 GENERATED_PLAN="$JOB_DIR/generated-plan.yaml"
 INVOKER_DB_DIR_JOB="$JOB_DIR/invoker-db"
+INVOKER_IPC_SOCKET_JOB="$INVOKER_DB_DIR_JOB/ipc-transport.sock"
 INVOKER_CONFIG_JOB="$JOB_DIR/invoker-config.json"
 PROMPT_FILE="$JOB_DIR/prompt.txt"
 STDOUT_LOG="$JOB_DIR/stdout.log"
@@ -175,8 +176,9 @@ def derive_failure(status_value, exit_code_value, stage_value):
     lowered = combined.lower()
     stage = stage_value or "unknown"
 
-    if status_value == "timeout" or "timed out" in lowered or "timeout" in lowered:
-        return stage, "timeout", matching_message(combined, "timeout", "timed out") or concise_message(stderr, stdout, "timeout")
+    timeout_stages = {"timeout", "job_timeout", "watchdog_timeout"}
+    if status_value == "timeout" or stage in timeout_stages or stage.endswith("_timeout") or "timed out" in lowered or "timeout" in lowered:
+        return stage, "timeout", matching_message(combined, "timed out") or matching_message(combined, "timeout") or concise_message(stderr, stdout, "timeout")
     if "failed to authenticate. api error: 401" in lowered or "api error: 401" in lowered or "status code: 401" in lowered:
         return stage, "claude_auth_failed", matching_message(combined, "api error: 401", "status code: 401", "failed to authenticate") or concise_message(stderr, stdout, "Claude authentication failed")
     validation_signatures = (
@@ -191,8 +193,10 @@ def derive_failure(status_value, exit_code_value, stage_value):
         return stage, "plan_validation_failed", matching_message(combined, *validation_signatures) or concise_message(stderr, stdout, plan)
     if stage == "electron_cleanup":
         return stage, "electron_cleanup_failed", concise_message(stderr, stdout, "Electron cleanup failed")
-    if stage == "invoker_headless_run":
-        return stage, "headless_run_failed", concise_message(stderr, stdout, "Invoker headless run failed")
+    if stage == "invoker_cli_build":
+        return stage, "invoker_cli_build_failed", concise_message(stderr, stdout, "Invoker CLI build failed")
+    if stage == "invoker_cli_run":
+        return stage, "invoker_cli_run_failed", concise_message(stderr, stdout, "Invoker CLI run failed")
     if stage == "checkout":
         return stage, "checkout_failed", concise_message(stderr, stdout, "Checkout failed")
     if stage == "plan_generation":
@@ -283,14 +287,24 @@ PY
 
 on_exit() {
   local code=$?
-  if [[ "$code" -ne 0 && ! -f "$JOB_DIR/job.json" ]]; then
+  if [[ "$code" -ne 0 ]]; then
     local failure_stage="$CURRENT_STAGE"
     if [[ -f "$JOB_DIR/current-stage" ]]; then
       failure_stage="$(cat "$JOB_DIR/current-stage")"
     fi
-    write_job_json failed "$code" "$failure_stage" || true
+    if [[ ! -f "$JOB_DIR/job.json" || "$failure_stage" == "electron_cleanup" ]]; then
+      if [[ -f "$JOB_DIR/session-files-before.txt" ]]; then
+        collect_new_sessions || true
+        extract_token_usage || true
+      fi
+      write_job_json failed "$code" "$failure_stage" || true
+    fi
   fi
   if [[ "$code" -ne 0 ]]; then
+    if [[ "$CURRENT_STAGE" != "electron_cleanup" ]]; then
+      set_stage "electron_cleanup"
+      scoped_electron_cleanup || true
+    fi
     cleanup_job_runtime || true
   fi
 }
@@ -331,6 +345,138 @@ cleanup_job_runtime() {
   rm -rf "$CHECKOUT_DIR" "$INVOKER_DB_DIR_JOB" 2>/dev/null || true
 }
 
+process_listing() {
+  if [[ -n "${BENCHMARK_PROCESS_LIST_FILE:-}" ]]; then
+    cat "$BENCHMARK_PROCESS_LIST_FILE"
+    return 0
+  fi
+  ps -axo pid=,ppid=,command=
+}
+
+current_process_tree_pids() {
+  local listing_file="$JOB_DIR/process-listing.txt"
+  process_listing > "$listing_file"
+  python3 - "$listing_file" "$$" "${BASHPID:-$$}" "$PPID" <<'PY'
+import os
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+listing_path = sys.argv[1]
+roots = {int(pid) for pid in sys.argv[2:] if str(pid).isdigit()}
+parents = {}
+children = defaultdict(list)
+for line in Path(listing_path).read_text(errors="ignore").splitlines():
+    parts = line.strip().split(None, 2)
+    if len(parts) < 2:
+        continue
+    try:
+        pid = int(parts[0])
+        ppid = int(parts[1])
+    except ValueError:
+        continue
+    parents[pid] = ppid
+    children[ppid].append(pid)
+
+excluded = set(roots)
+for root in list(roots):
+    pid = root
+    while pid in parents and parents[pid] not in excluded:
+        pid = parents[pid]
+        excluded.add(pid)
+
+stack = list(roots)
+while stack:
+    pid = stack.pop()
+    for child in children.get(pid, []):
+        if child in excluded:
+            continue
+        excluded.add(child)
+        stack.append(child)
+
+for pid in sorted(excluded):
+    print(pid)
+PY
+}
+
+current_job_electron_pids() {
+  local listing_file="$JOB_DIR/process-listing.txt"
+  local excluded_file="$JOB_DIR/process-exclude-pids.txt"
+  process_listing > "$listing_file"
+  current_process_tree_pids > "$excluded_file" || true
+  python3 - "$listing_file" "$CHECKOUT_DIR" "$INVOKER_DB_DIR_JOB" "$INVOKER_IPC_SOCKET_JOB" "$INVOKER_CONFIG_JOB" "$JOB_DIR" "$excluded_file" <<'PY'
+import sys
+from pathlib import Path
+
+listing_path = Path(sys.argv[1])
+needles = [value for value in sys.argv[2:7] if value]
+excluded_path = Path(sys.argv[7])
+excluded = set()
+try:
+    excluded = {int(line.strip()) for line in excluded_path.read_text().splitlines() if line.strip().isdigit()}
+except Exception:
+    pass
+
+for line in listing_path.read_text(errors="ignore").splitlines():
+    parts = line.strip().split(None, 2)
+    if len(parts) < 3:
+        continue
+    try:
+        pid = int(parts[0])
+    except ValueError:
+        continue
+    command = parts[2]
+    lowered = command.lower()
+    if pid in excluded:
+        continue
+    if "kill-all-electron.sh" in lowered:
+        continue
+    if not any(needle in command for needle in needles):
+        continue
+    print(pid)
+PY
+}
+
+signal_process() {
+  local signal="$1"
+  local pid="$2"
+  if [[ -n "${BENCHMARK_KILL_LOG:-}" ]]; then
+    printf '%s %s\n' "$signal" "$pid" >> "$BENCHMARK_KILL_LOG"
+    return 0
+  fi
+  kill "-$signal" "$pid"
+}
+
+pid_is_running() {
+  local pid="$1"
+  if [[ -n "${BENCHMARK_PROCESS_LIST_FILE:-}" ]]; then
+    grep -Eq "^[[:space:]]*$pid[[:space:]]" "$BENCHMARK_PROCESS_LIST_FILE"
+    return $?
+  fi
+  kill -0 "$pid" 2>/dev/null
+}
+
+scoped_electron_cleanup() {
+  local pids=()
+  local pid
+  mapfile -t pids < <(current_job_electron_pids)
+  if [[ "${#pids[@]}" -eq 0 ]]; then
+    return 0
+  fi
+  log_step "ELECTRON_CLEANUP scoped_term pids=${pids[*]}"
+  for pid in "${pids[@]}"; do
+    signal_process TERM "$pid"
+  done
+  sleep "${BENCHMARK_ELECTRON_CLEANUP_TERM_WAIT_SECONDS:-2}"
+  mapfile -t pids < <(current_job_electron_pids)
+  for pid in "${pids[@]}"; do
+    if pid_is_running "$pid"; then
+      log_step "ELECTRON_CLEANUP scoped_kill pid=$pid"
+      signal_process KILL "$pid"
+    fi
+  done
+}
+
 install_checkout() {
   rm -rf "$CHECKOUT_DIR"
   git clone --no-checkout "${INVOKER_REPO:-https://github.com/Neko-Catpital-Labs/Invoker.git}" "$CHECKOUT_DIR"
@@ -346,7 +492,7 @@ install_checkout() {
       yarn install --frozen-lockfile
     fi
     if [[ -n "${BENCHMARK_CHECKOUT_SETUP_COMMAND:-}" ]]; then
-      export CHECKOUT_DIR CONVERSATION_FILE PROMPT_FILE MODEL MODE JOB_DIR GENERATED_PLAN INVOKER_SHA
+      export CHECKOUT_DIR CONVERSATION_FILE PROMPT_FILE MODEL MODE JOB_DIR GENERATED_PLAN INVOKER_SHA INVOKER_DB_DIR_JOB INVOKER_IPC_SOCKET_JOB INVOKER_CONFIG_JOB
       eval "$BENCHMARK_CHECKOUT_SETUP_COMMAND"
     fi
   )
@@ -359,7 +505,7 @@ run_template() {
   fi
   (
     cd "$CHECKOUT_DIR"
-    export CHECKOUT_DIR CONVERSATION_FILE PROMPT_FILE MODEL MODE JOB_DIR GENERATED_PLAN INVOKER_SHA
+    export CHECKOUT_DIR CONVERSATION_FILE PROMPT_FILE MODEL MODE JOB_DIR GENERATED_PLAN INVOKER_SHA INVOKER_DB_DIR_JOB INVOKER_IPC_SOCKET_JOB INVOKER_CONFIG_JOB
     eval "$template"
   )
 }
@@ -471,13 +617,10 @@ default_plan() {
   esac
 }
 
-default_invoker_submit() {
+default_invoker_cli_run() {
   (
     cd "$CHECKOUT_DIR"
     export INVOKER_AUTOFIX="$1"
-    if run_template "${BENCHMARK_INVOKER_SUBMIT_COMMAND:-}"; then
-      return 0
-    fi
     mkdir -p "$INVOKER_DB_DIR_JOB"
     python3 - "$INVOKER_CONFIG_JOB" "${INVOKER_REPO_CONFIG_PATH:-$HOME/.invoker/config.json}" "$INVOKER_AUTOFIX" <<'PY'
 import json
@@ -499,11 +642,24 @@ config["autoFixRetries"] = 1 if autofix else 0
 out.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
 PY
     export INVOKER_DB_DIR="$INVOKER_DB_DIR_JOB"
+    export INVOKER_IPC_SOCKET="$INVOKER_IPC_SOCKET_JOB"
     export INVOKER_REPO_CONFIG_PATH="$INVOKER_CONFIG_JOB"
-    set_stage "electron_cleanup"
-    ./scripts/kill-all-electron.sh
-    set_stage "invoker_headless_run"
-    ./run.sh --headless run "$GENERATED_PLAN"
+    export CHECKOUT_DIR CONVERSATION_FILE PROMPT_FILE MODEL MODE JOB_DIR GENERATED_PLAN INVOKER_SHA INVOKER_DB_DIR_JOB INVOKER_IPC_SOCKET_JOB INVOKER_CONFIG_JOB
+    if [[ -n "${BENCHMARK_INVOKER_SUBMIT_COMMAND:-}" ]]; then
+      set_stage "invoker_cli_run"
+      run_template "$BENCHMARK_INVOKER_SUBMIT_COMMAND"
+      return 0
+    fi
+    set_stage "invoker_cli_build"
+    eval "${BENCHMARK_INVOKER_CLI_BUILD_COMMAND:-pnpm --filter @invoker/cli build}"
+    local cli_path="${BENCHMARK_INVOKER_CLI_PATH:-packages/cli/dist/index.js}"
+    [[ -f "$CHECKOUT_DIR/$cli_path" ]] || die "Built Invoker CLI not found: $CHECKOUT_DIR/$cli_path"
+    set_stage "invoker_cli_run"
+    node "$CHECKOUT_DIR/$cli_path" run "$GENERATED_PLAN" \
+      --standalone \
+      --db-dir "$INVOKER_DB_DIR_JOB" \
+      --config "$INVOKER_CONFIG_JOB" \
+      --json
   )
 }
 
@@ -666,20 +822,20 @@ case "$MODE" in
     set_stage "plan_generation"
     default_plan
     log_step "TEST_PASS kind=plan_to_invoker model=$MODEL generated_plan=$GENERATED_PLAN"
-    log_step "TEST_START kind=invoker_submit autofix=0 model=$MODEL"
-    default_invoker_submit ""
-    log_step "TEST_PASS kind=invoker_submit autofix=0 model=$MODEL"
-    status="review_ready"
+    log_step "TEST_START kind=invoker_cli_run autofix=0 model=$MODEL"
+    default_invoker_cli_run ""
+    log_step "TEST_PASS kind=invoker_cli_run autofix=0 model=$MODEL"
+    status="succeeded"
     ;;
   invoker_auto_fix)
     log_step "TEST_START kind=plan_to_invoker model=$MODEL"
     set_stage "plan_generation"
     default_plan
     log_step "TEST_PASS kind=plan_to_invoker model=$MODEL generated_plan=$GENERATED_PLAN"
-    log_step "TEST_START kind=invoker_submit autofix=1 model=$MODEL"
-    default_invoker_submit "1"
-    log_step "TEST_PASS kind=invoker_submit autofix=1 model=$MODEL"
-    status="review_ready"
+    log_step "TEST_START kind=invoker_cli_run autofix=1 model=$MODEL"
+    default_invoker_cli_run "1"
+    log_step "TEST_PASS kind=invoker_cli_run autofix=1 model=$MODEL"
+    status="succeeded"
     ;;
   *) die "Unsupported mode: $MODE" ;;
 esac
@@ -692,5 +848,8 @@ log_step "TOKEN_USAGE extracted"
 touch "$JOB_DIR/invoker-events.jsonl"
 set_stage ""
 write_job_json "$status" 0 ""
+set_stage "electron_cleanup"
+scoped_electron_cleanup
+set_stage ""
 cleanup_job_runtime
 echo "END run_id=$RUN_ID status=$status"

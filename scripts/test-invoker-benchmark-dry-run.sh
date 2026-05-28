@@ -183,7 +183,7 @@ cat > "$fake_batch/jobs/$failed_run_id/job.json" <<EOF
   "status": "failed",
   "result": "fail",
   "exit_code": 1,
-  "failure_stage": "invoker_headless_run",
+  "failure_stage": "invoker_cli_run",
   "failure_reason": "claude_auth_failed",
   "failure_message": "Failed to authenticate. API Error: 401",
   "commits": [],
@@ -199,10 +199,10 @@ import sys
 events = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
 run = next(item["properties"] for item in events if item["event"] == "benchmark_run" and item["properties"].get("run_id") == sys.argv[2])
 task = next(item["properties"] for item in events if item["event"] == "benchmark_task" and item["properties"].get("run_id") == sys.argv[2])
-assert run["failure_stage"] == "invoker_headless_run"
+assert run["failure_stage"] == "invoker_cli_run"
 assert run["failure_reason"] == "claude_auth_failed"
 assert run["failure_message"] == "Failed to authenticate. API Error: 401"
-assert task["failure_stage"] == "invoker_headless_run"
+assert task["failure_stage"] == "invoker_cli_run"
 assert task["failure_reason"] == "claude_auth_failed"
 PY
 
@@ -255,12 +255,76 @@ fi
 grep -q "missing invoker_sha" "$missing_sha_batch/export.out"
 
 fake_invoker_repo="$TMP_ROOT/fake-invoker-repo"
-mkdir -p "$fake_invoker_repo/scripts"
+mkdir -p "$fake_invoker_repo/packages/cli/dist" "$fake_invoker_repo/scripts"
 cat > "$fake_invoker_repo/scripts/kill-all-electron.sh" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
 chmod +x "$fake_invoker_repo/scripts/kill-all-electron.sh"
+cat > "$fake_invoker_repo/package.json" <<'EOF'
+{
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build": "npm run build --workspace @invoker/cli"
+  }
+}
+EOF
+cat > "$fake_invoker_repo/packages/cli/package.json" <<'EOF'
+{
+  "name": "@invoker/cli",
+  "private": true,
+  "scripts": {
+    "build": "node build.js"
+  }
+}
+EOF
+cat > "$fake_invoker_repo/packages/cli/build.js" <<'EOF'
+const fs = require("fs");
+const path = require("path");
+const dist = path.join(__dirname, "dist");
+fs.mkdirSync(dist, { recursive: true });
+fs.writeFileSync(path.join(dist, "build-marker.txt"), "built\n");
+EOF
+cat > "$fake_invoker_repo/packages/cli/dist/index.js" <<'EOF'
+#!/usr/bin/env node
+const fs = require("fs");
+const path = require("path");
+
+const args = process.argv.slice(2);
+const valueAfter = (flag) => {
+  const index = args.indexOf(flag);
+  return index === -1 ? "" : args[index + 1] || "";
+};
+const dbDir = valueAfter("--db-dir");
+const configPath = valueAfter("--config");
+const logPath = process.env.FAKE_INVOKER_CLI_LOG || path.join(process.env.JOB_DIR || process.cwd(), "cli-invocations.jsonl");
+const config = configPath && fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
+const dbExistsBefore = Boolean(dbDir && fs.existsSync(dbDir));
+if (dbDir) {
+  fs.mkdirSync(dbDir, { recursive: true });
+  fs.writeFileSync(path.join(dbDir, "standalone-marker.txt"), "created\n");
+}
+fs.appendFileSync(logPath, JSON.stringify({ script: process.argv[1], args, dbDir, configPath, config, dbExistsBefore }) + "\n");
+
+switch (process.env.FAKE_INVOKER_FAILURE_KIND || "") {
+  case "claude_auth":
+    console.error("Failed to authenticate. API Error: 401");
+    process.exit(1);
+    break;
+  case "validation":
+    console.error("Strict validation failed: task id is required");
+    process.exit(1);
+    break;
+  case "timeout":
+    console.error("Invoker CLI timed out");
+    process.exit(124);
+    break;
+  default:
+    process.stdout.write(JSON.stringify({ ok: true }) + "\n");
+}
+EOF
+chmod +x "$fake_invoker_repo/packages/cli/dist/index.js"
 cat > "$fake_invoker_repo/run.sh" <<'EOF'
 #!/usr/bin/env bash
 case "${FAKE_INVOKER_FAILURE_KIND:-}" in
@@ -297,6 +361,7 @@ BENCHMARK_ROOT=$worker_root
 INVOKER_REPO=$fake_invoker_repo
 INVOKER_BRANCH=master
 BENCHMARK_PLAN_CODEX_COMMAND='printf "name: fake plan\n" > "\$GENERATED_PLAN"'
+BENCHMARK_INVOKER_CLI_BUILD_COMMAND='node packages/cli/build.js'
 EOF
 
 if BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" FAKE_INVOKER_FAILURE_KIND=claude_auth "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id auth-failure --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/auth.out" 2>&1; then
@@ -307,7 +372,7 @@ python3 - "$worker_root/runs/worker-failures/jobs/auth-failure/job.json" <<'PY'
 import json
 import sys
 payload = json.load(open(sys.argv[1]))
-assert payload["failure_stage"] == "invoker_headless_run"
+assert payload["failure_stage"] == "invoker_cli_run"
 assert payload["failure_reason"] == "claude_auth_failed"
 assert "401" in payload["failure_message"]
 assert payload["invoker_sha"]
@@ -324,7 +389,7 @@ python3 - "$worker_root/runs/worker-failures/jobs/validation-failure/job.json" <
 import json
 import sys
 payload = json.load(open(sys.argv[1]))
-assert payload["failure_stage"] == "invoker_headless_run"
+assert payload["failure_stage"] == "invoker_cli_run"
 assert payload["failure_reason"] == "plan_validation_failed"
 assert "validation" in payload["failure_message"].lower()
 job_dir = sys.argv[1].rsplit("/", 1)[0]
@@ -333,18 +398,142 @@ assert not __import__("pathlib").Path(job_dir, "invoker-db").exists()
 PY
 
 BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id successful-invoker --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/success.out" 2>&1
-python3 - "$worker_root/runs/worker-failures/jobs/successful-invoker/job.json" <<'PY'
+python3 - "$worker_root/runs/worker-failures/jobs/successful-invoker/job.json" "$worker_root/runs/worker-failures/jobs/successful-invoker/cli-invocations.jsonl" <<'PY'
 import json
 import sys
 from pathlib import Path
 payload = json.load(open(sys.argv[1]))
-assert payload["status"] == "review_ready"
+invocations = [json.loads(line) for line in open(sys.argv[2]) if line.strip()]
+assert len(invocations) == 1, invocations
+invocation = invocations[0]
+assert invocation["script"].endswith("packages/cli/dist/index.js"), invocation
+assert invocation["args"][0:2] == ["run", str(Path(sys.argv[1]).parent / "generated-plan.yaml")], invocation
+assert "--standalone" in invocation["args"], invocation
+assert invocation["dbDir"] == str(Path(sys.argv[1]).parent / "invoker-db"), invocation
+assert invocation["configPath"] == str(Path(sys.argv[1]).parent / "invoker-config.json"), invocation
+assert "--json" in invocation["args"], invocation
+assert invocation["config"]["autoFixRetries"] == 0, invocation
+assert invocation["dbExistsBefore"] is True, invocation
+assert payload["status"] == "succeeded"
 assert payload["result"] == "pass"
 assert payload["failure_stage"] == ""
 assert payload["failure_reason"] == ""
 job_dir = Path(sys.argv[1]).parent
 assert not (job_dir / "checkout").exists()
 assert not (job_dir / "invoker-db").exists()
+PY
+
+BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id successful-autofix --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_auto_fix --invoker-sha "$fake_invoker_sha" >"$worker_root/autofix.out" 2>&1
+python3 - "$worker_root/runs/worker-failures/jobs/successful-autofix/job.json" "$worker_root/runs/worker-failures/jobs/successful-autofix/cli-invocations.jsonl" <<'PY'
+import json
+import sys
+from pathlib import Path
+payload = json.load(open(sys.argv[1]))
+invocation = [json.loads(line) for line in open(sys.argv[2]) if line.strip()][0]
+assert payload["status"] == "succeeded"
+assert invocation["config"]["autoFixRetries"] == 1, invocation
+job_dir = Path(sys.argv[1]).parent
+assert not (job_dir / "invoker-db").exists()
+PY
+
+if BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" FAKE_INVOKER_FAILURE_KIND=timeout "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id timeout-failure --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/timeout.out" 2>&1; then
+  echo "Expected timeout-like worker job to fail" >&2
+  exit 1
+fi
+python3 - "$worker_root/runs/worker-failures/jobs/timeout-failure/job.json" <<'PY'
+import json
+import sys
+payload = json.load(open(sys.argv[1]))
+assert payload["failure_stage"] == "invoker_cli_run"
+assert payload["failure_reason"] == "timeout"
+assert "timed out" in payload["failure_message"].lower()
+PY
+
+cleanup_run_id="cleanup-scope"
+cleanup_job_dir="$worker_root/runs/worker-failures/jobs/$cleanup_run_id"
+cleanup_processes="$worker_root/cleanup-processes.txt"
+cleanup_kill_log="$worker_root/cleanup-kill.log"
+cat > "$cleanup_processes" <<EOF
+10001 1 /Applications/Electron.app/Contents/MacOS/Electron
+10002 1 /usr/bin/electron --user-data-dir /tmp/other-benchmark/jobs/other/invoker-db
+10003 1 $cleanup_job_dir/checkout/node_modules/.bin/electron --headless
+10004 1 /usr/bin/Electron --user-data-dir $cleanup_job_dir/invoker-db
+10005 1 $cleanup_job_dir/checkout/scripts/kill-all-electron.sh
+10006 1 /usr/bin/Invoker --config /tmp/other-benchmark/jobs/other/invoker-config.json
+10007 1 /usr/bin/node /repo/scripts/electron.cjs --socket $cleanup_job_dir/invoker-db/ipc-transport.sock
+EOF
+BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" \
+  BENCHMARK_PROCESS_LIST_FILE="$cleanup_processes" \
+  BENCHMARK_KILL_LOG="$cleanup_kill_log" \
+  BENCHMARK_ELECTRON_CLEANUP_TERM_WAIT_SECONDS=0 \
+  "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id "$cleanup_run_id" --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/cleanup-scope.out" 2>&1
+python3 - "$cleanup_kill_log" <<'PY'
+import sys
+from pathlib import Path
+lines = [line.split() for line in Path(sys.argv[1]).read_text().splitlines() if line.strip()]
+targeted = {int(pid) for _, pid in lines}
+assert targeted == {10003, 10004, 10007}, lines
+assert all(signal in {"TERM", "KILL"} for signal, _ in lines), lines
+assert not ({10001, 10002, 10005, 10006} & targeted), lines
+PY
+
+cleanup_failure_env="$worker_root/config/cleanup-failure.env"
+cat > "$cleanup_failure_env" <<EOF
+TZ=Asia/Hong_Kong
+BENCHMARK_ROOT=$worker_root
+INVOKER_REPO=$fake_invoker_repo
+INVOKER_BRANCH=master
+BENCHMARK_PLAN_CODEX_COMMAND='mkdir -p "\$HOME/.codex/sessions"; printf "%s\n" '"'"'{"usage":{"input_tokens":111,"output_tokens":22,"reasoning_tokens":3,"total_tokens":136}}'"'"' > "\$HOME/.codex/sessions/cleanup-failure.jsonl"; printf "name: fake plan\n" > "\$GENERATED_PLAN"'
+BENCHMARK_INVOKER_CLI_BUILD_COMMAND='node packages/cli/build.js'
+EOF
+cleanup_failure_run_id="cleanup-failure-with-tokens"
+cleanup_failure_job_dir="$worker_root/runs/worker-failures/jobs/$cleanup_failure_run_id"
+cleanup_failure_processes="$worker_root/cleanup-failure-processes.txt"
+cat > "$cleanup_failure_processes" <<EOF
+19999 1 /usr/bin/electron --user-data-dir $cleanup_failure_job_dir/invoker-db
+EOF
+worker_home="$worker_root/home"
+rm -rf "$worker_home"
+mkdir -p "$worker_home"
+if HOME="$worker_home" \
+  BENCHMARK_ENV_FILE="$cleanup_failure_env" \
+  BENCHMARK_PROCESS_LIST_FILE="$cleanup_failure_processes" \
+  BENCHMARK_ELECTRON_CLEANUP_TERM_WAIT_SECONDS=0 \
+  "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id "$cleanup_failure_run_id" --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/cleanup-failure.out" 2>&1; then
+  echo "Expected scoped cleanup failure worker job to fail" >&2
+  exit 1
+fi
+python3 - "$cleanup_failure_job_dir/job.json" "$cleanup_failure_job_dir/token-usage.json" <<'PY'
+import json
+import sys
+job = json.load(open(sys.argv[1]))
+usage = json.load(open(sys.argv[2]))
+assert job["failure_stage"] == "electron_cleanup"
+assert job["failure_reason"] == "electron_cleanup_failed"
+assert usage["input_tokens"] == 111
+assert usage["output_tokens"] == 22
+assert usage["reasoning_tokens"] == 3
+assert usage["total_tokens"] == 136
+assert job["token_usage"]["total_tokens"] == 136
+PY
+cat > "$worker_root/runs/worker-failures/summary.json" <<EOF
+{
+  "batch_id": "worker-failures",
+  "invoker_sha": "$fake_invoker_sha",
+  "job_count": 7,
+  "setup_status": "succeeded",
+  "status_counts": {"failed": 4, "succeeded": 3}
+}
+EOF
+BENCHMARK_ROOT=/home/invoker/invoker-benchmarks "$worker_root/bin/emit-mixpanel-events.sh" --batch-dir "$worker_root/runs/worker-failures" >/dev/null
+python3 - "$worker_root/runs/worker-failures/mixpanel-export.jsonl" "$cleanup_failure_run_id" <<'PY'
+import json
+import sys
+events = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+token = next(item["properties"] for item in events if item["event"] == "benchmark_token_usage" and item["properties"].get("run_id") == sys.argv[2])
+assert token["failure_stage"] == "electron_cleanup"
+assert token["failure_reason"] == "electron_cleanup_failed"
+assert token["total_tokens"] == 136
 PY
 
 EMPTY_ROOT="$(mktemp -d /tmp/invoker-benchmark-empty.XXXXXX)"
