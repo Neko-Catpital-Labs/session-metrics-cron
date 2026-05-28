@@ -613,7 +613,7 @@ default_baseline() {
 }
 
 default_plan() {
-  local benchmark_plan_constraint="${BENCHMARK_PLAN_CONSTRAINT:-For this benchmark, generate Invoker YAML with mergeMode: manual. Do not use mergeMode: github.}"
+  local benchmark_plan_constraint="${BENCHMARK_PLAN_CONSTRAINT:-For this benchmark, generate Invoker YAML with mergeMode: manual. Do not use mergeMode: github. Write the final YAML plan to the path in GENERATED_PLAN. Do not submit the plan. Do not print the YAML as your final answer; after writing GENERATED_PLAN, print only a short confirmation.}"
   case "$MODEL" in
     codex)
       if ! run_template "${BENCHMARK_PLAN_CODEX_COMMAND:-}"; then
@@ -622,16 +622,24 @@ default_plan() {
           printf '/plan-to-invoker\n'
           printf '%s\n\n' "$benchmark_plan_constraint"
           cat "$PROMPT_FILE"
-        } | (cd "$CHECKOUT_DIR" && codex exec --skip-git-repo-check -) > "$GENERATED_PLAN"
+        } | (
+          cd "$CHECKOUT_DIR"
+          export GENERATED_PLAN JOB_DIR
+          codex exec --skip-git-repo-check --sandbox workspace-write --add-dir "$JOB_DIR" -
+        )
       fi
       ;;
     claude)
       if ! run_template "${BENCHMARK_PLAN_CLAUDE_COMMAND:-}"; then
         command -v claude >/dev/null || die "claude CLI not found and BENCHMARK_PLAN_CLAUDE_COMMAND is unset"
-        (cd "$CHECKOUT_DIR" && claude -p "/plan-to-invoker
+        (
+          cd "$CHECKOUT_DIR"
+          export GENERATED_PLAN JOB_DIR
+          claude --add-dir "$JOB_DIR" --permission-mode acceptEdits -p "/plan-to-invoker
 $benchmark_plan_constraint
 
-$(cat "$PROMPT_FILE")") > "$GENERATED_PLAN"
+$(cat "$PROMPT_FILE")"
+        )
       fi
       ;;
     *) die "Unsupported model: $MODEL" ;;
