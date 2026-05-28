@@ -290,6 +290,9 @@ on_exit() {
     fi
     write_job_json failed "$code" "$failure_stage" || true
   fi
+  if [[ "$code" -ne 0 ]]; then
+    cleanup_job_runtime || true
+  fi
 }
 trap on_exit EXIT
 
@@ -322,6 +325,10 @@ clear_non_credential_state() {
     fi
     rm -rf "$scratch_path" 2>/dev/null || true
   done
+}
+
+cleanup_job_runtime() {
+  rm -rf "$CHECKOUT_DIR" "$INVOKER_DB_DIR_JOB" 2>/dev/null || true
 }
 
 install_checkout() {
@@ -685,4 +692,5 @@ log_step "TOKEN_USAGE extracted"
 touch "$JOB_DIR/invoker-events.jsonl"
 set_stage ""
 write_job_json "$status" 0 ""
+cleanup_job_runtime
 echo "END run_id=$RUN_ID status=$status"

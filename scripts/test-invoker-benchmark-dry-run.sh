@@ -286,8 +286,10 @@ git -C "$fake_invoker_repo" commit -m "fake invoker" >/dev/null
 fake_invoker_sha="$(git -C "$fake_invoker_repo" rev-parse HEAD)"
 
 worker_root="$TMP_ROOT/worker-root"
-mkdir -p "$worker_root/bin" "$worker_root/config" "$worker_root/corpus"
+mkdir -p "$worker_root/bin" "$worker_root/config" "$worker_root/corpus" "$worker_root/lib" "$worker_root/scripts"
 cp -R "$REPO_ROOT/invoker-benchmarks/bin/." "$worker_root/bin/"
+cp -R "$REPO_ROOT/invoker-benchmarks/lib/." "$worker_root/lib/"
+cp "$REPO_ROOT/scripts/usage_costing.py" "$worker_root/scripts/usage_costing.py"
 printf '{"type":"event_msg","payload":{"type":"user_message","message":"do the thing"}}\n' > "$worker_root/corpus/session-01.jsonl"
 cat > "$worker_root/config/benchmark.env" <<EOF
 TZ=Asia/Hong_Kong
@@ -309,6 +311,9 @@ assert payload["failure_stage"] == "invoker_headless_run"
 assert payload["failure_reason"] == "claude_auth_failed"
 assert "401" in payload["failure_message"]
 assert payload["invoker_sha"]
+job_dir = sys.argv[1].rsplit("/", 1)[0]
+assert not __import__("pathlib").Path(job_dir, "checkout").exists()
+assert not __import__("pathlib").Path(job_dir, "invoker-db").exists()
 PY
 
 if BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" FAKE_INVOKER_FAILURE_KIND=validation "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id validation-failure --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/validation.out" 2>&1; then
@@ -322,6 +327,24 @@ payload = json.load(open(sys.argv[1]))
 assert payload["failure_stage"] == "invoker_headless_run"
 assert payload["failure_reason"] == "plan_validation_failed"
 assert "validation" in payload["failure_message"].lower()
+job_dir = sys.argv[1].rsplit("/", 1)[0]
+assert not __import__("pathlib").Path(job_dir, "checkout").exists()
+assert not __import__("pathlib").Path(job_dir, "invoker-db").exists()
+PY
+
+BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id successful-invoker --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/success.out" 2>&1
+python3 - "$worker_root/runs/worker-failures/jobs/successful-invoker/job.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+payload = json.load(open(sys.argv[1]))
+assert payload["status"] == "review_ready"
+assert payload["result"] == "pass"
+assert payload["failure_stage"] == ""
+assert payload["failure_reason"] == ""
+job_dir = Path(sys.argv[1]).parent
+assert not (job_dir / "checkout").exists()
+assert not (job_dir / "invoker-db").exists()
 PY
 
 EMPTY_ROOT="$(mktemp -d /tmp/invoker-benchmark-empty.XXXXXX)"
