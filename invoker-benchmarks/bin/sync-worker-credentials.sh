@@ -92,10 +92,24 @@ for worker in "${WORKERS[@]}"; do
   for dir in "$HOME/.codex" "$HOME/.claude" "$HOME/.invoker"; do
     [[ -d "$dir" ]] || continue
     remote_dir="$(basename "$dir")"
-    rsync -az --exclude 'sessions/' --exclude 'benchmark-scratch/' -e "ssh -p $port" "$dir/" "$target:~/$remote_dir/"
+    rsync -az \
+      --exclude 'sessions/' \
+      --exclude 'benchmark-scratch/' \
+      --exclude 'worktrees/' \
+      --exclude 'agent-sessions/' \
+      --exclude 'merge-clones/' \
+      --exclude 'plans/' \
+      --exclude 'repos/' \
+      --exclude 'db-backups/' \
+      --exclude 'task-output/' \
+      --exclude '*.sqlite' \
+      --exclude '*.sqlite-*' \
+      --exclude '*.log' \
+      --exclude 'log/' \
+      -e "ssh -p $port" "$dir/" "$target:~/$remote_dir/"
   done
   if [[ -d "$HOME/.ssh" ]]; then
-    rsync -az --exclude '*.pub' --exclude 'known_hosts.old' -e "ssh -p $port" "$HOME/.ssh/" "$target:~/.ssh/"
+    rsync -az --exclude 'authorized_keys' --exclude '*.pub' --exclude 'known_hosts.old' -e "ssh -p $port" "$HOME/.ssh/" "$target:~/.ssh/"
     ssh -p "$port" "$target" "chmod 700 ~/.ssh && find ~/.ssh -type f -exec chmod 600 {} \\;"
   fi
 done
