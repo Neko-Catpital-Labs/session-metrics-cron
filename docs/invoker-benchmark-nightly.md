@@ -60,3 +60,29 @@ The coordinator writes `summary.md`, `summary.json`, `job-matrix.tsv`,
 `worker-assignments.tsv`, and `mixpanel-export.jsonl`. Each job writes
 `job.json`, logs, generated plan, token usage, raw sessions, and the disposable
 checkout under `jobs/<run_id>/`.
+
+## Mixpanel Dashboard
+
+Use a benchmark-only board named `Invoker Benchmark Runs`. The primary event is
+`benchmark_run`; reserve `benchmark_batch`, `benchmark_task`, and
+`benchmark_token_usage` for drilldowns. Every benchmark event must include the
+canonical `invoker_sha` property.
+
+Recommended panels:
+
+- Run count: event `benchmark_run`, count events, breakdown `invoker_sha`.
+- Cost by SHA: event `benchmark_run`, sum `derived_total_cost_usd`, breakdown
+  `invoker_sha`.
+- Normalized tokens by SHA: event `benchmark_run`, sum
+  `normalized_total_tokens`, breakdown `invoker_sha`.
+- Result/status: event `benchmark_run`, count events, breakdowns
+  `invoker_sha`, `result`, and `status`.
+- Error reasons: event `benchmark_run`, count events, filter `result = fail`,
+  breakdowns `invoker_sha`, `failure_reason`, `failure_stage`, `mode`, and
+  `model`.
+- Model comparison: event `benchmark_run`, count events, breakdowns
+  `invoker_sha` and `model`.
+- Scenario comparison: event `benchmark_run`, count events, breakdowns
+  `invoker_sha` and `scenario`.
+- Execution surface: event `benchmark_run`, count events, breakdowns
+  `invoker_sha` and `execution_surface`.

@@ -53,6 +53,7 @@ schema = sys.argv[3]
 summary_path = batch_dir / "summary.json"
 summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
 batch_id = summary.get("batch_id") or batch_dir.name
+summary_invoker_sha = str(summary.get("invoker_sha") or "").strip()
 now = int(datetime.now(timezone.utc).timestamp())
 artifact_root = os.environ.get("BENCHMARK_ARTIFACT_ROOT") or os.environ.get("BENCHMARK_ROOT") or "/home/invoker/invoker-benchmarks"
 
@@ -61,6 +62,10 @@ def insert_id(*parts):
     return "bench-" + hashlib.sha256(key.encode()).hexdigest()[:32]
 
 def event(name, props):
+    invoker_sha = str(props.get("invoker_sha") or "").strip()
+    if not invoker_sha:
+        raise SystemExit(f"{name} is missing invoker_sha for batch {batch_id}")
+    props["invoker_sha"] = invoker_sha
     row_id = insert_id(batch_id, name, props.get("run_id", ""), props.get("task_id", ""))
     base = {
         "token": token,
@@ -75,7 +80,7 @@ def event(name, props):
 
 events = [
     event("benchmark_batch", {
-        "invoker_sha": summary.get("invoker_sha"),
+        "invoker_sha": summary_invoker_sha,
         "job_count": summary.get("job_count", 0),
         "setup_status": summary.get("setup_status", ""),
         "setup_exit_code": summary.get("setup_exit_code"),
@@ -98,6 +103,7 @@ for job_path in sorted((batch_dir / "jobs").glob("*/job.json")):
             usage = {}
     run_id = job.get("run_id")
     scenario = job.get("scenario") or job.get("mode")
+    job_invoker_sha = str(job.get("invoker_sha") or summary_invoker_sha).strip()
     job_artifact_path = f"{artifact_root}/runs/{batch_id}/jobs/{run_id}"
     run_props = {
         "run_id": run_id,
@@ -115,10 +121,13 @@ for job_path in sorted((batch_dir / "jobs").glob("*/job.json")):
         "scenario": scenario,
         "execution_surface": job.get("execution_surface") or ("baseline" if scenario == "baseline_direct" else "invoker"),
         "autofix_enabled": bool(job.get("autofix_enabled") or scenario == "invoker_auto_fix"),
-        "invoker_sha": job.get("invoker_sha"),
+        "invoker_sha": job_invoker_sha,
         "status": job.get("status"),
         "result": job.get("result"),
         "exit_code": job.get("exit_code"),
+        "failure_stage": job.get("failure_stage", ""),
+        "failure_reason": job.get("failure_reason", ""),
+        "failure_message": job.get("failure_message", ""),
         "estimated_cost_usd": usage.get("estimated_cost_usd", 0),
         "derived_total_cost_usd": usage.get("derived_total_cost_usd"),
         "input_tokens": usage.get("input_tokens", 0),

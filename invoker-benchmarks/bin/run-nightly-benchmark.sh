@@ -390,7 +390,7 @@ run_worker_queue() {
     [[ -n "$run_id" ]] || continue
     log "dispatch worker=$worker_name run_id=$run_id"
     printf '[%s] START worker=%s run_id=%s conversation=%s model=%s mode=%s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$worker_name" "$run_id" "$conversation_file" "$model" "$mode" >>"$BATCH_DIR/job-events.log"
-    if ssh -p "$port" "$target" \
+    if ssh -n -p "$port" "$target" \
       "BENCHMARK_ROOT='$BENCHMARK_ROOT' '$BENCHMARK_ROOT/bin/run-worker-job.sh' --batch-id '$BATCH_ID' --run-id '$run_id' --conversation-file '$conversation_file' --model '$model' --mode '$mode' --invoker-sha '$INVOKER_SHA'" \
       >>"$worker_log" 2>&1; then
       log "complete worker=$worker_name run_id=$run_id"

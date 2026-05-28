@@ -38,6 +38,7 @@ done
 [[ -n "$MODEL" ]] || die "Missing --model"
 [[ -n "$MODE" ]] || die "Missing --mode"
 [[ -n "$INVOKER_SHA" ]] || die "Missing --invoker-sha"
+CLI_INVOKER_SHA="$INVOKER_SHA"
 
 BENCHMARK_ROOT="${BENCHMARK_ROOT:-/home/invoker/invoker-benchmarks}"
 ENV_FILE="${BENCHMARK_ENV_FILE:-$BENCHMARK_ROOT/config/benchmark.env}"
@@ -47,17 +48,22 @@ if [[ -f "$ENV_FILE" ]]; then
   source "$ENV_FILE"
   set +a
 fi
+INVOKER_SHA="$CLI_INVOKER_SHA"
+export INVOKER_SHA
 
 export TZ="${TZ:-Asia/Hong_Kong}"
 JOB_DIR="$BENCHMARK_ROOT/runs/$BATCH_ID/jobs/$RUN_ID"
 CHECKOUT_DIR="$JOB_DIR/checkout"
 RAW_SESSIONS_DIR="$JOB_DIR/raw-sessions"
 GENERATED_PLAN="$JOB_DIR/generated-plan.yaml"
+INVOKER_DB_DIR_JOB="$JOB_DIR/invoker-db"
+INVOKER_CONFIG_JOB="$JOB_DIR/invoker-config.json"
 PROMPT_FILE="$JOB_DIR/prompt.txt"
 STDOUT_LOG="$JOB_DIR/stdout.log"
 STDERR_LOG="$JOB_DIR/stderr.log"
 STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 STEP_LOG="$JOB_DIR/steps.log"
+CURRENT_STAGE=""
 
 mkdir -p "$JOB_DIR" "$RAW_SESSIONS_DIR"
 exec > >(tee -a "$STDOUT_LOG") 2> >(tee -a "$STDERR_LOG" >&2)
@@ -66,10 +72,16 @@ log_step() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*" | tee -a "$STEP_LOG"
 }
 
+set_stage() {
+  CURRENT_STAGE="$1"
+  printf '%s\n' "$CURRENT_STAGE" > "$JOB_DIR/current-stage"
+}
+
 write_job_json() {
   local status="$1"
   local exit_code="${2:-0}"
-  python3 - "$JOB_DIR/job.json" "$BATCH_ID" "$RUN_ID" "$CONVERSATION_FILE" "$MODEL" "$MODE" "$INVOKER_SHA" "$STARTED_AT" "$status" "$exit_code" "$CHECKOUT_DIR" <<'PY'
+  local failure_stage="${3:-}"
+  python3 - "$JOB_DIR/job.json" "$BATCH_ID" "$RUN_ID" "$CONVERSATION_FILE" "$MODEL" "$MODE" "$INVOKER_SHA" "$STARTED_AT" "$status" "$exit_code" "$CHECKOUT_DIR" "$failure_stage" <<'PY'
 import json
 import os
 import re
@@ -78,7 +90,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-path, batch_id, run_id, conv, model, mode, sha, started, status, exit_code, checkout_arg = sys.argv[1:]
+path, batch_id, run_id, conv, model, mode, sha, started, status, exit_code, checkout_arg, failure_stage_arg = sys.argv[1:]
 job_dir = Path(path).parent
 checkout = Path(checkout_arg)
 
@@ -120,6 +132,77 @@ for manifest_path in (
             break
     if source_info:
         break
+
+def read_artifact(name, limit=50000):
+    artifact_path = job_dir / name
+    if not artifact_path.exists():
+        return ""
+    try:
+        text = artifact_path.read_text(errors="ignore")
+    except Exception:
+        return ""
+    return text[-limit:]
+
+def concise_message(*texts):
+    for text in texts:
+        for line in str(text or "").splitlines():
+            line = " ".join(line.strip().split())
+            if not line:
+                continue
+            if len(line) > 240:
+                return line[:237] + "..."
+            return line
+    return ""
+
+def matching_message(text, *needles):
+    lowered_needles = [needle.lower() for needle in needles]
+    for line in str(text or "").splitlines():
+        compact = " ".join(line.strip().split())
+        lowered = compact.lower()
+        if compact and any(needle in lowered for needle in lowered_needles):
+            if len(compact) > 240:
+                return compact[:237] + "..."
+            return compact
+    return ""
+
+def derive_failure(status_value, exit_code_value, stage_value):
+    if int(exit_code_value) == 0 and status_value not in {"failed", "timeout", "invalid_job_json"}:
+        return "", "", ""
+    stderr = read_artifact("stderr.log")
+    stdout = read_artifact("stdout.log")
+    plan = read_artifact("generated-plan.yaml")
+    combined = "\n".join([stderr, stdout, plan])
+    lowered = combined.lower()
+    stage = stage_value or "unknown"
+
+    if status_value == "timeout" or "timed out" in lowered or "timeout" in lowered:
+        return stage, "timeout", matching_message(combined, "timeout", "timed out") or concise_message(stderr, stdout, "timeout")
+    if "failed to authenticate. api error: 401" in lowered or "api error: 401" in lowered or "status code: 401" in lowered:
+        return stage, "claude_auth_failed", matching_message(combined, "api error: 401", "status code: 401", "failed to authenticate") or concise_message(stderr, stdout, "Claude authentication failed")
+    validation_signatures = (
+        "strict validation",
+        "plan validation failed",
+        "failed to validate",
+        "validation failed",
+        "invalid plan",
+        "yaml validation",
+    )
+    if any(signature in lowered for signature in validation_signatures):
+        return stage, "plan_validation_failed", matching_message(combined, *validation_signatures) or concise_message(stderr, stdout, plan)
+    if stage == "electron_cleanup":
+        return stage, "electron_cleanup_failed", concise_message(stderr, stdout, "Electron cleanup failed")
+    if stage == "invoker_headless_run":
+        return stage, "headless_run_failed", concise_message(stderr, stdout, "Invoker headless run failed")
+    if stage == "checkout":
+        return stage, "checkout_failed", concise_message(stderr, stdout, "Checkout failed")
+    if stage == "plan_generation":
+        return stage, "plan_generation_failed", concise_message(stderr, stdout, plan)
+    if stage == "token_usage":
+        return stage, "token_usage_failed", concise_message(stderr, stdout, "Token usage extraction failed")
+    return stage, "unknown", concise_message(stderr, stdout, plan, "Unknown benchmark failure")
+
+failure_stage, failure_reason, failure_message = derive_failure(status, exit_code, failure_stage_arg)
+
 def derive_source_session_id():
     source_file = str(source_info.get("source_file") or "")
     match = re.search(r"(019[a-z0-9-]{32,})", source_file)
@@ -157,6 +240,9 @@ payload = {
     "status": status,
     "exit_code": int(exit_code),
     "result": "pass" if int(exit_code) == 0 and status not in {"failed", "timeout", "invalid_job_json"} else "fail",
+    "failure_stage": failure_stage,
+    "failure_reason": failure_reason,
+    "failure_message": failure_message,
     "commits": commits,
     "changed_files": [line[3:] if len(line) > 3 else line for line in changed.splitlines()],
     "step_log": steps,
@@ -198,7 +284,11 @@ PY
 on_exit() {
   local code=$?
   if [[ "$code" -ne 0 && ! -f "$JOB_DIR/job.json" ]]; then
-    write_job_json failed "$code" || true
+    local failure_stage="$CURRENT_STAGE"
+    if [[ -f "$JOB_DIR/current-stage" ]]; then
+      failure_stage="$(cat "$JOB_DIR/current-stage")"
+    fi
+    write_job_json failed "$code" "$failure_stage" || true
   fi
 }
 trap on_exit EXIT
@@ -224,8 +314,14 @@ clear_non_credential_state() {
     "$HOME/.cache/claude" \
     "$HOME/.codex/benchmark-scratch" \
     "$HOME/.claude/benchmark-scratch" \
-    "$HOME/.invoker/benchmark-scratch" \
-    /tmp/invoker-benchmark-* 2>/dev/null || true
+    "$HOME/.invoker/benchmark-scratch" 2>/dev/null || true
+  for scratch_path in /tmp/invoker-benchmark-*; do
+    [[ -e "$scratch_path" ]] || continue
+    if [[ "$BENCHMARK_ROOT" == "$scratch_path" || "$BENCHMARK_ROOT" == "$scratch_path/"* ]]; then
+      continue
+    fi
+    rm -rf "$scratch_path" 2>/dev/null || true
+  done
 }
 
 install_checkout() {
@@ -375,13 +471,32 @@ default_invoker_submit() {
     if run_template "${BENCHMARK_INVOKER_SUBMIT_COMMAND:-}"; then
       return 0
     fi
-    if command -v invoker >/dev/null; then
-      invoker workflow submit "$GENERATED_PLAN" --model "$MODEL" --no-pr --no-autostart --stop-at review_ready ${INVOKER_AUTOFIX:+--autofix}
-    elif [[ -x ./bin/invoker ]]; then
-      ./bin/invoker workflow submit "$GENERATED_PLAN" --model "$MODEL" --no-pr --no-autostart --stop-at review_ready ${INVOKER_AUTOFIX:+--autofix}
-    else
-      die "Invoker CLI not found and BENCHMARK_INVOKER_SUBMIT_COMMAND is unset"
-    fi
+    mkdir -p "$INVOKER_DB_DIR_JOB"
+    python3 - "$INVOKER_CONFIG_JOB" "${INVOKER_REPO_CONFIG_PATH:-$HOME/.invoker/config.json}" "$INVOKER_AUTOFIX" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+out = Path(sys.argv[1])
+source = Path(sys.argv[2])
+autofix = bool(sys.argv[3])
+config = {}
+if source.exists():
+    try:
+        loaded = json.loads(source.read_text())
+        if isinstance(loaded, dict):
+            config = loaded
+    except Exception:
+        config = {}
+config["autoFixRetries"] = 1 if autofix else 0
+out.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+PY
+    export INVOKER_DB_DIR="$INVOKER_DB_DIR_JOB"
+    export INVOKER_REPO_CONFIG_PATH="$INVOKER_CONFIG_JOB"
+    set_stage "electron_cleanup"
+    ./scripts/kill-all-electron.sh
+    set_stage "invoker_headless_run"
+    ./run.sh --headless run "$GENERATED_PLAN"
   )
 }
 
@@ -524,6 +639,7 @@ clear_non_credential_state
 log_step "CLEAR_STATE complete"
 prepare_prompt_file
 log_step "PROMPT_READY file=$PROMPT_FILE bytes=$(wc -c < "$PROMPT_FILE" | tr -d ' ')"
+set_stage "checkout"
 install_checkout
 log_step "CHECKOUT_READY dir=$CHECKOUT_DIR"
 
@@ -532,6 +648,7 @@ case "$MODE" in
   baseline_direct)
     baseline_var="BENCHMARK_BASELINE_${MODEL^^}_COMMAND"
     log_step "TEST_START kind=baseline_direct model=$MODEL"
+    set_stage "baseline_direct"
     if ! run_template "${!baseline_var:-}"; then
       default_baseline
     fi
@@ -539,6 +656,7 @@ case "$MODE" in
     ;;
   invoker_workflow)
     log_step "TEST_START kind=plan_to_invoker model=$MODEL"
+    set_stage "plan_generation"
     default_plan
     log_step "TEST_PASS kind=plan_to_invoker model=$MODEL generated_plan=$GENERATED_PLAN"
     log_step "TEST_START kind=invoker_submit autofix=0 model=$MODEL"
@@ -548,6 +666,7 @@ case "$MODE" in
     ;;
   invoker_auto_fix)
     log_step "TEST_START kind=plan_to_invoker model=$MODEL"
+    set_stage "plan_generation"
     default_plan
     log_step "TEST_PASS kind=plan_to_invoker model=$MODEL generated_plan=$GENERATED_PLAN"
     log_step "TEST_START kind=invoker_submit autofix=1 model=$MODEL"
@@ -560,8 +679,10 @@ esac
 
 collect_new_sessions
 log_step "COLLECT_SESSIONS complete"
+set_stage "token_usage"
 extract_token_usage
 log_step "TOKEN_USAGE extracted"
 touch "$JOB_DIR/invoker-events.jsonl"
-write_job_json "$status" 0
+set_stage ""
+write_job_json "$status" 0 ""
 echo "END run_id=$RUN_ID status=$status"

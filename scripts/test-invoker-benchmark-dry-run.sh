@@ -133,6 +133,10 @@ python3 - "$fake_batch/mixpanel-export.jsonl" <<'PY'
 import json
 import sys
 events = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+event_names = {item["event"] for item in events}
+assert event_names == {"benchmark_batch", "benchmark_run", "benchmark_task", "benchmark_token_usage"}
+for item in events:
+    assert item["properties"]["invoker_sha"] == "test-sha", item
 run = next(item["properties"] for item in events if item["event"] == "benchmark_run")
 assert run["test_id"] == "019e1b94-1c63-7e02-a60f-febd3e3f2ff4"
 assert run["corpus_case_id"] == "session-01"
@@ -141,6 +145,9 @@ assert run["autofix_enabled"] is False
 assert run["estimated_cost_usd"] == 0.001555
 assert run["derived_total_cost_usd"] == 0.001555
 assert run["job_artifact_path"] == "/home/invoker/invoker-benchmarks/runs/fake-batch/jobs/" + run["run_id"]
+assert run["failure_stage"] == ""
+assert run["failure_reason"] == ""
+assert run["failure_message"] == ""
 for props in (item["properties"] for item in events):
     forbidden = {
         "cost_formula",
@@ -156,6 +163,165 @@ for props in (item["properties"] for item in events):
     overlap = forbidden & set(props)
     if overlap:
         raise AssertionError(f"verbose cost fields leaked to Mixpanel: {sorted(overlap)}")
+PY
+
+failed_run_id="failed-invoker__claude__invoker_workflow"
+mkdir -p "$fake_batch/jobs/$failed_run_id"
+cat > "$fake_batch/jobs/$failed_run_id/job.json" <<EOF
+{
+  "batch_id": "fake-batch",
+  "run_id": "$failed_run_id",
+  "test_id": "failed-invoker",
+  "conversation_id": "failed-invoker",
+  "corpus_case_id": "session-failed",
+  "model": "claude",
+  "mode": "invoker_workflow",
+  "scenario": "invoker_workflow",
+  "execution_surface": "invoker",
+  "autofix_enabled": false,
+  "invoker_sha": "test-sha",
+  "status": "failed",
+  "result": "fail",
+  "exit_code": 1,
+  "failure_stage": "invoker_headless_run",
+  "failure_reason": "claude_auth_failed",
+  "failure_message": "Failed to authenticate. API Error: 401",
+  "commits": [],
+  "changed_files": [],
+  "test_configuration": {},
+  "artifacts": {"prompt": "prompt.txt"}
+}
+EOF
+BENCHMARK_ROOT=/home/invoker/invoker-benchmarks "$TMP_ROOT/bin/emit-mixpanel-events.sh" --batch-dir "$fake_batch" >/dev/null
+python3 - "$fake_batch/mixpanel-export.jsonl" "$failed_run_id" <<'PY'
+import json
+import sys
+events = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+run = next(item["properties"] for item in events if item["event"] == "benchmark_run" and item["properties"].get("run_id") == sys.argv[2])
+task = next(item["properties"] for item in events if item["event"] == "benchmark_task" and item["properties"].get("run_id") == sys.argv[2])
+assert run["failure_stage"] == "invoker_headless_run"
+assert run["failure_reason"] == "claude_auth_failed"
+assert run["failure_message"] == "Failed to authenticate. API Error: 401"
+assert task["failure_stage"] == "invoker_headless_run"
+assert task["failure_reason"] == "claude_auth_failed"
+PY
+
+python3 - "$fake_batch/jobs/$fake_run_id/job.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+payload = json.load(open(path))
+payload.pop("invoker_sha")
+open(path, "w").write(json.dumps(payload, indent=2, sort_keys=True))
+PY
+BENCHMARK_ROOT=/home/invoker/invoker-benchmarks "$TMP_ROOT/bin/emit-mixpanel-events.sh" --batch-dir "$fake_batch" >/dev/null
+python3 - "$fake_batch/mixpanel-export.jsonl" <<'PY'
+import json
+import sys
+events = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+for item in events:
+    assert item["properties"]["invoker_sha"] == "test-sha", item
+PY
+
+missing_sha_batch="$TMP_ROOT/runs/missing-sha-batch"
+missing_sha_run_id="missing-sha__codex__baseline_direct"
+mkdir -p "$missing_sha_batch/jobs/$missing_sha_run_id"
+cat > "$missing_sha_batch/summary.json" <<'EOF'
+{
+  "batch_id": "missing-sha-batch",
+  "job_count": 1,
+  "setup_status": "succeeded",
+  "status_counts": {"succeeded": 1}
+}
+EOF
+cat > "$missing_sha_batch/jobs/$missing_sha_run_id/job.json" <<EOF
+{
+  "batch_id": "missing-sha-batch",
+  "run_id": "$missing_sha_run_id",
+  "test_id": "missing-sha",
+  "conversation_id": "missing-sha",
+  "model": "codex",
+  "mode": "baseline_direct",
+  "scenario": "baseline_direct",
+  "status": "succeeded",
+  "result": "pass",
+  "exit_code": 0
+}
+EOF
+if "$TMP_ROOT/bin/emit-mixpanel-events.sh" --batch-dir "$missing_sha_batch" >"$missing_sha_batch/export.out" 2>&1; then
+  echo "Expected benchmark export without invoker_sha to fail" >&2
+  exit 1
+fi
+grep -q "missing invoker_sha" "$missing_sha_batch/export.out"
+
+fake_invoker_repo="$TMP_ROOT/fake-invoker-repo"
+mkdir -p "$fake_invoker_repo/scripts"
+cat > "$fake_invoker_repo/scripts/kill-all-electron.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$fake_invoker_repo/scripts/kill-all-electron.sh"
+cat > "$fake_invoker_repo/run.sh" <<'EOF'
+#!/usr/bin/env bash
+case "${FAKE_INVOKER_FAILURE_KIND:-}" in
+  claude_auth)
+    echo "Failed to authenticate. API Error: 401" >&2
+    exit 1
+    ;;
+  validation)
+    echo "Strict validation failed: task id is required" >&2
+    exit 1
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOF
+chmod +x "$fake_invoker_repo/run.sh"
+git -C "$fake_invoker_repo" init >/dev/null
+git -C "$fake_invoker_repo" config user.email benchmark-test@example.com
+git -C "$fake_invoker_repo" config user.name "Benchmark Test"
+git -C "$fake_invoker_repo" add .
+git -C "$fake_invoker_repo" commit -m "fake invoker" >/dev/null
+fake_invoker_sha="$(git -C "$fake_invoker_repo" rev-parse HEAD)"
+
+worker_root="$TMP_ROOT/worker-root"
+mkdir -p "$worker_root/bin" "$worker_root/config" "$worker_root/corpus"
+cp -R "$REPO_ROOT/invoker-benchmarks/bin/." "$worker_root/bin/"
+printf '{"type":"event_msg","payload":{"type":"user_message","message":"do the thing"}}\n' > "$worker_root/corpus/session-01.jsonl"
+cat > "$worker_root/config/benchmark.env" <<EOF
+TZ=Asia/Hong_Kong
+BENCHMARK_ROOT=$worker_root
+INVOKER_REPO=$fake_invoker_repo
+INVOKER_BRANCH=master
+BENCHMARK_PLAN_CODEX_COMMAND='printf "name: fake plan\n" > "\$GENERATED_PLAN"'
+EOF
+
+if BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" FAKE_INVOKER_FAILURE_KIND=claude_auth "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id auth-failure --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/auth.out" 2>&1; then
+  echo "Expected auth failure worker job to fail" >&2
+  exit 1
+fi
+python3 - "$worker_root/runs/worker-failures/jobs/auth-failure/job.json" <<'PY'
+import json
+import sys
+payload = json.load(open(sys.argv[1]))
+assert payload["failure_stage"] == "invoker_headless_run"
+assert payload["failure_reason"] == "claude_auth_failed"
+assert "401" in payload["failure_message"]
+assert payload["invoker_sha"]
+PY
+
+if BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" FAKE_INVOKER_FAILURE_KIND=validation "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id validation-failure --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/validation.out" 2>&1; then
+  echo "Expected validation failure worker job to fail" >&2
+  exit 1
+fi
+python3 - "$worker_root/runs/worker-failures/jobs/validation-failure/job.json" <<'PY'
+import json
+import sys
+payload = json.load(open(sys.argv[1]))
+assert payload["failure_stage"] == "invoker_headless_run"
+assert payload["failure_reason"] == "plan_validation_failed"
+assert "validation" in payload["failure_message"].lower()
 PY
 
 EMPTY_ROOT="$(mktemp -d /tmp/invoker-benchmark-empty.XXXXXX)"
