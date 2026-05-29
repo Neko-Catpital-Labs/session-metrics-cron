@@ -280,7 +280,7 @@ fi
 grep -q "missing invoker_sha" "$missing_sha_batch/export.out"
 
 fake_invoker_repo="$TMP_ROOT/fake-invoker-repo"
-mkdir -p "$fake_invoker_repo/packages/cli/dist" "$fake_invoker_repo/scripts"
+mkdir -p "$fake_invoker_repo/packages/cli/dist" "$fake_invoker_repo/packages/app/dist" "$fake_invoker_repo/scripts"
 cat > "$fake_invoker_repo/scripts/kill-all-electron.sh" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -311,6 +311,27 @@ const dist = path.join(__dirname, "dist");
 fs.mkdirSync(dist, { recursive: true });
 fs.writeFileSync(path.join(dist, "build-marker.txt"), "built\n");
 EOF
+cat > "$fake_invoker_repo/packages/app/package.json" <<'EOF'
+{
+  "name": "@invoker/app",
+  "private": true,
+  "scripts": {
+    "build": "node build.js"
+  }
+}
+EOF
+cat > "$fake_invoker_repo/packages/app/build.js" <<'EOF'
+const fs = require("fs");
+const path = require("path");
+const dist = path.join(__dirname, "dist");
+fs.mkdirSync(dist, { recursive: true });
+fs.writeFileSync(path.join(dist, "main.js"), "console.log('fake headless app')\n");
+EOF
+cat > "$fake_invoker_repo/scripts/electron.cjs" <<'EOF'
+#!/usr/bin/env node
+console.log(["FAKE_INSTALL_SKILLS", ...process.argv.slice(2)].join(" "));
+EOF
+chmod +x "$fake_invoker_repo/scripts/electron.cjs"
 cat > "$fake_invoker_repo/packages/cli/dist/index.js" <<'EOF'
 #!/usr/bin/env node
 const fs = require("fs");
@@ -387,6 +408,7 @@ INVOKER_REPO=$fake_invoker_repo
 INVOKER_BRANCH=master
 BENCHMARK_PLAN_CODEX_COMMAND='printf "%s\n" "name: fake plan" "repoUrl: https://example.test/repo.git" "mergeMode: manual" "tasks:" "  - id: t1" "    title: T1" > "\$GENERATED_PLAN"'
 BENCHMARK_INVOKER_CLI_BUILD_COMMAND='node packages/cli/build.js'
+BENCHMARK_INVOKER_APP_BUILD_COMMAND='node packages/app/build.js'
 EOF
 
 if BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" FAKE_INVOKER_FAILURE_KIND=claude_auth "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id auth-failure --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/auth.out" 2>&1; then
@@ -403,7 +425,7 @@ assert "401" in payload["failure_message"]
 assert payload["invoker_sha"]
 job_dir = sys.argv[1].rsplit("/", 1)[0]
 assert not __import__("pathlib").Path(job_dir, "checkout").exists()
-assert not __import__("pathlib").Path(job_dir, "invoker-db").exists()
+assert __import__("pathlib").Path(job_dir, "invoker-db").exists()
 PY
 
 if BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" FAKE_INVOKER_FAILURE_KIND=validation "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id validation-failure --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/validation.out" 2>&1; then
@@ -419,10 +441,11 @@ assert payload["failure_reason"] == "plan_validation_failed"
 assert "validation" in payload["failure_message"].lower()
 job_dir = sys.argv[1].rsplit("/", 1)[0]
 assert not __import__("pathlib").Path(job_dir, "checkout").exists()
-assert not __import__("pathlib").Path(job_dir, "invoker-db").exists()
+assert __import__("pathlib").Path(job_dir, "invoker-db").exists()
 PY
 
 BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id successful-invoker --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/success.out" 2>&1
+grep -q "FAKE_INSTALL_SKILLS packages/app/dist/main.js --headless install-skills reinstall" "$worker_root/success.out"
 python3 - "$worker_root/runs/worker-failures/jobs/successful-invoker/job.json" "$worker_root/runs/worker-failures/jobs/successful-invoker/cli-invocations.jsonl" <<'PY'
 import json
 import sys
@@ -473,6 +496,36 @@ assert payload["failure_reason"] == "plan_generation_failed"
 assert "mergeMode: github" in payload["failure_message"]
 assert payload["plan_inspection"]["mergeMode"] == "github"
 assert payload["plan_inspection"]["mergeMode_manual"] is False
+PY
+
+temp_plan_env="$worker_root/config/temp-plan-artifact.env"
+cat > "$temp_plan_env" <<'EOF'
+TZ=Asia/Hong_Kong
+BENCHMARK_ROOT=__WORKER_ROOT__
+INVOKER_REPO=__FAKE_INVOKER_REPO__
+INVOKER_BRANCH=master
+BENCHMARK_PLAN_CODEX_COMMAND='tmp_plan="$JOB_DIR/generated-plan-manual.yaml"; printf "%s\n" "name: fake plan" "repoUrl: https://example.test/repo.git" "mergeMode: manual" "tasks:" "  - id: t1" "    title: T1" > "$tmp_plan"; printf "%s\n" "TMPDIR=/dev/shm bash skills/plan-to-invoker/scripts/skill-doctor.sh --skip-assumptions $tmp_plan" > "$GENERATED_PLAN"'
+BENCHMARK_INVOKER_CLI_BUILD_COMMAND='node packages/cli/build.js'
+EOF
+sed -i.bak \
+  -e "s|__WORKER_ROOT__|$worker_root|g" \
+  -e "s|__FAKE_INVOKER_REPO__|$fake_invoker_repo|g" \
+  "$temp_plan_env"
+rm -f "$temp_plan_env.bak"
+if BENCHMARK_ENV_FILE="$temp_plan_env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id temp-plan-artifact --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_auto_fix --invoker-sha "$fake_invoker_sha" >"$worker_root/temp-plan-artifact.out" 2>&1; then
+  echo "Expected temp plan artifact generation to fail benchmark inspection" >&2
+  exit 1
+fi
+python3 - "$worker_root/runs/worker-failures/jobs/temp-plan-artifact/job.json" "$worker_root/runs/worker-failures/jobs/temp-plan-artifact/generated-plan.yaml" <<'PY'
+import json
+import sys
+payload = json.load(open(sys.argv[1]))
+generated = open(sys.argv[2]).read()
+assert payload["failure_stage"] == "plan_generation"
+assert payload["failure_reason"] == "plan_generation_failed"
+assert "missing top-level name" in payload["failure_message"]
+assert "skill-doctor.sh --skip-assumptions" in generated
+assert payload["plan_inspection"]["task_count"] == 0
 PY
 
 BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id successful-autofix --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_auto_fix --invoker-sha "$fake_invoker_sha" >"$worker_root/autofix.out" 2>&1

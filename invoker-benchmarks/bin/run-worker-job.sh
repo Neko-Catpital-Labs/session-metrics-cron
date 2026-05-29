@@ -174,6 +174,69 @@ def matching_message(text, *needles):
             return compact
     return ""
 
+def parse_json_lines(text):
+    objects = []
+    for line in str(text or "").splitlines():
+        compact = line.strip()
+        if not compact.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(compact)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            objects.append(parsed)
+    return objects
+
+def invoker_cli_failure_message(stdout, stderr):
+    result_object = None
+    for item in reversed(parse_json_lines(stdout)):
+        result = item.get("result")
+        workflow = item.get("workflow")
+        if isinstance(result, dict) or isinstance(workflow, dict):
+            result_object = item
+            break
+
+    failed_task = ""
+    for line in str(stdout or "").splitlines():
+        match = re.search(r"findNewlyReadyTasks\([^/()]+/([^()]+)\)", line)
+        if match:
+            failed_task = match.group(1)
+
+    details = []
+    if result_object:
+        result = result_object.get("result") if isinstance(result_object.get("result"), dict) else {}
+        workflow = result_object.get("workflow") if isinstance(result_object.get("workflow"), dict) else {}
+        workflow_id = result.get("workflowId") or workflow.get("id") or ""
+        status = result.get("status") or workflow.get("status") or "failed"
+        if workflow_id:
+            details.append(f"workflow {workflow_id} {status}")
+        completed = result.get("completedTasks")
+        failed = result.get("failedTasks")
+        if completed is not None:
+            details.append(f"completedTasks={completed}")
+        if failed is not None:
+            details.append(f"failedTasks={failed}")
+    if failed_task:
+        details.append(f"first failed/ready task={failed_task}")
+
+    error_line = matching_message(
+        "\n".join([stderr, stdout]),
+        "error:",
+        "failed:",
+        "failed to",
+        "exception",
+        "enoent",
+        "permission denied",
+        "authentication failed",
+    )
+    if error_line:
+        details.append(error_line)
+
+    if details:
+        return "Invoker CLI run failed: " + "; ".join(details)
+    return concise_message(stderr, stdout, "Invoker CLI run failed")
+
 def derive_failure(status_value, exit_code_value, stage_value):
     if int(exit_code_value) == 0 and status_value not in {"failed", "timeout", "invalid_job_json"}:
         return "", "", ""
@@ -204,7 +267,7 @@ def derive_failure(status_value, exit_code_value, stage_value):
     if stage == "invoker_cli_build":
         return stage, "invoker_cli_build_failed", concise_message(stderr, stdout, "Invoker CLI build failed")
     if stage == "invoker_cli_run":
-        return stage, "invoker_cli_run_failed", concise_message(stderr, stdout, "Invoker CLI run failed")
+        return stage, "invoker_cli_run_failed", invoker_cli_failure_message(stdout, stderr)
     if stage == "checkout":
         return stage, "checkout_failed", concise_message(stderr, stdout, "Checkout failed")
     if stage == "plan_generation":
@@ -321,7 +384,7 @@ on_exit() {
       set_stage "electron_cleanup"
       scoped_electron_cleanup || true
     fi
-    cleanup_job_runtime || true
+    cleanup_job_runtime preserve-invoker-db || true
   fi
 }
 trap on_exit EXIT
@@ -358,6 +421,10 @@ clear_non_credential_state() {
 }
 
 cleanup_job_runtime() {
+  if [[ "${1:-}" == "preserve-invoker-db" ]]; then
+    rm -rf "$CHECKOUT_DIR" 2>/dev/null || true
+    return 0
+  fi
   rm -rf "$CHECKOUT_DIR" "$INVOKER_DB_DIR_JOB" 2>/dev/null || true
 }
 
@@ -493,6 +560,18 @@ scoped_electron_cleanup() {
   done
 }
 
+default_checkout_setup() {
+  if [[ ! -d packages/cli || ! -d packages/app ]]; then
+    return 0
+  fi
+
+  set_stage "checkout_setup"
+  eval "${BENCHMARK_INVOKER_CLI_BUILD_COMMAND:-pnpm --filter @invoker/cli build}"
+  eval "${BENCHMARK_INVOKER_APP_BUILD_COMMAND:-pnpm --filter @invoker/app build}"
+  unset ELECTRON_RUN_AS_NODE
+  eval "${BENCHMARK_INVOKER_INSTALL_SKILLS_COMMAND:-node scripts/electron.cjs packages/app/dist/main.js --headless install-skills reinstall}"
+}
+
 install_checkout() {
   rm -rf "$CHECKOUT_DIR"
   git clone --no-checkout "${INVOKER_REPO:-https://github.com/Neko-Catpital-Labs/Invoker.git}" "$CHECKOUT_DIR"
@@ -508,8 +587,11 @@ install_checkout() {
       yarn install --frozen-lockfile
     fi
     if [[ -n "${BENCHMARK_CHECKOUT_SETUP_COMMAND:-}" ]]; then
+      set_stage "checkout_setup"
       export CHECKOUT_DIR CONVERSATION_FILE PROMPT_FILE MODEL MODE JOB_DIR GENERATED_PLAN INVOKER_SHA INVOKER_DB_DIR_JOB INVOKER_IPC_SOCKET_JOB INVOKER_CONFIG_JOB
       eval "$BENCHMARK_CHECKOUT_SETUP_COMMAND"
+    else
+      default_checkout_setup
     fi
   )
 }
@@ -619,7 +701,7 @@ default_plan() {
       if ! run_template "${BENCHMARK_PLAN_CODEX_COMMAND:-}"; then
         command -v codex >/dev/null || die "codex CLI not found and BENCHMARK_PLAN_CODEX_COMMAND is unset"
         {
-          printf 'Use the invoker-plan-to-invoker skill.\n'
+          printf '/plan-to-invoker\n'
           printf '%s\n\n' "$benchmark_plan_constraint"
           cat "$PROMPT_FILE"
         } | (
@@ -635,7 +717,7 @@ default_plan() {
         (
           cd "$CHECKOUT_DIR"
           export GENERATED_PLAN JOB_DIR
-          claude --add-dir "$JOB_DIR" --permission-mode acceptEdits -p "Use the invoker-plan-to-invoker skill.
+          claude --add-dir "$JOB_DIR" --permission-mode acceptEdits -p "/plan-to-invoker
 $benchmark_plan_constraint
 
 $(cat "$PROMPT_FILE")"
