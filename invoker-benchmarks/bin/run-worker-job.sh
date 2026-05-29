@@ -152,6 +152,20 @@ def read_artifact(name, limit=50000):
         return ""
     return text[-limit:]
 
+def read_first_existing_artifact(names, limit=50000):
+    for name in names:
+        text = read_artifact(name, limit=limit)
+        if text:
+            return text
+    return ""
+
+def tail_lines(text, line_limit=120, char_limit=20000):
+    lines = str(text or "").splitlines()
+    trimmed = "\n".join(lines[-line_limit:])
+    if len(trimmed) > char_limit:
+        return trimmed[-char_limit:]
+    return trimmed
+
 def concise_message(*texts):
     for text in texts:
         for line in str(text or "").splitlines():
@@ -242,14 +256,13 @@ def derive_failure(status_value, exit_code_value, stage_value):
         return "", "", ""
     stderr = read_artifact("stderr.log")
     stdout = read_artifact("stdout.log")
-    plan = read_artifact("generated-plan.yaml")
+    plan = read_first_existing_artifact(("generated-plan.yaml", "generated_plan.yaml"))
     combined = "\n".join([stderr, stdout, plan])
     lowered = combined.lower()
     stage = stage_value or "unknown"
 
-    timeout_stages = {"timeout", "job_timeout", "watchdog_timeout"}
-    if status_value == "timeout" or stage in timeout_stages or stage.endswith("_timeout") or "timed out" in lowered or "timeout" in lowered:
-        return stage, "timeout", matching_message(combined, "timed out") or matching_message(combined, "timeout") or concise_message(stderr, stdout, "timeout")
+    if "not logged in" in lowered and "please run /login" in lowered:
+        return stage, "model_auth_failed", matching_message(combined, "not logged in", "please run /login") or concise_message(stderr, stdout, "Model authentication failed")
     if "failed to authenticate. api error: 401" in lowered or "api error: 401" in lowered or "status code: 401" in lowered:
         return stage, "claude_auth_failed", matching_message(combined, "api error: 401", "status code: 401", "failed to authenticate") or concise_message(stderr, stdout, "Claude authentication failed")
     validation_signatures = (
@@ -266,6 +279,10 @@ def derive_failure(status_value, exit_code_value, stage_value):
         return stage, "electron_cleanup_failed", concise_message(stderr, stdout, "Electron cleanup failed")
     if stage == "invoker_cli_build":
         return stage, "invoker_cli_build_failed", concise_message(stderr, stdout, "Invoker CLI build failed")
+    timeout_stages = {"timeout", "job_timeout", "watchdog_timeout"}
+    timeout_message = matching_message(combined, "timed out", "timeout after", "operation timed out", "watchdog timeout", "job timeout")
+    if status_value == "timeout" or stage in timeout_stages or stage.endswith("_timeout") or timeout_message:
+        return stage, "timeout", timeout_message or concise_message(stderr, stdout, "timeout")
     if stage == "invoker_cli_run":
         return stage, "invoker_cli_run_failed", invoker_cli_failure_message(stdout, stderr)
     if stage == "checkout":
@@ -283,6 +300,21 @@ def derive_failure(status_value, exit_code_value, stage_value):
     return stage, "unknown", concise_message(stderr, stdout, plan, "Unknown benchmark failure")
 
 failure_stage, failure_reason, failure_message = derive_failure(status, exit_code, failure_stage_arg)
+
+failure_raw_output = {}
+if int(exit_code) != 0 or status in {"failed", "timeout", "invalid_job_json"}:
+    for artifact_name in (
+        "current-stage",
+        "steps.log",
+        "stderr.log",
+        "stdout.log",
+        "generated-plan.yaml",
+        "generated_plan.yaml",
+        "plan-inspection.json",
+    ):
+        text = read_artifact(artifact_name, limit=100000)
+        if text:
+            failure_raw_output[artifact_name] = tail_lines(text)
 
 def derive_source_session_id():
     source_file = str(source_info.get("source_file") or "")
@@ -324,6 +356,7 @@ payload = {
     "failure_stage": failure_stage,
     "failure_reason": failure_reason,
     "failure_message": failure_message,
+    "failure_raw_output": failure_raw_output,
     "commits": commits,
     "changed_files": [line[3:] if len(line) > 3 else line for line in changed.splitlines()],
     "step_log": steps,
@@ -353,6 +386,7 @@ payload = {
         "prompt": "prompt.txt",
         "cost_calculation": "cost-calculation.json",
         "generated_plan": "generated-plan.yaml",
+        "generated_plan_alt": "generated_plan.yaml",
         "plan_inspection": "plan-inspection.json",
         "invoker_events": "invoker-events.jsonl",
         "token_usage": "token-usage.json",
@@ -378,6 +412,7 @@ on_exit() {
       fi
       write_job_json failed "$code" "$failure_stage" || true
     fi
+    print_failure_artifacts "$failure_stage" || true
   fi
   if [[ "$code" -ne 0 ]]; then
     if [[ "$CURRENT_STAGE" != "electron_cleanup" ]]; then
@@ -388,6 +423,24 @@ on_exit() {
   fi
 }
 trap on_exit EXIT
+
+print_failure_artifacts() {
+  local failure_stage="${1:-unknown}"
+  {
+    echo ""
+    echo "===== BENCHMARK JOB FAILURE ====="
+    echo "run_id=$RUN_ID model=$MODEL mode=$MODE stage=$failure_stage"
+    for artifact in current-stage steps.log stderr.log stdout.log generated-plan.yaml generated_plan.yaml plan-inspection.json job.json; do
+      local path="$JOB_DIR/$artifact"
+      [[ -f "$path" ]] || continue
+      echo ""
+      echo "----- $artifact -----"
+      tail -n 120 "$path" || true
+    done
+    echo "===== END BENCHMARK JOB FAILURE ====="
+    echo ""
+  } >&2
+}
 
 snapshot_session_dirs() {
   find "$HOME/.codex/sessions" "$HOME/.claude" -type f 2>/dev/null | sort > "$JOB_DIR/session-files-before.txt" || true
@@ -609,7 +662,7 @@ run_template() {
 }
 
 prepare_prompt_file() {
-  python3 - "$CONVERSATION_FILE" "$PROMPT_FILE" "${BENCHMARK_MAX_PROMPT_CHARS:-120000}" <<'PY'
+  python3 - "$CONVERSATION_FILE" "$PROMPT_FILE" "${BENCHMARK_MAX_PROMPT_CHARS:-120000}" "${BENCHMARK_PLAN_PROMPT_SOURCE:-latest_user}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -617,6 +670,7 @@ from pathlib import Path
 src = Path(sys.argv[1])
 out = Path(sys.argv[2])
 max_chars = int(sys.argv[3])
+source_mode = sys.argv[4]
 
 def text_from_content(content):
     if isinstance(content, str):
@@ -645,7 +699,18 @@ def is_substantive(text):
     return not any(stripped.startswith(prefix) for prefix in ignored_prefixes)
 
 prompts = []
-if src.suffix.lower() == ".jsonl":
+if source_mode in {"plan_to_invoker_direct", "direct_skill"}:
+    prompt = (
+        "/plan-to-invoker\n\n"
+        "Use the invoker-plan-to-invoker skill to convert this session transcript into Invoker YAML. "
+        "Return only valid YAML, no Markdown fences. Let the skill choose prompt: versus command: tasks naturally. "
+        "onFinish: none is fine for this scan.\n\n"
+        f"Session file: {src}\n\n"
+        f"{src.read_text(errors='ignore')}"
+    )
+elif source_mode in {"full_conversation", "full_jsonl", "raw_jsonl"}:
+    prompt = f"Session file: {src}\n\n{src.read_text(errors='ignore')}"
+elif src.suffix.lower() == ".jsonl":
     for line in src.read_text(errors="ignore").splitlines():
         line = line.strip()
         if not line:
@@ -665,7 +730,9 @@ if src.suffix.lower() == ".jsonl":
         if is_substantive(text):
             prompts.append(text.strip())
 
-if prompts:
+if source_mode in {"plan_to_invoker_direct", "direct_skill", "full_conversation", "full_jsonl", "raw_jsonl"}:
+    pass
+elif prompts:
     prompt = prompts[-1]
 else:
     prompt = src.read_text(errors="ignore")
@@ -695,7 +762,7 @@ default_baseline() {
 }
 
 default_plan() {
-  local benchmark_plan_constraint="${BENCHMARK_PLAN_CONSTRAINT:-For this benchmark, generate a self-contained command-only Invoker YAML smoke plan that can be submitted into a fresh isolated Invoker database. Use mergeMode: manual. Do not use mergeMode: github. Do not include prompt tasks. Do not include top-level or task-level externalDependencies. Do not create commands that require prompt-specific upstream workflow records, upstream branches, experiment artifacts, local session files, git commits, pull requests, or long test suites; use portable successful shell commands such as printf/test/true to model the workflow DAG while exercising Invoker orchestration. Write the final YAML plan to the absolute path in the GENERATED_PLAN environment variable, not to a relative file. Do not submit the plan. Do not print the YAML as your final answer; after writing GENERATED_PLAN, print only a short confirmation.}"
+  local benchmark_plan_constraint="${BENCHMARK_PLAN_CONSTRAINT:-For this benchmark, generate Invoker YAML from the session input. Use mergeMode: manual. Do not use mergeMode: github. Do not include top-level or task-level externalDependencies; isolated benchmark runs must not depend on external services, upstream workflow records, upstream branches, experiment artifacts, local session files, git commits, pull requests, or long test suites. Write the final YAML plan to the absolute path in the GENERATED_PLAN environment variable, not to a relative file. Do not submit the plan. Let the plan-to-invoker skill choose prompt: versus command: tasks naturally. Do not print the YAML as your final answer; after writing GENERATED_PLAN, print only a short confirmation.}"
   case "$MODEL" in
     codex)
       if ! run_template "${BENCHMARK_PLAN_CODEX_COMMAND:-}"; then
@@ -706,7 +773,7 @@ default_plan() {
           cat "$PROMPT_FILE"
         } | (
           cd "$CHECKOUT_DIR"
-          export GENERATED_PLAN JOB_DIR
+          export GENERATED_PLAN JOB_DIR CONVERSATION_FILE PROMPT_FILE
           codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -
         )
       fi
@@ -716,7 +783,7 @@ default_plan() {
         command -v claude >/dev/null || die "claude CLI not found and BENCHMARK_PLAN_CLAUDE_COMMAND is unset"
         (
           cd "$CHECKOUT_DIR"
-          export GENERATED_PLAN JOB_DIR
+          export GENERATED_PLAN JOB_DIR CONVERSATION_FILE PROMPT_FILE
           claude --add-dir "$JOB_DIR" --permission-mode acceptEdits -p "/plan-to-invoker
 $benchmark_plan_constraint
 
@@ -731,6 +798,7 @@ $(cat "$PROMPT_FILE")"
 inspect_generated_plan() {
   python3 - "$GENERATED_PLAN" "$PLAN_INSPECTION" "$CHECKOUT_DIR" <<'PY'
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -740,9 +808,14 @@ inspection_path = Path(sys.argv[2])
 checkout_path = Path(sys.argv[3])
 
 if not plan_path.exists():
-    fallback = checkout_path / "generated-plan.yaml"
-    if fallback.exists():
-        plan_path.write_text(fallback.read_text(errors="ignore"))
+    for fallback in (
+        checkout_path / "generated-plan.yaml",
+        checkout_path / "generated_plan.yaml",
+        plan_path.parent / "generated_plan.yaml",
+    ):
+        if fallback.exists():
+            plan_path.write_text(fallback.read_text(errors="ignore"))
+            break
 
 raw = plan_path.read_text(errors="ignore") if plan_path.exists() else ""
 
@@ -781,6 +854,8 @@ for match in re.finditer(r"(?m)^([A-Za-z0-9_-]+):(?:\s*(.*))?$", yaml_text):
     top_level[match.group(1)] = (match.group(2) or "").strip()
 
 task_count = 0
+prompt_count = len(re.findall(r"(?m)^\s+prompt:\s*(?:\||>|$)", yaml_text))
+command_count = len(re.findall(r"(?m)^\s+command:\s*", yaml_text))
 in_tasks = False
 for line in yaml_text.splitlines():
     if re.match(r"^tasks:\s*$", line):
@@ -802,6 +877,8 @@ inspection = {
     "mergeMode": merge_mode,
     "mergeMode_manual": merge_mode == "manual",
     "task_count": task_count,
+    "prompt_count": prompt_count,
+    "command_count": command_count,
 }
 inspection_path.write_text(json.dumps(inspection, indent=2, sort_keys=True) + "\n")
 
@@ -825,8 +902,6 @@ if re.search(r"(?m)^externalDependencies:\s*$", yaml_text):
     errors.append("generated plan used top-level externalDependencies despite isolated benchmark constraint")
 if re.search(r"(?m)^\s{4,}externalDependencies:\s*$", yaml_text):
     errors.append("generated plan used task-level externalDependencies despite isolated benchmark constraint")
-if re.search(r"(?m)^\s+prompt:\s*(?:\\||>|$)", yaml_text):
-    errors.append("generated plan used prompt tasks despite command-only benchmark constraint")
 
 if yaml_text:
     plan_path.write_text(yaml_text)

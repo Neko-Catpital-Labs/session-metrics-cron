@@ -1,15 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -d "$SCRIPT_DIR/../bin" && -d "$SCRIPT_DIR/../config" ]]; then
+  BENCHMARK_SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+  REPO_ROOT="$(cd "$BENCHMARK_SOURCE_ROOT/.." && pwd)"
+else
+  REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+  BENCHMARK_SOURCE_ROOT="$REPO_ROOT/invoker-benchmarks"
+fi
+USAGE_COSTING_SCRIPT="$BENCHMARK_SOURCE_ROOT/scripts/usage_costing.py"
+if [[ ! -f "$USAGE_COSTING_SCRIPT" ]]; then
+  USAGE_COSTING_SCRIPT="$REPO_ROOT/scripts/usage_costing.py"
+fi
 TMP_ROOT="$(mktemp -d /tmp/invoker-benchmark-test.XXXXXX)"
 EMPTY_ROOT=""
 trap 'rm -rf "$TMP_ROOT" ${EMPTY_ROOT:+"$EMPTY_ROOT"}' EXIT
 
 mkdir -p "$TMP_ROOT/config" "$TMP_ROOT/corpus/submit-to-invoker-sessions-2026-05-26" "$TMP_ROOT/bin" "$TMP_ROOT/lib"
-cp -R "$REPO_ROOT/invoker-benchmarks/bin/." "$TMP_ROOT/bin/"
-cp -R "$REPO_ROOT/invoker-benchmarks/lib/." "$TMP_ROOT/lib/"
-cp "$REPO_ROOT/invoker-benchmarks/config/corpus-manifest.json" "$TMP_ROOT/config/corpus-manifest.json"
+cp -R "$BENCHMARK_SOURCE_ROOT/bin/." "$TMP_ROOT/bin/"
+cp -R "$BENCHMARK_SOURCE_ROOT/lib/." "$TMP_ROOT/lib/"
+cp "$BENCHMARK_SOURCE_ROOT/config/corpus-manifest.json" "$TMP_ROOT/config/corpus-manifest.json"
 
 for index in $(seq -w 1 48); do
   printf '{"session":"%s"}\n' "$index" > "$TMP_ROOT/corpus/submit-to-invoker-sessions-2026-05-26/session-$index.jsonl"
@@ -397,9 +408,9 @@ fake_invoker_sha="$(git -C "$fake_invoker_repo" rev-parse HEAD)"
 
 worker_root="$TMP_ROOT/worker-root"
 mkdir -p "$worker_root/bin" "$worker_root/config" "$worker_root/corpus" "$worker_root/lib" "$worker_root/scripts"
-cp -R "$REPO_ROOT/invoker-benchmarks/bin/." "$worker_root/bin/"
-cp -R "$REPO_ROOT/invoker-benchmarks/lib/." "$worker_root/lib/"
-cp "$REPO_ROOT/scripts/usage_costing.py" "$worker_root/scripts/usage_costing.py"
+cp -R "$BENCHMARK_SOURCE_ROOT/bin/." "$worker_root/bin/"
+cp -R "$BENCHMARK_SOURCE_ROOT/lib/." "$worker_root/lib/"
+cp "$USAGE_COSTING_SCRIPT" "$worker_root/scripts/usage_costing.py"
 printf '{"type":"event_msg","payload":{"type":"user_message","message":"do the thing"}}\n' > "$worker_root/corpus/session-01.jsonl"
 cat > "$worker_root/config/benchmark.env" <<EOF
 TZ=Asia/Hong_Kong
@@ -422,11 +433,14 @@ payload = json.load(open(sys.argv[1]))
 assert payload["failure_stage"] == "invoker_cli_run"
 assert payload["failure_reason"] == "claude_auth_failed"
 assert "401" in payload["failure_message"]
+assert "Failed to authenticate. API Error: 401" in payload["failure_raw_output"]["stderr.log"]
 assert payload["invoker_sha"]
 job_dir = sys.argv[1].rsplit("/", 1)[0]
 assert not __import__("pathlib").Path(job_dir, "checkout").exists()
 assert __import__("pathlib").Path(job_dir, "invoker-db").exists()
 PY
+grep -q "===== BENCHMARK JOB FAILURE =====" "$worker_root/auth.out"
+grep -q "Failed to authenticate. API Error: 401" "$worker_root/auth.out"
 
 if BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" FAKE_INVOKER_FAILURE_KIND=validation "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id validation-failure --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/validation.out" 2>&1; then
   echo "Expected validation failure worker job to fail" >&2
@@ -472,6 +486,29 @@ assert payload["plan_inspection"]["task_count"] == 1
 job_dir = Path(sys.argv[1]).parent
 assert not (job_dir / "checkout").exists()
 assert not (job_dir / "invoker-db").exists()
+PY
+
+prompt_task_env="$worker_root/config/prompt-task-plan.env"
+cat > "$prompt_task_env" <<EOF
+TZ=Asia/Hong_Kong
+BENCHMARK_ROOT=$worker_root
+INVOKER_REPO=$fake_invoker_repo
+INVOKER_BRANCH=master
+BENCHMARK_PLAN_CODEX_COMMAND='printf "%s\n" "name: fake plan" "repoUrl: https://example.test/repo.git" "mergeMode: manual" "tasks:" "  - id: t1" "    title: T1" "    prompt: |" "      Do the benchmark task." > "\$GENERATED_PLAN"'
+BENCHMARK_INVOKER_CLI_BUILD_COMMAND='node packages/cli/build.js'
+EOF
+BENCHMARK_ENV_FILE="$prompt_task_env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id prompt-task-plan --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/prompt-task-plan.out" 2>&1
+python3 - "$worker_root/runs/worker-failures/jobs/prompt-task-plan/job.json" <<'PY'
+import json
+import sys
+payload = json.load(open(sys.argv[1]))
+assert payload["status"] == "succeeded"
+assert payload["result"] == "pass"
+assert payload["failure_stage"] == ""
+assert payload["plan_inspection"]["mergeMode"] == "manual"
+assert payload["plan_inspection"]["task_count"] == 1
+assert payload["plan_inspection"]["prompt_count"] == 1
+assert payload["plan_inspection"]["command_count"] == 0
 PY
 
 github_merge_env="$worker_root/config/github-merge.env"
@@ -643,9 +680,9 @@ PY
 
 EMPTY_ROOT="$(mktemp -d /tmp/invoker-benchmark-empty.XXXXXX)"
 mkdir -p "$EMPTY_ROOT/config" "$EMPTY_ROOT/corpus/submit-to-invoker-sessions-2026-05-26" "$EMPTY_ROOT/bin" "$EMPTY_ROOT/lib"
-cp -R "$REPO_ROOT/invoker-benchmarks/bin/." "$EMPTY_ROOT/bin/"
-cp -R "$REPO_ROOT/invoker-benchmarks/lib/." "$EMPTY_ROOT/lib/"
-cp "$REPO_ROOT/invoker-benchmarks/config/corpus-manifest.json" "$EMPTY_ROOT/config/corpus-manifest.json"
+cp -R "$BENCHMARK_SOURCE_ROOT/bin/." "$EMPTY_ROOT/bin/"
+cp -R "$BENCHMARK_SOURCE_ROOT/lib/." "$EMPTY_ROOT/lib/"
+cp "$BENCHMARK_SOURCE_ROOT/config/corpus-manifest.json" "$EMPTY_ROOT/config/corpus-manifest.json"
 cp "$TMP_ROOT/config/workers.json" "$EMPTY_ROOT/config/workers.json"
 cat > "$EMPTY_ROOT/config/benchmark.env" <<EOF
 TZ=Asia/Hong_Kong
