@@ -619,7 +619,7 @@ default_plan() {
       if ! run_template "${BENCHMARK_PLAN_CODEX_COMMAND:-}"; then
         command -v codex >/dev/null || die "codex CLI not found and BENCHMARK_PLAN_CODEX_COMMAND is unset"
         {
-          printf '/plan-to-invoker\n'
+          printf 'Use the invoker-plan-to-invoker skill.\n'
           printf '%s\n\n' "$benchmark_plan_constraint"
           cat "$PROMPT_FILE"
         } | (
@@ -635,7 +635,7 @@ default_plan() {
         (
           cd "$CHECKOUT_DIR"
           export GENERATED_PLAN JOB_DIR
-          claude --add-dir "$JOB_DIR" --permission-mode acceptEdits -p "/plan-to-invoker
+          claude --add-dir "$JOB_DIR" --permission-mode acceptEdits -p "Use the invoker-plan-to-invoker skill.
 $benchmark_plan_constraint
 
 $(cat "$PROMPT_FILE")"
