@@ -116,13 +116,14 @@ def parse_host_entry(name: str, raw: dict[str, Any], *, local_default: bool) -> 
     user = raw.get("user") if isinstance(raw.get("user"), str) else "invoker"
     port = int(raw.get("port") or 22)
     ssh_key = raw.get("sshKeyPath") if isinstance(raw.get("sshKeyPath"), str) else str(DEFAULT_SSH_KEY)
+    default_home = Path.home() if host is None else Path(f"/home/{user}")
     codex_sessions = expand_local_path(
         str(raw.get("codexSessionsDir") or raw.get("codex_sessions_dir") or ""),
-        Path.home() / ".codex" / "sessions",
+        default_home / ".codex" / "sessions",
     )
     claude_root = expand_local_path(
         str(raw.get("claudeRootDir") or raw.get("claude_root_dir") or ""),
-        Path.home() / ".claude",
+        default_home / ".claude",
     )
     codex_home = raw.get("codexHome") if isinstance(raw.get("codexHome"), str) else str(Path(codex_sessions).parent)
     home_dir = raw.get("homeDir") if isinstance(raw.get("homeDir"), str) else str(Path(claude_root).parent)
@@ -516,6 +517,11 @@ def main() -> None:
         help="Path to sources config (YAML/JSON). Falls back to ~/.invoker/config.json if missing.",
     )
     parser.add_argument("--keep-temp", action="store_true", help="Keep staging/dedupe temp directory.")
+    parser.add_argument(
+        "--workspace",
+        default="",
+        help="Stable workspace for staged/deduped logs. When set, stage/ and merged/ are refreshed and retained.",
+    )
     args = parser.parse_args()
 
     out_path = Path(args.output) if args.output else (REPO_ROOT / "cache-hit-audit-report.json")
@@ -524,7 +530,15 @@ def main() -> None:
     hosts = load_hosts(sources_path)
     host_order = [h.name for h in hosts]
 
-    tmpdir = Path(tempfile.mkdtemp(prefix="cache-hit-audit-"))
+    if args.workspace:
+        tmpdir = Path(args.workspace).expanduser().resolve()
+        if tmpdir in {Path("/"), Path.home()}:
+            raise RuntimeError(f"Refusing unsafe workspace path: {tmpdir}")
+        shutil.rmtree(tmpdir / "stage", ignore_errors=True)
+        shutil.rmtree(tmpdir / "merged", ignore_errors=True)
+        tmpdir.mkdir(parents=True, exist_ok=True)
+    else:
+        tmpdir = Path(tempfile.mkdtemp(prefix="cache-hit-audit-"))
     stage_root = tmpdir / "stage"
     merged = tmpdir / "merged"
     merged_codex_home = merged / "codex_home"
@@ -580,13 +594,16 @@ def main() -> None:
             },
             "dedup": {
                 "tempWorkspace": str(tmpdir),
+                "workspaceRetained": bool(args.workspace or args.keep_temp),
                 "codex": {
                     "stats": dedup_codex_stats,
                     "ccusageDaily": dedup_codex_ccusage,
+                    "mergedSessionsDir": str(merged_codex_home / "sessions"),
                 },
                 "claude": {
                     "stats": dedup_claude_stats,
                     "ccusageDaily": dedup_claude_ccusage,
+                    "mergedRootDir": str(merged_claude_dot),
                 },
             },
             "repeatBreakdown": {
@@ -604,7 +621,7 @@ def main() -> None:
         print(f"Dedup cache hit %    | codex={dedup_codex_ccusage['cacheHitPct']:.2f}, claude={dedup_claude_ccusage['cacheHitPct']:.2f}")
         print(f"Top repeated rows    | codex={len(codex_repeats)}, claude={len(claude_repeats)}")
 
-        if args.keep_temp:
+        if args.keep_temp or args.workspace:
             print(f"Temp workspace kept at: {tmpdir}")
         else:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -617,4 +634,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

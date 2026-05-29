@@ -13,7 +13,13 @@ for required in \
   reports/planning-vs-execution-sessions.csv \
   reports/planning-vs-execution-prompts.csv \
   reports/planning-vs-execution-tool-breakdown.csv \
-  reports/planning-vs-execution-tool-attribution.csv; do
+  reports/planning-vs-execution-tool-attribution.csv \
+  reports/usage-command-attribution-v4.csv \
+  reports/usage-command-attribution-v4-summary.json \
+  reports/usage-command-attribution-v4-report.md \
+  reports/usage-command-attribution-v4_1.csv \
+  reports/usage-command-attribution-v4_1-summary.json \
+  reports/usage-command-attribution-v4_1-report.md; do
   [[ -f "$required" ]] || {
     echo "Missing required artifact: $required" >&2
     echo "Run: bash scripts/nightly_usage_pipeline.sh --dry-run --env-file config/nightly-usage.env" >&2
@@ -42,6 +48,7 @@ required_families = {
     "usage_tool_breakdown",
     "usage_tool_attribution",
     "usage_request_tool_attribution",
+    "usage_command_attribution",
     "usage_cache_driver",
 }
 families = summary.get("families", {})
@@ -82,6 +89,27 @@ for family in ("usage_request_cache_diagnosis", "usage_request_tool_attribution"
         raise SystemExit(f"Expected {family} to include request pattern fields, missing: {missing_fields}")
     if "request_subpattern" in set(sample_props.get(family, [])):
         raise SystemExit(f"Expected {family} to omit legacy request_subpattern")
+required_command_fields = {
+    "schema_version",
+    "command_preview",
+    "command_hash",
+    "primary_why",
+    "why_tags",
+    "tool_action",
+    "service_of_why",
+    "service_of_confidence",
+    "service_of_source",
+    "session_root_cause_summary",
+    "uncategorized_reason",
+    "target_type",
+    "target",
+    "cost_is_estimated",
+    "cost_allocation_method",
+    "allocated_total_cost_usd",
+}
+missing_fields = sorted(required_command_fields - set(sample_props.get("usage_command_attribution", [])))
+if missing_fields:
+    raise SystemExit(f"Expected usage_command_attribution to include v4 fields, missing: {missing_fields}")
 print("OK: nightly usage dry-run summary includes all event families")
 print("event_counts", json.dumps(families, sort_keys=True))
 PY

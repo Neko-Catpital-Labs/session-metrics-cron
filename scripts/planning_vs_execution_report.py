@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import re
+import shlex
 import statistics
 import sys
 from collections import Counter
@@ -46,6 +48,9 @@ PLANNING_PHRASES = [
 ]
 PLANNING_RE = re.compile("|".join(re.escape(p) for p in PLANNING_PHRASES), re.IGNORECASE)
 SHELL_FUNCTION_NAMES = {"exec_command", "shell", "bash"}
+COMMAND_ATTRIBUTION_SCHEMA_VERSION = "usage_command_attribution_v4"
+COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_1 = "usage_command_attribution_v4_1"
+COMMAND_COST_ALLOCATION_METHOD = "prompt_cost_output_weighted_v1"
 
 
 @dataclass
@@ -67,6 +72,23 @@ class PromptWindow:
     function_outputs: int = 0
     function_name_counts: Counter[str] = field(default_factory=Counter)
     shell_verb_counts: Counter[str] = field(default_factory=Counter)
+    command_calls: list["CommandCall"] = field(default_factory=list)
+
+
+@dataclass
+class CommandCall:
+    command_index: int
+    function_name: str
+    call_id: str = ""
+    command_text: str = ""
+    command_preview: str = ""
+    command_hash: str = ""
+    shell_verb: str = ""
+    workdir: str = ""
+    target_type: str = ""
+    target: str = ""
+    output_chars: int = 0
+    output_token_estimate: int = 0
 
 
 @dataclass
@@ -102,6 +124,10 @@ def safe_div(num: float, denom: float) -> float:
 
 def shorten(text: str, n: int = 220) -> str:
     return " ".join(text.split())[:n]
+
+
+def digest_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def assistant_text_from_content(content: Any) -> str:
@@ -213,6 +239,281 @@ def extract_shell_verb(arguments_raw: Any) -> str | None:
     if verb.startswith("/"):
         return verb.split("/")[-1]
     return verb
+
+
+def parse_tool_arguments(arguments_raw: Any) -> dict[str, Any]:
+    if not arguments_raw:
+        return {}
+    if isinstance(arguments_raw, str):
+        try:
+            obj = json.loads(arguments_raw)
+        except json.JSONDecodeError:
+            return {}
+    elif isinstance(arguments_raw, dict):
+        obj = arguments_raw
+    else:
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def command_text_from_arguments(arguments_raw: Any) -> str:
+    args_obj = parse_tool_arguments(arguments_raw)
+    command = args_obj.get("cmd") or args_obj.get("command") or (args_obj.get("input") or {}).get("command")
+    return command if isinstance(command, str) else ""
+
+
+def workdir_from_arguments(arguments_raw: Any) -> str:
+    args_obj = parse_tool_arguments(arguments_raw)
+    value = args_obj.get("workdir") or args_obj.get("cwd") or (args_obj.get("input") or {}).get("cwd")
+    return value if isinstance(value, str) else ""
+
+
+def target_from_tool_arguments(arguments_raw: Any) -> tuple[str, str]:
+    args_obj = parse_tool_arguments(arguments_raw)
+    for key in ("file_path", "path", "target", "uri", "url", "query"):
+        value = args_obj.get(key)
+        if isinstance(value, str) and value.strip():
+            target_type = "search_query" if key == "query" else "path"
+            return target_type, value.strip()[:180]
+    nested = args_obj.get("input")
+    if isinstance(nested, dict):
+        for key in ("file_path", "path", "target", "uri", "url", "query"):
+            value = nested.get(key)
+            if isinstance(value, str) and value.strip():
+                target_type = "search_query" if key == "query" else "path"
+                return target_type, value.strip()[:180]
+    return "", ""
+
+
+def output_text_from_payload(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    if isinstance(value, dict):
+        for key in ("output", "stdout", "stderr", "content", "text"):
+            candidate = value.get(key)
+            if isinstance(candidate, str):
+                return candidate
+        return json.dumps(value, sort_keys=True)
+    return str(value)
+
+
+def command_target(command: str, workdir: str) -> tuple[str, str]:
+    if not command.strip():
+        return "", ""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    if not tokens:
+        return "", ""
+    verb = tokens[0].split("/")[-1]
+    path_flags = {"-C", "--work-tree", "--git-dir", "-f", "--file", "-p", "--project", "--filter"}
+    candidates: list[str] = []
+    for index, token in enumerate(tokens[1:], start=1):
+        if token in path_flags and index + 1 < len(tokens):
+            candidates.append(tokens[index + 1])
+            continue
+        if token.startswith("-") or token in {"&&", "||", ";", "|"}:
+            continue
+        if "/" in token or token.startswith(".") or token.endswith((".py", ".js", ".ts", ".tsx", ".json", ".yaml", ".yml", ".md")):
+            candidates.append(token)
+    if verb == "git" and len(tokens) > 1:
+        sub = tokens[1]
+        if sub in {"status", "branch", "log", "show", "diff"}:
+            return "git", sub
+    if candidates:
+        target = candidates[0]
+        if workdir and target.startswith("."):
+            target = str(Path(workdir) / target)
+        return "path", target[:180]
+    return "verb", verb
+
+
+def classify_command_why(function_name: str, shell_verb: str, command: str, target: str, request_pattern: str) -> tuple[str, str]:
+    text = " ".join([function_name, shell_verb, command, target, request_pattern]).lower()
+    rules: list[tuple[str, list[str]]] = [
+        ("autofix_or_failure_repair", ["autofix", "fix", "repair", "rerun", "failure", "failed"]),
+        ("ci_log_diagnosis", ["ci", "gh run", "workflow", "actions", "log"]),
+        ("test_or_build_execution", ["pytest", "pnpm test", "npm test", "yarn test", "make test", "cargo test", "go test", "build", "tsc"]),
+        ("source_inspection", ["rg ", "grep", "sed ", "cat ", "nl ", "less ", "head ", "tail ", "find ", "ls "]),
+        ("git_branch_stack_ops", ["git ", "rebase", "merge", "branch", "checkout", "cherry-pick", "worktree"]),
+        ("remote_machine_orchestration", ["ssh ", "rsync", "scp ", "remote", "tmux"]),
+        ("db_or_state_inspection", ["sqlite", "psql", "mysql", "redis", "state", "database", ".db"]),
+        ("visual_proof_or_ui_debug", ["playwright", "screenshot", "video", "browser", "ui", "visual"]),
+        ("dependency_setup", ["npm install", "pnpm install", "pip install", "bundle install", "uv sync", "composer install"]),
+        ("reporting_or_analytics", ["report", "metrics", "mixpanel", "analytics", "csv", "json summary"]),
+    ]
+    for why, needles in rules:
+        if any(needle in text for needle in needles):
+            return why, "rules_v1"
+    return "uncategorized", "rules_v1"
+
+
+def command_attribution_tool_action(function_name: str, shell_verb: str, command: str) -> tuple[str, str]:
+    fn = function_name.lower()
+    verb = shell_verb.lower()
+    text = command.lower()
+    if fn in {"read", "cat"} or verb in {"cat", "sed", "nl", "less", "head", "tail"}:
+        return "file_read", "tool_rule"
+    if fn in {"glob", "toolsearch", "grep", "search"} or verb in {"rg", "grep", "find", "fd", "ls"}:
+        return "file_search", "tool_rule"
+    if fn in {"edit", "write", "apply_patch", "patch"} or verb in {"apply_patch"}:
+        return "source_modification", "tool_rule"
+    if fn == "write_stdin":
+        return "terminal_input", "tool_rule"
+    if fn in {"spawn_agent", "wait_agent", "agent", "send_input", "resume_agent", "close_agent"}:
+        return "agent_delegation", "tool_rule"
+    if fn in {"todowrite", "taskupdate", "taskcreate", "update_plan"}:
+        return "planning_or_task_tracking", "tool_rule"
+    if fn in {"run_query", "dashboard", "property", "insights_query"} or any(
+        needle in text for needle in ("mixpanel", "analytics", "dashboard", "run_query")
+    ):
+        return "analytics_query", "tool_rule"
+    if fn in SHELL_FUNCTION_NAMES:
+        trivial = {"pwd", "echo", "printf", "sleep", "ps", "kill", "jobs", "fg", "bg", "true", "false", "date"}
+        if verb in trivial:
+            return "environment_or_process_control", "tool_rule"
+        return "terminal_command", "tool_rule"
+    return "unknown_tool", "tool_rule"
+
+
+def service_context_from_text(text: str) -> tuple[str, str, str]:
+    haystack = text.lower()
+    service_rules: list[tuple[str, str, str, list[str]]] = [
+        ("autofix_or_failure_repair", "high", "prompt_context", ["autofix", "fix the code", "failed", "failure", "repair", "retry", "rerun"]),
+        ("ci_log_diagnosis", "high", "prompt_context", ["ci", "github actions", "workflow", "gh run", "build log"]),
+        ("test_or_build_execution", "high", "prompt_context", ["pytest", "npm test", "pnpm test", "yarn test", "make test", "cargo test", "go test", "build", "tsc"]),
+        ("pr_review", "high", "prompt_context", ["pull request", "pr body", "pr review", "review", "release note", "changelog"]),
+        ("reporting_or_analytics", "high", "prompt_context", ["report", "metrics", "mixpanel", "analytics", "dashboard", "csv"]),
+        ("implementation", "medium", "prompt_context", ["implement", "add ", "update ", "change ", "refactor", "feature"]),
+        ("planning_or_task_tracking", "medium", "prompt_context", ["plan", "tasks", "todo", "checklist"]),
+    ]
+    for why, confidence, source, needles in service_rules:
+        if any(needle in haystack for needle in needles):
+            return why, confidence, source
+    return "uncategorized", "low", "missing_context"
+
+
+def classify_command_service_of(
+    row: dict[str, Any],
+    tool_action: str,
+    previous_context: dict[str, str] | None = None,
+) -> tuple[str, str, str, str]:
+    primary_why = str(row.get("primary_why") or "uncategorized")
+    fn = str(row.get("function_name") or "").lower()
+    if fn == "write_stdin" and previous_context and previous_context.get("service_of_why"):
+        return previous_context["service_of_why"], "high", "previous_command", ""
+    if primary_why != "uncategorized":
+        return primary_why, "high", "tool_rule", ""
+
+    context_text = " ".join(
+        str(row.get(key) or "")
+        for key in ("prompt_preview", "previous_prompt_preview", "first_prompt_preview", "final_answer_preview", "request_pattern", "command_preview", "target")
+    )
+    service_of_why, confidence, source = service_context_from_text(context_text)
+    if service_of_why != "uncategorized":
+        return service_of_why, confidence, source, ""
+
+    if tool_action in {"planning_or_task_tracking", "analytics_query", "environment_or_process_control"}:
+        mapped = {
+            "planning_or_task_tracking": "planning_or_task_tracking",
+            "analytics_query": "reporting_or_analytics",
+            "environment_or_process_control": "environment_or_process_control",
+        }[tool_action]
+        return mapped, "medium", "tool_rule", ""
+    if tool_action == "unknown_tool":
+        return "uncategorized", "low", "tool_rule", "unknown_tool"
+    if not context_text.strip():
+        return "uncategorized", "low", "missing_context", "missing_context"
+    return "uncategorized", "low", "missing_context", "missing_context"
+
+
+def build_command_attribution_v4_1_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    previous_by_prompt: dict[tuple[str, Any, Any], dict[str, str]] = {}
+    for row in rows:
+        out = dict(row)
+        out["schema_version"] = COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_1
+        session_id = Path(str(row.get("file") or "")).stem or digest_text(str(row.get("file") or ""))[:16]
+        out["session_id"] = session_id
+        tool_action, tool_action_source = command_attribution_tool_action(
+            str(row.get("function_name") or ""),
+            str(row.get("shell_verb") or ""),
+            str(row.get("command_preview") or ""),
+        )
+        key = (str(row.get("file") or ""), row.get("bucket"), row.get("prompt_index"))
+        service_of_why, service_confidence, service_source, uncategorized_reason = classify_command_service_of(
+            out,
+            tool_action,
+            previous_by_prompt.get(key),
+        )
+        out["tool_action"] = tool_action
+        out["tool_action_source"] = tool_action_source
+        out["service_of_why"] = service_of_why
+        out["service_of_confidence"] = service_confidence
+        out["service_of_source"] = service_source
+        out["uncategorized_reason"] = uncategorized_reason if service_of_why == "uncategorized" else ""
+        out["session_root_cause_summary"] = f"{service_of_why} / {tool_action}"
+        if tool_action in {"terminal_command", "terminal_input"} or service_of_why != "uncategorized":
+            previous_by_prompt[key] = {
+                "primary_why": str(out.get("primary_why") or ""),
+                "service_of_why": service_of_why,
+                "tool_action": tool_action,
+            }
+        enriched.append(out)
+    return enriched
+
+
+def add_command_call(window: PromptWindow | None, function_name: str, arguments: Any, call_id: str = "") -> CommandCall | None:
+    if window is None:
+        return None
+    command = command_text_from_arguments(arguments)
+    workdir = workdir_from_arguments(arguments)
+    shell_verb = extract_shell_verb(arguments) or ""
+    target_type, target = command_target(command, workdir)
+    if not target:
+        target_type, target = target_from_tool_arguments(arguments)
+    call = CommandCall(
+        command_index=len(window.command_calls) + 1,
+        function_name=function_name,
+        call_id=call_id,
+        command_text=command,
+        command_preview=shorten(command, 180),
+        command_hash=digest_text(command) if command else "",
+        shell_verb=shell_verb,
+        workdir=workdir,
+        target_type=target_type,
+        target=target,
+    )
+    window.command_calls.append(call)
+    return call
+
+
+def attach_command_output(window: PromptWindow | None, call_id: str, output: str) -> None:
+    if window is None or not output:
+        return
+    candidates = window.command_calls
+    if call_id:
+        candidates = [call for call in window.command_calls if call.call_id == call_id]
+    if not candidates:
+        candidates = [call for call in window.command_calls if call.output_chars == 0]
+    if not candidates:
+        return
+    call = candidates[-1]
+    call.output_chars += len(output)
+    call.output_token_estimate += max(1, round(len(output) / 4))
 
 
 def raw_total_tokens(
@@ -345,6 +646,7 @@ def parse_codex_session(path: Path) -> SessionStats | None:
                 fn_counts[fname] += 1
                 if current is not None:
                     current.function_name_counts[fname] += 1
+                    add_command_call(current, fname, payload.get("arguments"), str(payload.get("call_id") or payload.get("id") or ""))
                 if fname in SHELL_FUNCTION_NAMES:
                     verb = extract_shell_verb(payload.get("arguments"))
                     if verb:
@@ -355,6 +657,11 @@ def parse_codex_session(path: Path) -> SessionStats | None:
                 func_outputs_total += 1
                 if current is not None:
                     current.function_outputs += 1
+                    attach_command_output(
+                        current,
+                        str(payload.get("call_id") or payload.get("id") or ""),
+                        output_text_from_payload(payload.get("output") or payload.get("content")),
+                    )
             elif ptype == "message" and payload.get("role") in {"assistant", "agent"}:
                 if current is not None:
                     current.response_messages += 1
@@ -460,6 +767,15 @@ def parse_claude_session(path: Path) -> SessionStats | None:
                         windows.append(current)
                     user_prompts.append(prompt)
                     current = PromptWindow(prompt_index=len(user_prompts), prompt_text=prompt)
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "tool_result":
+                            attach_command_output(
+                                current,
+                                str(item.get("tool_use_id") or item.get("id") or ""),
+                                output_text_from_payload(item.get("content")),
+                            )
         elif typ == "assistant":
             msg = obj.get("message") or {}
             if msg.get("role") != "assistant":
@@ -514,6 +830,7 @@ def parse_claude_session(path: Path) -> SessionStats | None:
                     fn_counts[name] += 1
                     if current is not None:
                         current.function_name_counts[name] += 1
+                        add_command_call(current, name, item.get("input"), str(item.get("id") or ""))
                     if current is not None:
                         current.tool_calls += 1
                     if name in SHELL_FUNCTION_NAMES:
@@ -563,7 +880,7 @@ def build_rows_for_model(
     sessions: list[SessionStats],
     model_totals: dict[str, float],
     pricing_table: dict[str, Any],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     eff_corpus = sum(s.final_input + 0.1 * s.final_cached for s in sessions) or 0.0
     cost_total = float(model_totals.get("costUSD", 0.0))
     cost_per_eff = safe_div(cost_total, eff_corpus)
@@ -571,6 +888,7 @@ def build_rows_for_model(
     session_rows: list[dict[str, Any]] = []
     prompt_rows: list[dict[str, Any]] = []
     attribution_rows: list[dict[str, Any]] = []
+    command_rows: list[dict[str, Any]] = []
 
     for s in sessions:
         eff = s.final_input + 0.1 * s.final_cached
@@ -680,6 +998,65 @@ def build_rows_for_model(
             )
             prompt_total_cost = prompt_cost["derived_total_cost_usd"]
             session_total_cost = session_cost["derived_total_cost_usd"]
+            command_weight_total = sum(max(1, call.output_token_estimate) for call in w.command_calls) or len(w.command_calls)
+            for call in w.command_calls:
+                weight = safe_div(max(1, call.output_token_estimate), command_weight_total) if command_weight_total else 0.0
+                primary_why, why_classifier = classify_command_why(
+                    call.function_name,
+                    call.shell_verb,
+                    call.command_text,
+                    call.target,
+                    "",
+                )
+                command_rows.append(
+                    {
+                        "schema_version": COMMAND_ATTRIBUTION_SCHEMA_VERSION,
+                        "model": s.model,
+                        "provider": s.provider,
+                        "billable_model": s.billable_model,
+                        "billable_model_source": s.billable_model_source,
+                        "usage_source": s.usage_source,
+                        "file": s.file,
+                        "session_date": s.session_date,
+                        "bucket": s.bucket,
+                        "prompt_index": w.prompt_index,
+                        "command_index": call.command_index,
+                        "prompt_preview": shorten(w.prompt_text, 280),
+                        "session_cwd": s.session_cwd,
+                        "previous_prompt_preview": shorten(w.previous_prompt, 280),
+                        "first_prompt_preview": shorten(w.first_prompt, 280),
+                        "final_answer_preview": shorten(w.final_answer, 280),
+                        "function_name": call.function_name,
+                        "shell_verb": call.shell_verb,
+                        "command_preview": call.command_preview,
+                        "command_hash": call.command_hash,
+                        "workdir": call.workdir,
+                        "target_type": call.target_type,
+                        "target": call.target,
+                        "output_chars": call.output_chars,
+                        "output_token_estimate": call.output_token_estimate,
+                        "prompt_input_tokens": w.input_delta,
+                        "prompt_cache_read_tokens": w.cached_delta,
+                        "prompt_cache_creation_tokens": w.cache_creation_delta,
+                        "prompt_output_tokens": w.output_delta,
+                        "prompt_reasoning_tokens": w.reasoning_delta,
+                        "prompt_total_tokens": prompt_total_tokens or w.total_delta,
+                        "prompt_derived_total_cost_usd": prompt_total_cost,
+                        "allocated_input_tokens": w.input_delta * weight,
+                        "allocated_cache_read_tokens": w.cached_delta * weight,
+                        "allocated_cache_creation_tokens": w.cache_creation_delta * weight,
+                        "allocated_output_tokens": w.output_delta * weight,
+                        "allocated_reasoning_tokens": w.reasoning_delta * weight,
+                        "allocated_total_tokens": (prompt_total_tokens or w.total_delta) * weight,
+                        "allocated_total_cost_usd": prompt_total_cost * weight if prompt_total_cost is not None else None,
+                        "allocation_weight": weight,
+                        "cost_is_estimated": True,
+                        "cost_allocation_method": COMMAND_COST_ALLOCATION_METHOD,
+                        "primary_why": primary_why,
+                        "why_tags": primary_why,
+                        "why_classifier": why_classifier,
+                    }
+                )
 
             for dimension, counts in (
                 ("function_name", w.function_name_counts),
@@ -735,7 +1112,7 @@ def build_rows_for_model(
                             "pricing_missing": prompt_cost["pricing_missing"],
                         }
                     )
-    return session_rows, prompt_rows, attribution_rows
+    return session_rows, prompt_rows, attribution_rows, command_rows
 
 
 def bucket_view(session_rows: list[dict[str, Any]], prompt_rows: list[dict[str, Any]], bucket_name: str) -> dict[str, Any]:
@@ -869,7 +1246,27 @@ def source_shares(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"source": k, "estimated_repeated_tokens": v, "share_pct": v / total * 100.0} for k, v in sorted(c.items(), key=lambda kv: kv[1], reverse=True)]
 
 
+def audit_dedup_dirs(audit_path: Path, codex_dir: Path, claude_dir: Path) -> tuple[Path, Path]:
+    try:
+        audit = json.loads(audit_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return codex_dir, claude_dir
+    dedup = audit.get("dedup", {}) if isinstance(audit, dict) else {}
+    codex_raw = (dedup.get("codex") or {}).get("mergedSessionsDir")
+    claude_raw = (dedup.get("claude") or {}).get("mergedRootDir")
+    if isinstance(codex_raw, str) and codex_raw.strip():
+        codex_candidate = Path(codex_raw).expanduser()
+        if codex_candidate.exists():
+            codex_dir = codex_candidate
+    if isinstance(claude_raw, str) and claude_raw.strip():
+        claude_candidate = Path(claude_raw).expanduser()
+        if claude_candidate.exists():
+            claude_dir = claude_candidate
+    return codex_dir, claude_dir
+
+
 def build_report(out_dir: Path, audit_path: Path, codex_dir: Path, claude_dir: Path) -> dict[str, Any]:
+    codex_dir, claude_dir = audit_dedup_dirs(audit_path, codex_dir, claude_dir)
     model_totals = load_model_totals(audit_path)
     pricing_table = load_pricing_table(None)
     repeat_breakdown = load_repeat_breakdown(audit_path)
@@ -877,13 +1274,15 @@ def build_report(out_dir: Path, audit_path: Path, codex_dir: Path, claude_dir: P
     codex_sessions = [s for fp in sorted(codex_dir.rglob("*.jsonl")) if (s := parse_codex_session(fp))]
     claude_sessions = [s for fp in sorted(claude_dir.rglob("*.jsonl")) if (s := parse_claude_session(fp))]
 
-    codex_session_rows, codex_prompt_rows, codex_attribution_rows = build_rows_for_model(codex_sessions, model_totals["codex"], pricing_table)
-    claude_session_rows, claude_prompt_rows, claude_attribution_rows = build_rows_for_model(claude_sessions, model_totals["claude"], pricing_table)
+    codex_session_rows, codex_prompt_rows, codex_attribution_rows, codex_command_rows = build_rows_for_model(codex_sessions, model_totals["codex"], pricing_table)
+    claude_session_rows, claude_prompt_rows, claude_attribution_rows, claude_command_rows = build_rows_for_model(claude_sessions, model_totals["claude"], pricing_table)
 
     all_sessions = codex_sessions + claude_sessions
     all_session_rows = codex_session_rows + claude_session_rows
     all_prompt_rows = codex_prompt_rows + claude_prompt_rows
     all_attribution_rows = codex_attribution_rows + claude_attribution_rows
+    all_command_rows = codex_command_rows + claude_command_rows
+    all_command_rows_v4_1 = build_command_attribution_v4_1_rows(all_command_rows)
 
     codex_section = section_from_rows("codex", codex_sessions, codex_session_rows, codex_prompt_rows)
     claude_section = section_from_rows("claude", claude_sessions, claude_session_rows, claude_prompt_rows)
@@ -950,6 +1349,12 @@ def build_report(out_dir: Path, audit_path: Path, codex_dir: Path, claude_dir: P
             for row in v["by_shell_verb"]:
                 tool_rows.append({**row, "section": sec_name, "bucket": bucket, "dimension": "shell_verb"})
     write_csv(out_dir / "planning-vs-execution-tool-breakdown.csv", tool_rows)
+    write_csv(out_dir / "usage-command-attribution-v4.csv", all_command_rows)
+    (out_dir / "usage-command-attribution-v4-summary.json").write_text(json.dumps(command_summary(all_command_rows), indent=2))
+    (out_dir / "usage-command-attribution-v4-report.md").write_text(render_command_markdown(all_command_rows))
+    write_csv(out_dir / "usage-command-attribution-v4_1.csv", all_command_rows_v4_1)
+    (out_dir / "usage-command-attribution-v4_1-summary.json").write_text(json.dumps(command_summary(all_command_rows_v4_1), indent=2))
+    (out_dir / "usage-command-attribution-v4_1-report.md").write_text(render_command_markdown(all_command_rows_v4_1))
 
     (out_dir / "planning-vs-execution-summary.md").write_text(render_markdown(report))
     return report
@@ -965,6 +1370,76 @@ def fmt_money(n: float) -> str:
 
 def fmt_pct(n: float) -> str:
     return f"{n:.2f}%"
+
+
+def top_counter_rows(rows: list[dict[str, Any]], key: str, cost_key: str = "allocated_total_cost_usd", limit: int = 20) -> list[dict[str, Any]]:
+    counts: Counter[str] = Counter()
+    costs: dict[str, float] = {}
+    for row in rows:
+        value = str(row.get(key) or "")
+        if not value:
+            continue
+        counts[value] += 1
+        costs[value] = costs.get(value, 0.0) + float(row.get(cost_key) or 0.0)
+    return [
+        {"name": name, "commands": count, "allocated_total_cost_usd": costs.get(name, 0.0)}
+        for name, count in counts.most_common(limit)
+    ]
+
+
+def command_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "schema_version": rows[0].get("schema_version", COMMAND_ATTRIBUTION_SCHEMA_VERSION) if rows else COMMAND_ATTRIBUTION_SCHEMA_VERSION,
+        "command_count": len(rows),
+        "estimated_cost_usd": sum(float(row.get("allocated_total_cost_usd") or 0.0) for row in rows),
+        "cost_allocation_method": COMMAND_COST_ALLOCATION_METHOD,
+        "cost_is_estimated": True,
+        "by_primary_why": top_counter_rows(rows, "primary_why"),
+        "by_service_of_why": top_counter_rows(rows, "service_of_why"),
+        "by_tool_action": top_counter_rows(rows, "tool_action"),
+        "by_uncategorized_reason": top_counter_rows(rows, "uncategorized_reason"),
+        "by_function_name": top_counter_rows(rows, "function_name"),
+        "by_shell_verb": top_counter_rows(rows, "shell_verb"),
+        "by_session": top_counter_rows(rows, "file", limit=25),
+    }
+
+
+def render_command_markdown(rows: list[dict[str, Any]]) -> str:
+    summary = command_summary(rows)
+    lines = [
+        "# Usage Why / Command Cost",
+        "",
+        f"- Schema: `{summary['schema_version']}`",
+        f"- Commands: **{fmt_int(summary['command_count'])}**",
+        f"- Estimated allocated cost: **{fmt_money(summary['estimated_cost_usd'])}**",
+        f"- Methodology: exact prompt costs allocated to commands by output-token estimate; command costs are estimated.",
+        "",
+        "## Cost by why",
+        "",
+        "| Why | Commands | Estimated cost |",
+        "|---|---:|---:|",
+    ]
+    for row in summary["by_primary_why"]:
+        lines.append(f"| `{row['name']}` | {fmt_int(row['commands'])} | {fmt_money(row['allocated_total_cost_usd'])} |")
+    if summary["by_service_of_why"]:
+        lines.extend(["", "## Cost by service reason", "", "| Service reason | Commands | Estimated cost |", "|---|---:|---:|"])
+        for row in summary["by_service_of_why"]:
+            lines.append(f"| `{row['name']}` | {fmt_int(row['commands'])} | {fmt_money(row['allocated_total_cost_usd'])} |")
+    if summary["by_tool_action"]:
+        lines.extend(["", "## Cost by tool action", "", "| Tool action | Commands | Estimated cost |", "|---|---:|---:|"])
+        for row in summary["by_tool_action"]:
+            lines.append(f"| `{row['name']}` | {fmt_int(row['commands'])} | {fmt_money(row['allocated_total_cost_usd'])} |")
+    lines.extend(["", "## Why x tool matrix", "", "| Why | Tool | Commands | Estimated cost |", "|---|---|---:|---:|"])
+    matrix: dict[tuple[str, str], dict[str, float]] = {}
+    for row in rows:
+        key = (str(row.get("primary_why") or "uncategorized"), str(row.get("function_name") or "unknown"))
+        current = matrix.setdefault(key, {"commands": 0.0, "cost": 0.0})
+        current["commands"] += 1
+        current["cost"] += float(row.get("allocated_total_cost_usd") or 0.0)
+    for (why, tool), agg in sorted(matrix.items(), key=lambda item: item[1]["cost"], reverse=True)[:30]:
+        lines.append(f"| `{why}` | `{tool}` | {fmt_int(agg['commands'])} | {fmt_money(agg['cost'])} |")
+    lines.extend(["", "Generated by `scripts/planning_vs_execution_report.py`."])
+    return "\n".join(lines)
 
 
 def _write_bucket(lines: list[str], name: str, view: dict[str, Any]) -> None:

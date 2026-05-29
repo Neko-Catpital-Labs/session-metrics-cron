@@ -117,6 +117,7 @@ fi
 LOG_DIR="${USAGE_PIPELINE_LOG_DIR:-$HOME/.session-metrics-cron/usage-metrics}"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/nightly-run.log"
+BACKFILL_WORKSPACE="${USAGE_BACKFILL_WORKSPACE:-$LOG_DIR/backfill-workspace}"
 
 run_step() {
   local name="$1"
@@ -130,7 +131,7 @@ cd "$REPO_ROOT"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] RUN_START date=$RUN_DATE dry_run=$DRY_RUN repo=$REPO_ROOT" | tee -a "$LOG_FILE"
 
 if [[ "$SKIP_CACHE_AUDIT" -eq 0 ]]; then
-  run_step "cache_hit_audit" python3 scripts/cache_hit_audit.py --output cache-hit-audit-report.json --top 50 --sources-config "$SOURCES_CONFIG"
+  run_step "cache_hit_audit" python3 scripts/cache_hit_audit.py --output cache-hit-audit-report.json --top 50 --sources-config "$SOURCES_CONFIG" --workspace "$BACKFILL_WORKSPACE"
 else
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] STEP_SKIP cache_hit_audit" | tee -a "$LOG_FILE"
 fi

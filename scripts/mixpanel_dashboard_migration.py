@@ -18,6 +18,8 @@ from typing import Any
 
 MIXPANEL_BASE = "https://mixpanel.com"
 NEW_BOARD_TITLE = "Usage Cost Ops - request_pattern_layers_v1"
+TOP_LEVEL_BOARD_TITLE = "Usage Why / Cost Ops Over Time"
+SESSION_ROOT_CAUSE_BOARD_TITLE = "Usage Why / Session Root Cause"
 DEPRECATED_PREFIX = "[Deprecated] "
 OLD_TAXONOMY_MARKERS = ("request_subpattern", "request_cache_sources_v3")
 NEW_DIAGNOSIS_VERSION = "request_pattern_layers_v1"
@@ -165,9 +167,10 @@ def insight_params(
 
 def canonical_reports() -> list[dict[str, Any]]:
     diagnosis_filter = [filter_ref("diagnosis_version", NEW_DIAGNOSIS_VERSION)]
-    return [
+    reports = [
         {
             "name": "Final Request Pattern Cost",
+            "board": "top_level",
             "description": "Derived request cost by final recursive request_pattern.",
             "params": insight_params(
                 event_name="usage_request_cache_diagnosis",
@@ -178,6 +181,7 @@ def canonical_reports() -> list[dict[str, Any]]:
         },
         {
             "name": "Request Pattern Hierarchy Cost",
+            "board": "top_level",
             "description": "Derived request cost by slash-delimited request_pattern_path.",
             "params": insight_params(
                 event_name="usage_request_cache_diagnosis",
@@ -188,6 +192,7 @@ def canonical_reports() -> list[dict[str, Any]]:
         },
         {
             "name": "Request Pattern Hierarchy Calls",
+            "board": "top_level",
             "description": "Request volume by request_pattern_path.",
             "params": insight_params(
                 event_name="usage_request_cache_diagnosis",
@@ -198,6 +203,7 @@ def canonical_reports() -> list[dict[str, Any]]:
         },
         {
             "name": "Final Uncategorized Share",
+            "board": "session_root_cause",
             "description": "Derived request cost for final uncategorized requests.",
             "params": insight_params(
                 event_name="usage_request_cache_diagnosis",
@@ -208,6 +214,7 @@ def canonical_reports() -> list[dict[str, Any]]:
         },
         {
             "name": "Request Command Cost by Pattern Path",
+            "board": "session_root_cause",
             "description": "Allocated command/tool cost by request_pattern_path, dimension, and name.",
             "params": insight_params(
                 event_name="usage_request_tool_attribution",
@@ -217,6 +224,100 @@ def canonical_reports() -> list[dict[str, Any]]:
             ),
         },
     ]
+    command_filter = [filter_ref("schema_version", "usage_command_attribution_v4_1")]
+    reports.extend(
+        [
+            {
+                "name": "Cost by Service Reason",
+                "board": "top_level",
+                "description": "Estimated command cost by context-aware service_of_why. Methodology: exact prompt costs allocated to commands by output-token estimate.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[property_ref("service_of_why")],
+                    filters=command_filter,
+                ),
+            },
+            {
+                "name": "Cost by Tool Action",
+                "board": "top_level",
+                "description": "Estimated command cost by immediate tool_action.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[property_ref("tool_action")],
+                    filters=command_filter,
+                ),
+            },
+            {
+                "name": "Service Reason x Tool Action",
+                "board": "top_level",
+                "description": "Estimated command cost by higher-level service reason and immediate tool action.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[property_ref("service_of_why"), property_ref("tool_action")],
+                    filters=command_filter,
+                ),
+            },
+            {
+                "name": "Top Sessions by Command Cost",
+                "board": "session_root_cause",
+                "description": "Sessions ranked by estimated allocated command cost.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[property_ref("session_id"), property_ref("task_label")],
+                    filters=command_filter,
+                ),
+            },
+            {
+                "name": "Session Prompt Command Drilldown",
+                "board": "session_root_cause",
+                "description": "Session to task to service reason to tool action to target drilldown for command attribution.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[property_ref("session_id"), property_ref("task_label"), property_ref("service_of_why"), property_ref("tool_action"), property_ref("target")],
+                    filters=command_filter,
+                ),
+            },
+            {
+                "name": "Remaining Uncategorized Breakdown",
+                "board": "session_root_cause",
+                "description": "Remaining uncategorized command cost by deterministic reason.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[property_ref("uncategorized_reason"), property_ref("function_name"), property_ref("tool_action")],
+                    filters=[*command_filter, filter_ref("service_of_why", "uncategorized")],
+                ),
+            },
+            {
+                "name": "Autofix Failure Repair Drilldown",
+                "board": "session_root_cause",
+                "description": "Estimated command cost for autofix_or_failure_repair context by tool action and target.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[property_ref("tool_action"), property_ref("function_name"), property_ref("target")],
+                    filters=[*command_filter, filter_ref("service_of_why", "autofix_or_failure_repair")],
+                ),
+            },
+            {
+                "name": "Source Inspection Targets",
+                "board": "session_root_cause",
+                "description": "Source inspection command cost by target_type and target.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[property_ref("target_type"), property_ref("target")],
+                    filters=[*command_filter, filter_ref("primary_why", "source_inspection")],
+                ),
+            },
+        ]
+    )
+    return reports
 
 
 def backup_payload(
@@ -244,6 +345,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--execute", action="store_true", help="Apply live Mixpanel mutations. Default is dry-run.")
     parser.add_argument("--output-dir", default="reports")
     parser.add_argument("--new-board-title", default=NEW_BOARD_TITLE)
+    parser.add_argument("--top-level-board-title", default=TOP_LEVEL_BOARD_TITLE)
+    parser.add_argument("--session-root-cause-board-title", default=SESSION_ROOT_CAUSE_BOARD_TITLE)
     return parser.parse_args()
 
 
@@ -270,7 +373,7 @@ def main() -> int:
         "backup_path": str(backup_path),
         "deprecated_dashboards": [],
         "deprecated_bookmarks": [],
-        "new_dashboard": None,
+        "new_dashboards": {},
         "created_bookmarks": [],
         "errors": [],
     }
@@ -297,34 +400,49 @@ def main() -> int:
             except RuntimeError as exc:
                 summary["errors"].append({"asset": "bookmark", "id": bookmark["id"], "error": str(exc)})
 
-    existing_new = next((item for item in dashboards if item.get("title") == args.new_board_title), None)
-    if existing_new:
-        new_dashboard = deepcopy(existing_new)
-    elif args.execute:
-        try:
-            created = client.create_dashboard(
-                {
-                    "title": args.new_board_title,
-                    "description": "Request-pattern v1 Usage Cost Ops dashboard. Canonical filter: diagnosis_version=request_pattern_layers_v1.",
-                    "is_private": False,
-                    "time_filter": {
-                        "dateRange": {"type": "in the last", "window": {"unit": "day", "value": 30}},
-                        "displayText": "Last 30 days",
-                    },
-                }
-            )
-            new_dashboard = created.get("results", created)
-        except RuntimeError as exc:
-            summary["errors"].append({"asset": "dashboard", "id": None, "error": str(exc)})
-            new_dashboard = {"title": args.new_board_title, "id": None}
-    else:
-        new_dashboard = {"title": args.new_board_title, "id": None}
-    summary["new_dashboard"] = {"id": new_dashboard.get("id"), "title": new_dashboard.get("title")}
+    board_specs = {
+        "top_level": {
+            "title": args.top_level_board_title,
+            "description": "Top-level usage cost ops over time by request pattern and command why.",
+        },
+        "session_root_cause": {
+            "title": args.session_root_cause_board_title,
+            "description": "Session breakdown and root-cause drilldowns for token and command spend.",
+        },
+    }
+    new_dashboards: dict[str, dict[str, Any]] = {}
+    for board_key, spec in board_specs.items():
+        existing_new = next((item for item in dashboards if item.get("title") == spec["title"]), None)
+        if existing_new:
+            new_dashboard = deepcopy(existing_new)
+        elif args.execute:
+            try:
+                created = client.create_dashboard(
+                    {
+                        "title": spec["title"],
+                        "description": spec["description"],
+                        "is_private": False,
+                        "time_filter": {
+                            "dateRange": {"type": "in the last", "window": {"unit": "day", "value": 30}},
+                            "displayText": "Last 30 days",
+                        },
+                    }
+                )
+                new_dashboard = created.get("results", created)
+            except RuntimeError as exc:
+                summary["errors"].append({"asset": "dashboard", "id": None, "title": spec["title"], "error": str(exc)})
+                new_dashboard = {"title": spec["title"], "id": None}
+        else:
+            new_dashboard = {"title": spec["title"], "id": None}
+        new_dashboards[board_key] = new_dashboard
+        summary["new_dashboards"][board_key] = {"id": new_dashboard.get("id"), "title": new_dashboard.get("title")}
 
-    if args.execute and not new_dashboard.get("id"):
-        summary["errors"].append({"asset": "dashboard", "id": None, "error": "New dashboard creation did not return an id."})
-        print(json.dumps(summary, indent=2, sort_keys=True))
-        return 1
+    if args.execute:
+        missing = [key for key, dashboard in new_dashboards.items() if not dashboard.get("id")]
+        if missing:
+            summary["errors"].append({"asset": "dashboard", "id": None, "error": f"New dashboard creation did not return ids for: {', '.join(missing)}"})
+            print(json.dumps(summary, indent=2, sort_keys=True))
+            return 1
 
     existing_by_name = {
         item.get("name"): item
@@ -332,7 +450,9 @@ def main() -> int:
         if isinstance(item.get("name"), str) and not str(item.get("name")).startswith(DEPRECATED_PREFIX)
     }
     for report in canonical_reports():
-        planned = {"name": report["name"], "dashboard_id": new_dashboard.get("id")}
+        board_key = str(report.get("board") or "top_level")
+        new_dashboard = new_dashboards[board_key]
+        planned = {"name": report["name"], "board": board_key, "dashboard_id": new_dashboard.get("id")}
         existing_report = existing_by_name.get(report["name"])
         if args.execute:
             try:
@@ -353,6 +473,7 @@ def main() -> int:
                     payload = {
                         "type": "insights",
                         "name": report["name"],
+                        "dashboard_id": new_dashboard["id"],
                         "description": report["description"],
                         "params": report["params"],
                     }

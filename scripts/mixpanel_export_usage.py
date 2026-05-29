@@ -237,6 +237,10 @@ def insert_id(report_date: str, family: str, key: str) -> str:
     return f"u3-{digest_text(f'{report_date}|{family}|{key}')[:32]}"
 
 
+def insert_id_v4(report_date: str, family: str, key: str) -> str:
+    return f"u4-{digest_text(f'{report_date}|{family}|{key}')[:32]}"
+
+
 def session_identity(file_path: str) -> str:
     """Return a stable session identifier across different machine paths."""
     if not file_path:
@@ -1457,6 +1461,113 @@ def build_request_tool_attribution_events(
     return events
 
 
+def build_command_attribution_events(
+    rows: list[dict[str, str]],
+    prompt_rows: list[dict[str, str]],
+    token: str,
+    distinct_id: str,
+    report_date: str,
+    task_categorizer: TaskCategorizer,
+    request_pattern_categorizer: RequestPatternCategorizer,
+) -> list[ExportEvent]:
+    events: list[ExportEvent] = []
+    prompt_context: dict[tuple[str, str, str, int], dict[str, Any]] = {}
+    for prompt in prompt_rows:
+        canonical_key, event_date, prompt_index, _pattern, payload = request_base_payload(
+            prompt, report_date, task_categorizer, request_pattern_categorizer
+        )
+        if is_after_report_date(event_date, report_date):
+            continue
+        prompt_context[(prompt.get("model", ""), prompt.get("bucket", ""), session_identity(prompt.get("file", "")), prompt_index)] = {
+            **payload,
+            "request_canonical_key": canonical_key,
+        }
+
+    for row in rows:
+        session_id = session_identity(row.get("file", ""))
+        prompt_index = to_int(row.get("prompt_index"))
+        command_index = to_int(row.get("command_index"))
+        event_date = row_report_date(row, report_date)
+        if is_after_report_date(event_date, report_date):
+            continue
+        key = (row.get("model", ""), row.get("bucket", ""), session_id, prompt_index)
+        context = prompt_context.get(key, {})
+        schema_version = row.get("schema_version") or "usage_command_attribution_v4"
+        canonical_key = f"{row.get('model','')}:{row.get('bucket','')}:{session_id}:{prompt_index}:{command_index}:{row.get('command_hash','')}"
+        row_id = insert_id_v4(event_date, "usage_command_attribution", f"{schema_version}:{canonical_key}")
+        props = with_common(token, distinct_id, report_epoch(event_date), row_id, event_date, {
+            "schema_version": schema_version,
+            "model": row.get("model", ""),
+            "provider": row.get("provider", ""),
+            "billable_model": row.get("billable_model", ""),
+            "billable_model_source": row.get("billable_model_source", ""),
+            "usage_source": row.get("usage_source", ""),
+            "bucket": row.get("bucket", ""),
+            "batch_report_date": report_date,
+            "session_id": session_id,
+            "session_file": row.get("file", ""),
+            "prompt_index": prompt_index,
+            "command_index": command_index,
+            "request_canonical_key": context.get("request_canonical_key", ""),
+            "canonical_key": canonical_key,
+            "prompt_preview": context.get("prompt_preview", normalize_preview(row.get("prompt_preview", ""))),
+            "request_pattern": context.get("request_pattern", "other"),
+            "request_pattern_path": context.get("request_pattern_path", "other"),
+            "request_pattern_depth": context.get("request_pattern_depth", 1),
+            "request_pattern_rule_id": context.get("request_pattern_rule_id", "default"),
+            "request_pattern_confidence": context.get("request_pattern_confidence", "low"),
+            "request_pattern_config_version": context.get("request_pattern_config_version", ""),
+            "task_label": context.get("task_label", "uncategorized"),
+            "task_label_source": context.get("task_label_source", ""),
+            "task_label_confidence": context.get("task_label_confidence", "low"),
+            "task_type": context.get("task_type", "uncategorized"),
+            "task_type_label": context.get("task_type_label", "Uncategorized"),
+            "task_type_confidence": context.get("task_type_confidence", "low"),
+            "task_type_classifier": context.get("task_type_classifier", "default"),
+            "task_type_reason": context.get("task_type_reason", "no_rule_matched"),
+            "task_type_source": context.get("task_type_source", ""),
+            "task_type_config_version": context.get("task_type_config_version", ""),
+            "function_name": row.get("function_name", ""),
+            "shell_verb": row.get("shell_verb", ""),
+            "command_preview": row.get("command_preview", ""),
+            "command_hash": row.get("command_hash", ""),
+            "workdir": row.get("workdir", ""),
+            "target_type": row.get("target_type", ""),
+            "target": row.get("target", ""),
+            "output_chars": to_int(row.get("output_chars")),
+            "output_token_estimate": to_float(row.get("output_token_estimate")),
+            "primary_why": row.get("primary_why", "uncategorized"),
+            "why_tags": row.get("why_tags", row.get("primary_why", "uncategorized")),
+            "why_classifier": row.get("why_classifier", "rules_v1"),
+            "tool_action": row.get("tool_action", ""),
+            "tool_action_source": row.get("tool_action_source", ""),
+            "service_of_why": row.get("service_of_why", ""),
+            "service_of_confidence": row.get("service_of_confidence", ""),
+            "service_of_source": row.get("service_of_source", ""),
+            "uncategorized_reason": row.get("uncategorized_reason", ""),
+            "session_root_cause_summary": row.get("session_root_cause_summary", ""),
+            "prompt_input_tokens": to_float(row.get("prompt_input_tokens")),
+            "prompt_cache_read_tokens": to_float(row.get("prompt_cache_read_tokens")),
+            "prompt_cache_creation_tokens": to_float(row.get("prompt_cache_creation_tokens")),
+            "prompt_output_tokens": to_float(row.get("prompt_output_tokens")),
+            "prompt_reasoning_tokens": to_float(row.get("prompt_reasoning_tokens")),
+            "prompt_total_tokens": to_float(row.get("prompt_total_tokens")),
+            "prompt_derived_total_cost_usd": to_optional_float(row.get("prompt_derived_total_cost_usd")),
+            "allocated_input_tokens": to_float(row.get("allocated_input_tokens")),
+            "allocated_cache_read_tokens": to_float(row.get("allocated_cache_read_tokens")),
+            "allocated_cache_creation_tokens": to_float(row.get("allocated_cache_creation_tokens")),
+            "allocated_output_tokens": to_float(row.get("allocated_output_tokens")),
+            "allocated_reasoning_tokens": to_float(row.get("allocated_reasoning_tokens")),
+            "allocated_total_tokens": to_float(row.get("allocated_total_tokens")),
+            "allocated_total_cost_usd": to_optional_float(row.get("allocated_total_cost_usd")),
+            "allocation_weight": to_float(row.get("allocation_weight")),
+            "cost_is_estimated": to_bool(row.get("cost_is_estimated", True)),
+            "cost_allocation_method": row.get("cost_allocation_method", "prompt_cost_output_weighted_v1"),
+        })
+        events.append(ExportEvent("usage_command_attribution", "usage_command_attribution", row_id, props))
+    return events
+
+
 def build_cache_driver_events(report: dict[str, Any], audit: dict[str, Any], token: str, distinct_id: str, epoch: int, report_date: str) -> list[ExportEvent]:
     events: list[ExportEvent] = []
     drivers = report.get("cache_hit_drivers", {}) or {}
@@ -1586,6 +1697,11 @@ def build_all_events(
     tools = read_csv(input_root / "reports/planning-vs-execution-tool-breakdown.csv")
     attribution_path = input_root / "reports/planning-vs-execution-tool-attribution.csv"
     tool_attribution = read_csv(attribution_path) if attribution_path.exists() else []
+    command_attribution_path = input_root / "reports/usage-command-attribution-v4.csv"
+    command_attribution = read_csv(command_attribution_path) if command_attribution_path.exists() else []
+    command_attribution_v4_1_path = input_root / "reports/usage-command-attribution-v4_1.csv"
+    if command_attribution_v4_1_path.exists():
+        command_attribution.extend(read_csv(command_attribution_v4_1_path))
 
     epoch = report_epoch(report_date)
     families: dict[str, list[ExportEvent]] = {}
@@ -1618,6 +1734,9 @@ def build_all_events(
     families["usage_request_tool_attribution"] = build_request_tool_attribution_events(
         tool_attribution, prompts, token, distinct_id, report_date, task_categorizer, request_pattern_categorizer
     )
+    families["usage_command_attribution"] = build_command_attribution_events(
+        command_attribution, prompts, token, distinct_id, report_date, task_categorizer, request_pattern_categorizer
+    )
     families["usage_cache_driver"] = build_cache_driver_events(report, audit, token, distinct_id, epoch, report_date)
     if prompt_skipped:
         capped["usage_prompt_prompt_hash_cap"] = prompt_skipped
@@ -1627,6 +1746,8 @@ def build_all_events(
         capped["usage_request_cache_source_prompt_hash_cap"] = source_skipped
 
     for name, rows in list(families.items()):
+        if name == "usage_command_attribution":
+            continue
         limited, dropped = limit_family(rows, max_events_per_family)
         families[name] = limited
         if dropped:
@@ -1746,6 +1867,7 @@ def main(argv: list[str] | None = None) -> int:
         "usage_tool_breakdown",
         "usage_tool_attribution",
         "usage_request_tool_attribution",
+        "usage_command_attribution",
         "usage_cache_driver",
     ):
         ordered.extend(to_send.get(family, []))
