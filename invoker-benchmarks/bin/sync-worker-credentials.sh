@@ -92,21 +92,27 @@ for worker in "${WORKERS[@]}"; do
   for dir in "$HOME/.codex" "$HOME/.claude" "$HOME/.invoker"; do
     [[ -d "$dir" ]] || continue
     remote_dir="$(basename "$dir")"
-    rsync -az \
-      --exclude 'sessions/' \
-      --exclude 'benchmark-scratch/' \
-      --exclude 'worktrees/' \
-      --exclude 'agent-sessions/' \
-      --exclude 'merge-clones/' \
-      --exclude 'plans/' \
-      --exclude 'repos/' \
-      --exclude 'db-backups/' \
-      --exclude 'task-output/' \
-      --exclude '*.sqlite' \
-      --exclude '*.sqlite-*' \
-      --exclude '*.log' \
-      --exclude 'log/' \
-      -e "ssh -p $port" "$dir/" "$target:~/$remote_dir/"
+    rsync_excludes=(
+      --exclude 'sessions/'
+      --exclude 'benchmark-scratch/'
+      --exclude 'worktrees/'
+      --exclude 'agent-sessions/'
+      --exclude 'merge-clones/'
+      --exclude 'plans/'
+      --exclude 'repos/'
+      --exclude 'db-backups/'
+      --exclude 'task-output/'
+      --exclude '*.sqlite'
+      --exclude '*.sqlite-*'
+      --exclude '*.log'
+      --exclude 'log/'
+    )
+    case "$remote_dir" in
+      .codex|.claude)
+        rsync_excludes+=(--exclude '/skills/')
+        ;;
+    esac
+    rsync -az "${rsync_excludes[@]}" -e "ssh -p $port" "$dir/" "$target:~/$remote_dir/"
   done
   if [[ -d "$HOME/.ssh" ]]; then
     rsync -az --exclude 'authorized_keys' --exclude '*.pub' --exclude 'known_hosts.old' -e "ssh -p $port" "$HOME/.ssh/" "$target:~/.ssh/"
