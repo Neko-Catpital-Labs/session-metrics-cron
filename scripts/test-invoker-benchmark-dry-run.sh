@@ -494,21 +494,27 @@ TZ=Asia/Hong_Kong
 BENCHMARK_ROOT=$worker_root
 INVOKER_REPO=$fake_invoker_repo
 INVOKER_BRANCH=master
-BENCHMARK_PLAN_CODEX_COMMAND='printf "%s\n" "name: fake plan" "repoUrl: https://example.test/repo.git" "mergeMode: manual" "tasks:" "  - id: t1" "    title: T1" "    prompt: |" "      Do the benchmark task." > "\$GENERATED_PLAN"'
+BENCHMARK_PLAN_CODEX_COMMAND='printf "%s\n" "name: fake plan" "repoUrl: https://example.test/repo.git" "mergeMode: manual" "tasks:" "  - id: t1" "    title: T1" "    prompt: |" "      Do the benchmark task." "  - id: t2" "    title: T2" "    executionAgent: claude" "    command: true" > "\$GENERATED_PLAN"'
 BENCHMARK_INVOKER_CLI_BUILD_COMMAND='node packages/cli/build.js'
 EOF
 BENCHMARK_ENV_FILE="$prompt_task_env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id prompt-task-plan --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/prompt-task-plan.out" 2>&1
-python3 - "$worker_root/runs/worker-failures/jobs/prompt-task-plan/job.json" <<'PY'
+python3 - "$worker_root/runs/worker-failures/jobs/prompt-task-plan/job.json" "$worker_root/runs/worker-failures/jobs/prompt-task-plan/generated-plan.yaml" <<'PY'
 import json
 import sys
 payload = json.load(open(sys.argv[1]))
+generated = open(sys.argv[2]).read()
 assert payload["status"] == "succeeded"
 assert payload["result"] == "pass"
 assert payload["failure_stage"] == ""
 assert payload["plan_inspection"]["mergeMode"] == "manual"
-assert payload["plan_inspection"]["task_count"] == 1
+assert payload["plan_inspection"]["task_count"] == 2
 assert payload["plan_inspection"]["prompt_count"] == 1
-assert payload["plan_inspection"]["command_count"] == 0
+assert payload["plan_inspection"]["command_count"] == 1
+assert payload["plan_inspection"]["executionAgent"] == "codex"
+assert payload["plan_inspection"]["executionAgent_inserted_count"] == 1
+assert payload["plan_inspection"]["executionAgent_rewritten_count"] == 1
+assert "executionAgent: claude" not in generated
+assert generated.count("executionAgent: codex") == 2
 PY
 
 github_merge_env="$worker_root/config/github-merge.env"

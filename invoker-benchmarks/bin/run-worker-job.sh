@@ -796,7 +796,7 @@ $(cat "$PROMPT_FILE")"
 }
 
 inspect_generated_plan() {
-  python3 - "$GENERATED_PLAN" "$PLAN_INSPECTION" "$CHECKOUT_DIR" <<'PY'
+  python3 - "$GENERATED_PLAN" "$PLAN_INSPECTION" "$CHECKOUT_DIR" "$MODEL" <<'PY'
 import json
 import os
 import re
@@ -806,6 +806,7 @@ from pathlib import Path
 plan_path = Path(sys.argv[1])
 inspection_path = Path(sys.argv[2])
 checkout_path = Path(sys.argv[3])
+benchmark_model = sys.argv[4].strip()
 
 if not plan_path.exists():
     for fallback in (
@@ -849,6 +850,75 @@ for candidate in candidates:
 if not yaml_text and candidates:
     yaml_text = candidates[0]
 
+def force_execution_agent(text, agent_name):
+    if agent_name not in {"codex", "claude"}:
+        return text, 0, 0
+
+    lines = text.splitlines()
+    output = []
+    in_tasks = False
+    task_lines = []
+    inserted_count = 0
+    rewritten_count = 0
+
+    def flush_task(block):
+        nonlocal inserted_count, rewritten_count
+        if not block:
+            return
+
+        has_prompt = any(re.match(r"^\s+prompt:\s*(?:\||>|$)", line) for line in block)
+        has_agent = False
+        rewritten = []
+        for line in block:
+            match = re.match(r"^(\s+)executionAgent:\s*.*$", line)
+            if match:
+                has_agent = True
+                if line.strip() != f"executionAgent: {agent_name}":
+                    rewritten_count += 1
+                rewritten.append(f"{match.group(1)}executionAgent: {agent_name}")
+            else:
+                rewritten.append(line)
+
+        if has_prompt and not has_agent:
+            first = rewritten[0]
+            item_indent = re.match(r"^(\s*)-\s+", first)
+            field_indent = (item_indent.group(1) + "  ") if item_indent else "    "
+            rewritten.insert(1, f"{field_indent}executionAgent: {agent_name}")
+            inserted_count += 1
+
+        output.extend(rewritten)
+
+    for line in lines:
+        if re.match(r"^tasks:\s*$", line):
+            flush_task(task_lines)
+            task_lines = []
+            in_tasks = True
+            output.append(line)
+            continue
+
+        if in_tasks and re.match(r"^[A-Za-z0-9_-]+:", line):
+            flush_task(task_lines)
+            task_lines = []
+            in_tasks = False
+            output.append(line)
+            continue
+
+        if in_tasks and re.match(r"^\s{2}-\s+", line):
+            flush_task(task_lines)
+            task_lines = [line]
+            continue
+
+        if in_tasks and task_lines:
+            task_lines.append(line)
+        else:
+            output.append(line)
+
+    flush_task(task_lines)
+    trailing_newline = "\n" if text.endswith("\n") else ""
+    return "\n".join(output) + trailing_newline, inserted_count, rewritten_count
+
+yaml_text, execution_agent_inserted_count, execution_agent_rewritten_count = force_execution_agent(yaml_text, benchmark_model)
+
 top_level = {}
 for match in re.finditer(r"(?m)^([A-Za-z0-9_-]+):(?:\s*(.*))?$", yaml_text):
     top_level[match.group(1)] = (match.group(2) or "").strip()
@@ -879,6 +949,9 @@ inspection = {
     "task_count": task_count,
     "prompt_count": prompt_count,
     "command_count": command_count,
+    "executionAgent": benchmark_model if benchmark_model in {"codex", "claude"} else "",
+    "executionAgent_inserted_count": execution_agent_inserted_count,
+    "executionAgent_rewritten_count": execution_agent_rewritten_count,
 }
 inspection_path.write_text(json.dumps(inspection, indent=2, sort_keys=True) + "\n")
 
