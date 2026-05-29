@@ -533,7 +533,9 @@ else
   done
 
   for pid in "${pids[@]}"; do
-    if ! wait "$pid"; then
+    if wait "$pid"; then
+      :
+    else
       status=1
     fi
   done

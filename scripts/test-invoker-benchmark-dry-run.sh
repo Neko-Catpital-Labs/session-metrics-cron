@@ -116,6 +116,132 @@ assert rows == [
 ], rows
 PY
 
+mock_bin="$TMP_ROOT/mock-bin"
+mkdir -p "$mock_bin"
+cat > "$mock_bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -n) shift ;;
+    -p) shift 2 ;;
+    --) shift; break ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+
+target="${1:-}"
+command_text="${2:-}"
+[[ -n "$target" ]] || exit 0
+
+if [[ "$command_text" == *"run-worker-job.sh"* ]]; then
+  python3 - "$command_text" <<'PY'
+import json
+import re
+import shlex
+import sys
+from pathlib import Path
+
+command = sys.argv[1]
+root_match = re.search(r"BENCHMARK_ROOT='([^']+)'", command)
+if not root_match:
+    raise SystemExit("missing BENCHMARK_ROOT in fake ssh command")
+root = Path(root_match.group(1))
+parts = shlex.split(command)
+
+def arg_value(name):
+    index = parts.index(name)
+    return parts[index + 1]
+
+batch_id = arg_value("--batch-id")
+run_id = arg_value("--run-id")
+model = arg_value("--model")
+mode = arg_value("--mode")
+invoker_sha = arg_value("--invoker-sha")
+job_dir = root / "runs" / batch_id / "jobs" / run_id
+job_dir.mkdir(parents=True, exist_ok=True)
+(job_dir / "job.json").write_text(json.dumps({
+    "batch_id": batch_id,
+    "run_id": run_id,
+    "test_id": run_id.split("__", 1)[0],
+    "corpus_case_id": run_id.split("__", 1)[0],
+    "model": model,
+    "mode": mode,
+    "scenario": mode,
+    "invoker_sha": invoker_sha,
+    "status": "succeeded",
+    "result": "pass",
+    "exit_code": 0,
+}, indent=2, sort_keys=True))
+PY
+elif [[ "$command_text" == mkdir\ -p* ]]; then
+  bash -c "$command_text"
+fi
+EOF
+chmod +x "$mock_bin/ssh"
+
+cat > "$mock_bin/rsync" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -e) shift 2 ;;
+    -*) shift ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+
+if [[ "${#args[@]}" -lt 2 ]]; then
+  exit 0
+fi
+
+src="${args[$((${#args[@]} - 2))]}"
+dest="${args[$((${#args[@]} - 1))]}"
+if [[ "$src" == *:* && "$dest" != *:* ]]; then
+  local_src="${src#*:}"
+  mkdir -p "$dest"
+  if [[ -d "$local_src" ]]; then
+    cp -R "$local_src"/. "$dest"/
+  fi
+fi
+EOF
+chmod +x "$mock_bin/rsync"
+
+run_mocked_nightly() {
+  local serial_jobs="$1"
+  local batch_id="mocked-serial-$serial_jobs"
+  local before_count after_count latest_summary latest_config
+  before_count="$(find "$TMP_ROOT/runs" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+  PATH="$mock_bin:$PATH" BATCH_ID="$batch_id" BENCHMARK_SERIAL_JOBS="$serial_jobs" \
+    "$TMP_ROOT/bin/run-nightly-benchmark.sh" --limit 4 --no-emit-mixpanel --env-file "$TMP_ROOT/config/benchmark.env" >/dev/null
+  after_count="$(find "$TMP_ROOT/runs" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+  [[ "$after_count" -gt "$before_count" ]] || { echo "Mocked nightly did not create a run for BENCHMARK_SERIAL_JOBS=$serial_jobs" >&2; exit 1; }
+  latest_summary="$TMP_ROOT/runs/$batch_id/summary.json"
+  latest_config="$TMP_ROOT/runs/$batch_id/config.json"
+  python3 - "$latest_summary" "$latest_config" "$serial_jobs" <<'PY'
+import json
+import sys
+
+summary = json.load(open(sys.argv[1]))
+config = json.load(open(sys.argv[2]))
+serial_jobs = sys.argv[3]
+assert summary["setup_status"] == "succeeded", summary
+assert summary["job_count"] == 4, summary
+assert summary["status_counts"] == {"succeeded": 4}, summary
+assert config["phase"] == "complete", config
+assert config["status"] == "succeeded", config
+assert config["dry_run"] is False, config
+assert serial_jobs in {"0", "1"}
+PY
+}
+
+run_mocked_nightly 1
+run_mocked_nightly 0
+
 ledger_fixture="$TMP_ROOT/ledger-fixture"
 mkdir -p "$ledger_fixture/raw/.codex/sessions"
 cat > "$ledger_fixture/session-11.jsonl" <<'EOF'
