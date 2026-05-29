@@ -116,6 +116,7 @@ if token_path.exists():
         token_usage = json.loads(token_path.read_text())
     except Exception:
         token_usage = {}
+scenario_key = token_usage.get("scenario_key") or f"{Path(conv).stem}/{mode}/{model}"
 plan_inspection_path = job_dir / "plan-inspection.json"
 plan_inspection = {}
 if plan_inspection_path.exists():
@@ -345,6 +346,7 @@ payload = {
     "model": model,
     "mode": mode,
     "scenario": mode,
+    "scenario_key": scenario_key,
     "execution_surface": "baseline" if mode == "baseline_direct" else "invoker",
     "autofix_enabled": mode == "invoker_auto_fix",
     "invoker_sha": sha,
@@ -364,6 +366,7 @@ payload = {
         "model": model,
         "mode": mode,
         "scenario": mode,
+        "scenario_key": scenario_key,
         "conversation_file": conv,
         "conversation_id": conversation_id,
         "test_id": conversation_id,
@@ -385,6 +388,7 @@ payload = {
         "steps": "steps.log",
         "prompt": "prompt.txt",
         "cost_calculation": "cost-calculation.json",
+        "token_ledger": "token-ledger.jsonl",
         "generated_plan": "generated-plan.yaml",
         "generated_plan_alt": "generated_plan.yaml",
         "plan_inspection": "plan-inspection.json",
@@ -1031,134 +1035,20 @@ PY
 }
 
 extract_token_usage() {
-  PYTHONPATH="$BENCHMARK_ROOT/scripts:$BENCHMARK_ROOT/../scripts:$BENCHMARK_ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" python3 - "$RAW_SESSIONS_DIR" "$JOB_DIR/token-usage.json" "$MODEL" "$BATCH_ID" "$RUN_ID" "$CONVERSATION_FILE" "$MODE" "${BENCHMARK_PRICING_URL:-}" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-try:
-    from usage_costing import build_cost_calculation, derive_cost, load_pricing_table, provider_for_session_family, resolve_billable_model
-except ImportError:
-    from usage_pricing import build_cost_calculation, derive_cost, load_pricing_table, provider_for_session_family, resolve_billable_model
-
-root = Path(sys.argv[1])
-out = Path(sys.argv[2])
-model_arg = sys.argv[3]
-batch_id = sys.argv[4]
-run_id = sys.argv[5]
-conversation_file = Path(sys.argv[6])
-scenario = sys.argv[7]
-pricing_source = sys.argv[8] or None
-totals = {
-    "input_tokens": 0,
-    "cache_read_tokens": 0,
-    "cache_creation_tokens": 0,
-    "output_tokens": 0,
-    "reasoning_tokens": 0,
-    "total_tokens": 0,
-    "estimated_cost_usd": 0.0,
-}
-latest_total_usage = None
-observed_billable_model = ""
-
-def add_usage(obj):
-    global latest_total_usage, observed_billable_model
-    if isinstance(obj, dict) and obj.get("type") == "turn_context":
-        payload = obj.get("payload") or {}
-        candidate = payload.get("model")
-        if isinstance(candidate, str) and candidate.strip():
-            observed_billable_model = candidate.strip()
-            return
-    payload = obj.get("payload") if isinstance(obj, dict) else None
-    if isinstance(payload, dict) and payload.get("type") == "token_count":
-        info = payload.get("info")
-        if isinstance(info, dict) and isinstance(info.get("total_token_usage"), dict):
-            latest_total_usage = info["total_token_usage"]
-            return
-    usage = obj.get("usage") if isinstance(obj, dict) else None
-    if not isinstance(usage, dict):
-        usage = obj if isinstance(obj, dict) else {}
-    mapping = {
-        "input_tokens": ["input_tokens", "inputTokens"],
-        "cache_read_tokens": ["cache_read_input_tokens", "cacheReadInputTokens", "cached_input_tokens", "cachedInputTokens"],
-        "cache_creation_tokens": ["cache_creation_input_tokens", "cacheCreationInputTokens"],
-        "output_tokens": ["output_tokens", "outputTokens"],
-        "reasoning_tokens": ["reasoning_tokens", "reasoningTokens", "reasoning_output_tokens"],
-        "total_tokens": ["total_tokens", "totalTokens"],
-        "estimated_cost_usd": ["estimated_cost_usd", "costUSD", "totalCost"],
-    }
-    for dest, keys in mapping.items():
-        for key in keys:
-            value = usage.get(key)
-            if isinstance(value, (int, float)):
-                totals[dest] += value
-                break
-
-for path in root.rglob("*"):
-    if not path.is_file():
-        continue
-    try:
-        lines = path.read_text(errors="ignore").splitlines()
-    except Exception:
-        continue
-    for line in lines:
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            add_usage(json.loads(line))
-        except Exception:
-            pass
-
-if isinstance(latest_total_usage, dict):
-    totals["input_tokens"] = int(latest_total_usage.get("input_tokens") or 0)
-    totals["cache_read_tokens"] = int(latest_total_usage.get("cached_input_tokens") or latest_total_usage.get("cache_read_input_tokens") or 0)
-    totals["cache_creation_tokens"] = int(latest_total_usage.get("cache_creation_input_tokens") or 0)
-    totals["output_tokens"] = int(latest_total_usage.get("output_tokens") or 0)
-    totals["reasoning_tokens"] = int(latest_total_usage.get("reasoning_output_tokens") or latest_total_usage.get("reasoning_tokens") or 0)
-    totals["total_tokens"] = int(latest_total_usage.get("total_tokens") or 0)
-if not totals["total_tokens"]:
-    totals["total_tokens"] = totals["input_tokens"] + totals["cache_read_tokens"] + totals["cache_creation_tokens"] + totals["output_tokens"] + totals["reasoning_tokens"]
-totals["fresh_input_tokens"] = max(totals["input_tokens"] - totals["cache_read_tokens"], 0) + totals["cache_creation_tokens"]
-totals["normalized_total_tokens"] = totals["fresh_input_tokens"] + totals["output_tokens"] + totals["reasoning_tokens"]
-totals["input_includes_cache"] = model_arg == "codex"
-provider = provider_for_session_family(model_arg) or model_arg
-billable_model, billable_model_source = resolve_billable_model(provider, observed_billable_model)
-cost = derive_cost(
-    load_pricing_table(pricing_source),
-    billable_model,
-    input_tokens=float(totals["input_tokens"]),
-    cache_read_tokens=float(totals["cache_read_tokens"]),
-    cache_creation_tokens=float(totals["cache_creation_tokens"]),
-    output_tokens=float(totals["output_tokens"]),
-    input_includes_cache=model_arg == "codex",
-)
-summary_cost = {
-    "derived_total_cost_usd": cost.get("derived_total_cost_usd"),
-    "pricing_missing": cost.get("pricing_missing"),
-    "pricing_source": cost.get("pricing_source"),
-}
-totals.update({
-    "billable_model": billable_model,
-    "billable_model_source": billable_model_source,
-    **summary_cost,
-})
-if cost.get("derived_total_cost_usd") is not None:
-    totals["estimated_cost_usd"] = cost["derived_total_cost_usd"]
-out.write_text(json.dumps(totals, indent=2, sort_keys=True))
-cost_calculation = build_cost_calculation(
-    batch_id=batch_id,
-    run_id=run_id,
-    test_id=run_id.split("__", 1)[0] or conversation_file.stem,
-    model=model_arg,
-    scenario=scenario,
-    billable_model=billable_model,
-    billable_model_source=billable_model_source,
-    token_totals=totals,
-    cost=cost,
-)
-(out.parent / "cost-calculation.json").write_text(json.dumps(cost_calculation, indent=2, sort_keys=True))
-PY
+  PYTHONPATH="$BENCHMARK_ROOT/scripts:$BENCHMARK_ROOT/../scripts:$BENCHMARK_ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 "$BENCHMARK_ROOT/scripts/token_ledger.py" \
+      --raw-sessions-dir "$RAW_SESSIONS_DIR" \
+      --stdout-log "$STDOUT_LOG" \
+      --generated-plan "$GENERATED_PLAN" \
+      --token-usage-out "$JOB_DIR/token-usage.json" \
+      --ledger-out "$JOB_DIR/token-ledger.jsonl" \
+      --cost-calculation-out "$JOB_DIR/cost-calculation.json" \
+      --model "$MODEL" \
+      --batch-id "$BATCH_ID" \
+      --run-id "$RUN_ID" \
+      --conversation-file "$CONVERSATION_FILE" \
+      --mode "$MODE" \
+      --pricing-source "${BENCHMARK_PRICING_URL:-}"
 }
 
 echo "START run_id=$RUN_ID model=$MODEL mode=$MODE sha=$INVOKER_SHA"

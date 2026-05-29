@@ -66,7 +66,7 @@ def event(name, props):
     if not invoker_sha:
         raise SystemExit(f"{name} is missing invoker_sha for batch {batch_id}")
     props["invoker_sha"] = invoker_sha
-    row_id = insert_id(batch_id, name, props.get("run_id", ""), props.get("task_id", ""))
+    row_id = insert_id(batch_id, name, props.get("run_id", ""), props.get("task_id", ""), props.get("model_call_id", ""))
     base = {
         "token": token,
         "distinct_id": "invoker-benchmark",
@@ -103,8 +103,28 @@ for job_path in sorted((batch_dir / "jobs").glob("*/job.json")):
             usage = {}
     run_id = job.get("run_id")
     scenario = job.get("scenario") or job.get("mode")
+    scenario_key = usage.get("scenario_key") or job.get("scenario_key") or f"{job.get('corpus_case_id', '')}/{job.get('mode', '')}/{job.get('model', '')}"
     job_invoker_sha = str(job.get("invoker_sha") or summary_invoker_sha).strip()
     job_artifact_path = f"{artifact_root}/runs/{batch_id}/jobs/{run_id}"
+    usage_breakdown_props = {
+        "scenario_key": scenario_key,
+        "planning_cost_usd": usage.get("planning_cost_usd", 0),
+        "invoker_prompt_task_cost_usd": usage.get("invoker_prompt_task_cost_usd", 0),
+        "autofix_retry_cost_usd": usage.get("autofix_retry_cost_usd", 0),
+        "unknown_model_call_cost_usd": usage.get("unknown_model_call_cost_usd", 0),
+        "planning_tokens": usage.get("planning_tokens", {}),
+        "invoker_prompt_task_tokens": usage.get("invoker_prompt_task_tokens", {}),
+        "autofix_retry_tokens": usage.get("autofix_retry_tokens", {}),
+        "unknown_model_call_tokens": usage.get("unknown_model_call_tokens", {}),
+        "model_call_count": usage.get("model_call_count", 0),
+        "prompt_model_call_count": usage.get("prompt_model_call_count", 0),
+        "autofix_model_call_count": usage.get("autofix_model_call_count", 0),
+        "cost_task_ids": usage.get("cost_task_ids", []),
+        "dependent_task_ids": usage.get("dependent_task_ids", []),
+        "dependent_prompt_task_ids": usage.get("dependent_prompt_task_ids", []),
+        "dependent_autofix_task_ids": usage.get("dependent_autofix_task_ids", []),
+        "cost_breakdown_complete": usage.get("cost_breakdown_complete", False),
+    }
     run_props = {
         "run_id": run_id,
         "test_id": job.get("test_id") or job.get("source_session_id") or job.get("conversation_id", ""),
@@ -119,6 +139,7 @@ for job_path in sorted((batch_dir / "jobs").glob("*/job.json")):
         "model": job.get("model"),
         "mode": job.get("mode"),
         "scenario": scenario,
+        **usage_breakdown_props,
         "execution_surface": job.get("execution_surface") or ("baseline" if scenario == "baseline_direct" else "invoker"),
         "autofix_enabled": bool(job.get("autofix_enabled") or scenario == "invoker_auto_fix"),
         "invoker_sha": job_invoker_sha,
@@ -165,6 +186,40 @@ for job_path in sorted((batch_dir / "jobs").glob("*/job.json")):
             "autofix_phase_cost_usd": usage.get("autofix_phase_cost_usd", 0),
             "original_phase_cost_usd": usage.get("original_phase_cost_usd", usage.get("estimated_cost_usd", 0)),
         }))
+    ledger_path = job_path.parent / "token-ledger.jsonl"
+    if ledger_path.exists():
+        try:
+            ledger_rows = [json.loads(line) for line in ledger_path.read_text().splitlines() if line.strip()]
+        except Exception:
+            ledger_rows = []
+        for row in ledger_rows:
+            if not isinstance(row, dict):
+                continue
+            events.append(event("benchmark_model_call", {
+                **run_props,
+                "model_call_id": row.get("model_call_id", ""),
+                "phase": row.get("phase", "unknown_model_call"),
+                "task_id": row.get("task_id", ""),
+                "agent_session_id": row.get("agent_session_id", ""),
+                "provider": row.get("provider", ""),
+                "benchmark_model": run_props.get("model", ""),
+                "model": row.get("model", run_props.get("model", "")),
+                "billable_model": row.get("billable_model", row.get("model", "")),
+                "billable_model_source": row.get("billable_model_source", ""),
+                "input_tokens": row.get("input_tokens", 0),
+                "cache_read_tokens": row.get("cache_read_tokens", 0),
+                "cache_creation_tokens": row.get("cache_creation_tokens", 0),
+                "fresh_input_tokens": max(row.get("input_tokens", 0) - row.get("cache_read_tokens", 0), 0) + row.get("cache_creation_tokens", 0),
+                "output_tokens": row.get("output_tokens", 0),
+                "reasoning_tokens": row.get("reasoning_tokens", 0),
+                "total_tokens": row.get("total_tokens", 0),
+                "normalized_total_tokens": max(row.get("input_tokens", 0) - row.get("cache_read_tokens", 0), 0) + row.get("cache_creation_tokens", 0) + row.get("output_tokens", 0) + row.get("reasoning_tokens", 0),
+                "estimated_cost_usd": row.get("estimated_cost_usd", 0),
+                "derived_total_cost_usd": row.get("derived_total_cost_usd"),
+                "pricing_missing": row.get("pricing_missing", True),
+                "pricing_source": row.get("pricing_source", ""),
+                "source": row.get("source", ""),
+            }))
 
 out = batch_dir / "mixpanel-export.jsonl"
 out.write_text("\n".join(json.dumps(item, sort_keys=True) for item in events) + "\n")

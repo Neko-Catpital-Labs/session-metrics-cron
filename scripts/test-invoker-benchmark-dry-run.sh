@@ -13,6 +13,10 @@ USAGE_COSTING_SCRIPT="$BENCHMARK_SOURCE_ROOT/scripts/usage_costing.py"
 if [[ ! -f "$USAGE_COSTING_SCRIPT" ]]; then
   USAGE_COSTING_SCRIPT="$REPO_ROOT/scripts/usage_costing.py"
 fi
+TOKEN_LEDGER_SCRIPT="$BENCHMARK_SOURCE_ROOT/scripts/token_ledger.py"
+if [[ ! -f "$TOKEN_LEDGER_SCRIPT" ]]; then
+  TOKEN_LEDGER_SCRIPT="$REPO_ROOT/scripts/token_ledger.py"
+fi
 TMP_ROOT="$(mktemp -d /tmp/invoker-benchmark-test.XXXXXX)"
 EMPTY_ROOT=""
 trap 'rm -rf "$TMP_ROOT" ${EMPTY_ROOT:+"$EMPTY_ROOT"}' EXIT
@@ -112,6 +116,76 @@ assert rows == [
 ], rows
 PY
 
+ledger_fixture="$TMP_ROOT/ledger-fixture"
+mkdir -p "$ledger_fixture/raw/.codex/sessions"
+cat > "$ledger_fixture/session-11.jsonl" <<'EOF'
+{"session":"11"}
+EOF
+cat > "$ledger_fixture/generated-plan.yaml" <<'EOF'
+name: ledger fixture
+repoUrl: https://example.test/repo.git
+mergeMode: manual
+tasks:
+  - id: setup
+    title: Setup
+    command: echo setup
+  - id: prompt-a
+    title: Prompt A
+    dependencies: [setup]
+    prompt: |
+      Do prompt A.
+  - id: prompt-b
+    title: Prompt B
+    dependencies:
+      - prompt-a
+    prompt: |
+      Do prompt B.
+EOF
+cat > "$ledger_fixture/raw/.codex/sessions/planner.jsonl" <<'EOF'
+{"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":5,"total_tokens":135}}},"sessionId":"planner-session","model":"gpt-test","costUSD":0.01}
+EOF
+cat > "$ledger_fixture/stdout.log" <<'EOF'
+{"task_id":"prompt-a","agent_session_id":"agent-a","model":"gpt-test","usage":{"input_tokens":30,"output_tokens":5,"total_tokens":35},"costUSD":0.03}
+{"task_id":"prompt-b","agent_session_id":"agent-b","model":"gpt-test","usage":{"input_tokens":40,"output_tokens":6,"total_tokens":46},"costUSD":0.04}
+{"task_id":"prompt-b","agent_session_id":"agent-b-fix","kind":"autofix_retry","model":"gpt-test","usage":{"input_tokens":20,"output_tokens":4,"total_tokens":24},"costUSD":0.02}
+EOF
+cat > "$ledger_fixture/pricing.json" <<'EOF'
+{}
+EOF
+PYTHONPATH="$BENCHMARK_SOURCE_ROOT/scripts" python3 "$TOKEN_LEDGER_SCRIPT" \
+  --raw-sessions-dir "$ledger_fixture/raw" \
+  --stdout-log "$ledger_fixture/stdout.log" \
+  --generated-plan "$ledger_fixture/generated-plan.yaml" \
+  --token-usage-out "$ledger_fixture/token-usage.json" \
+  --ledger-out "$ledger_fixture/token-ledger.jsonl" \
+  --cost-calculation-out "$ledger_fixture/cost-calculation.json" \
+  --model codex \
+  --batch-id ledger-batch \
+  --run-id session-11__codex__invoker_auto_fix \
+  --conversation-file "$ledger_fixture/session-11.jsonl" \
+  --mode invoker_auto_fix \
+  --pricing-source "$ledger_fixture/pricing.json"
+python3 - "$ledger_fixture/token-ledger.jsonl" "$ledger_fixture/token-usage.json" <<'PY'
+import json
+import sys
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+usage = json.load(open(sys.argv[2]))
+assert len(rows) == 4, rows
+assert {row["scenario_key"] for row in rows} == {"session-11/invoker_auto_fix/codex"}
+assert {row["phase"] for row in rows} == {"planning", "invoker_prompt_task", "invoker_autofix_retry"}
+assert usage["scenario_key"] == "session-11/invoker_auto_fix/codex"
+assert abs(usage["estimated_cost_usd"] - 0.10) < 0.000001, usage
+assert abs(usage["estimated_cost_usd"] - usage["planning_cost_usd"] - usage["invoker_prompt_task_cost_usd"] - usage["autofix_retry_cost_usd"]) < 0.000001
+assert usage["model_call_count"] == 4
+assert usage["prompt_model_call_count"] == 2
+assert usage["autofix_model_call_count"] == 1
+assert usage["cost_task_ids"] == ["prompt-a", "prompt-b"], usage
+assert usage["dependent_task_ids"] == ["setup", "prompt-a", "prompt-b"], usage
+assert usage["dependent_prompt_task_ids"] == ["prompt-a", "prompt-b"], usage
+assert usage["dependent_autofix_task_ids"] == ["prompt-b"], usage
+assert usage["cost_breakdown_complete"] is True
+PY
+
 fake_batch="$TMP_ROOT/runs/fake-batch"
 fake_run_id="019e1b94-1c63-7e02-a60f-febd3e3f2ff4__codex__baseline_direct"
 mkdir -p "$fake_batch/jobs/$fake_run_id"
@@ -148,6 +222,7 @@ cat > "$fake_batch/jobs/$fake_run_id/job.json" <<EOF
 EOF
 cat > "$fake_batch/jobs/$fake_run_id/token-usage.json" <<'EOF'
 {
+  "scenario_key": "session-01/baseline_direct/codex",
   "input_tokens": 1000,
   "cache_read_tokens": 300,
   "cache_creation_tokens": 100,
@@ -164,22 +239,31 @@ cat > "$fake_batch/jobs/$fake_run_id/token-usage.json" <<'EOF'
   "pricing_source": "litellm_model_prices"
 }
 EOF
+cat > "$fake_batch/jobs/$fake_run_id/token-ledger.jsonl" <<'EOF'
+{"scenario_key":"session-01/baseline_direct/codex","model_call_id":"call-1","phase":"planning","task_id":"","agent_session_id":"planner","provider":"openai","model":"gpt-test","billable_model":"gpt-test","billable_model_source":"session_log","input_tokens":1000,"cache_read_tokens":300,"cache_creation_tokens":100,"output_tokens":200,"reasoning_tokens":50,"total_tokens":1250,"estimated_cost_usd":0.001555,"derived_total_cost_usd":0.001555,"pricing_missing":false,"pricing_source":"litellm_model_prices","source":"fixture"}
+EOF
 BENCHMARK_ROOT=/home/invoker/invoker-benchmarks "$TMP_ROOT/bin/emit-mixpanel-events.sh" --batch-dir "$fake_batch" >/dev/null
 python3 - "$fake_batch/mixpanel-export.jsonl" <<'PY'
 import json
 import sys
 events = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
 event_names = {item["event"] for item in events}
-assert event_names == {"benchmark_batch", "benchmark_run", "benchmark_task", "benchmark_token_usage"}
+assert event_names == {"benchmark_batch", "benchmark_run", "benchmark_task", "benchmark_token_usage", "benchmark_model_call"}
 for item in events:
     assert item["properties"]["invoker_sha"] == "test-sha", item
 run = next(item["properties"] for item in events if item["event"] == "benchmark_run")
+model_call = next(item["properties"] for item in events if item["event"] == "benchmark_model_call")
 assert run["test_id"] == "019e1b94-1c63-7e02-a60f-febd3e3f2ff4"
 assert run["corpus_case_id"] == "session-01"
+assert run["scenario_key"] == "session-01/baseline_direct/codex"
 assert run["execution_surface"] == "baseline"
 assert run["autofix_enabled"] is False
 assert run["estimated_cost_usd"] == 0.001555
 assert run["derived_total_cost_usd"] == 0.001555
+assert model_call["model_call_id"] == "call-1"
+assert model_call["scenario_key"] == "session-01/baseline_direct/codex"
+assert model_call["phase"] == "planning"
+assert model_call["agent_session_id"] == "planner"
 assert run["job_artifact_path"] == "/home/invoker/invoker-benchmarks/runs/fake-batch/jobs/" + run["run_id"]
 assert run["failure_stage"] == ""
 assert run["failure_reason"] == ""
@@ -411,6 +495,7 @@ mkdir -p "$worker_root/bin" "$worker_root/config" "$worker_root/corpus" "$worker
 cp -R "$BENCHMARK_SOURCE_ROOT/bin/." "$worker_root/bin/"
 cp -R "$BENCHMARK_SOURCE_ROOT/lib/." "$worker_root/lib/"
 cp "$USAGE_COSTING_SCRIPT" "$worker_root/scripts/usage_costing.py"
+cp "$TOKEN_LEDGER_SCRIPT" "$worker_root/scripts/token_ledger.py"
 printf '{"type":"event_msg","payload":{"type":"user_message","message":"do the thing"}}\n' > "$worker_root/corpus/session-01.jsonl"
 cat > "$worker_root/config/benchmark.env" <<EOF
 TZ=Asia/Hong_Kong
