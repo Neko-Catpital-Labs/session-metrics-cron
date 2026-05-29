@@ -1,5 +1,724 @@
 {
   "jobs": [
-    { "file": "session-04.jsonl", "model": "codex", "mode": "invoker_workflow" }
+    {
+      "file": "session-01.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-01.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-01.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-02.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-02.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-02.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-03.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-03.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-03.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-04.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-04.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-04.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-05.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-05.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-05.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-06.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-06.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-06.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-07.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-07.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-07.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-08.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-08.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-08.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-09.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-09.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-09.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-10.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-10.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-10.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-11.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-11.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-11.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-12.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-12.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-12.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-13.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-13.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-13.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-14.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-14.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-14.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-15.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-15.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-15.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-16.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-16.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-16.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-17.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-17.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-17.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-18.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-18.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-18.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-19.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-19.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-19.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-20.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-20.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-20.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-21.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-21.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-21.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-22.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-22.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-22.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-23.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-23.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-23.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-24.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-24.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-24.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-25.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-25.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-25.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-26.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-26.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-26.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-27.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-27.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-27.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-28.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-28.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-28.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-29.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-29.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-29.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-30.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-30.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-30.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-31.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-31.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-31.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-32.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-32.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-32.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-33.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-33.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-33.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-34.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-34.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-34.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-35.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-35.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-35.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-36.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-36.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-36.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-37.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-37.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-37.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-38.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-38.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-38.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-39.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-39.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-39.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-40.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-40.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-40.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-41.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-41.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-41.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-42.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-42.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-42.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-43.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-43.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-43.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-44.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-44.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-44.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-45.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-45.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-45.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-46.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-46.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-46.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-47.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-47.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-47.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    },
+    {
+      "file": "session-48.jsonl",
+      "model": "codex",
+      "mode": "baseline_direct"
+    },
+    {
+      "file": "session-48.jsonl",
+      "model": "codex",
+      "mode": "invoker_workflow"
+    },
+    {
+      "file": "session-48.jsonl",
+      "model": "codex",
+      "mode": "invoker_auto_fix"
+    }
   ]
 }
