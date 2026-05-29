@@ -1493,10 +1493,13 @@ def build_command_attribution_events(
         key = (row.get("model", ""), row.get("bucket", ""), session_id, prompt_index)
         context = prompt_context.get(key, {})
         schema_version = row.get("schema_version") or "usage_command_attribution_v4"
+        service_classifier_revision = row.get("service_classifier_revision", "")
         canonical_key = f"{row.get('model','')}:{row.get('bucket','')}:{session_id}:{prompt_index}:{command_index}:{row.get('command_hash','')}"
-        row_id = insert_id_v4(event_date, "usage_command_attribution", f"{schema_version}:{canonical_key}")
+        row_id_key = f"{schema_version}:{service_classifier_revision}:{canonical_key}" if service_classifier_revision else f"{schema_version}:{canonical_key}"
+        row_id = insert_id_v4(event_date, "usage_command_attribution", row_id_key)
         props = with_common(token, distinct_id, report_epoch(event_date), row_id, event_date, {
             "schema_version": schema_version,
+            "service_classifier_revision": service_classifier_revision,
             "model": row.get("model", ""),
             "provider": row.get("provider", ""),
             "billable_model": row.get("billable_model", ""),

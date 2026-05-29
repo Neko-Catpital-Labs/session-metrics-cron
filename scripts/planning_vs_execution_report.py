@@ -50,6 +50,7 @@ PLANNING_RE = re.compile("|".join(re.escape(p) for p in PLANNING_PHRASES), re.IG
 SHELL_FUNCTION_NAMES = {"exec_command", "shell", "bash"}
 COMMAND_ATTRIBUTION_SCHEMA_VERSION = "usage_command_attribution_v4"
 COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_1 = "usage_command_attribution_v4_1"
+COMMAND_ATTRIBUTION_SERVICE_CLASSIFIER_REVISION = "service_context_v2"
 COMMAND_COST_ALLOCATION_METHOD = "prompt_cost_output_weighted_v1"
 
 
@@ -415,8 +416,6 @@ def classify_command_service_of(
     fn = str(row.get("function_name") or "").lower()
     if fn == "write_stdin" and previous_context and previous_context.get("service_of_why"):
         return previous_context["service_of_why"], "high", "previous_command", ""
-    if primary_why != "uncategorized":
-        return primary_why, "high", "tool_rule", ""
 
     context_text = " ".join(
         str(row.get(key) or "")
@@ -426,6 +425,9 @@ def classify_command_service_of(
     if service_of_why != "uncategorized":
         return service_of_why, confidence, source, ""
 
+    if primary_why != "uncategorized" and primary_why != "source_inspection":
+        return primary_why, "high", "tool_rule", ""
+
     if tool_action in {"planning_or_task_tracking", "analytics_query", "environment_or_process_control"}:
         mapped = {
             "planning_or_task_tracking": "planning_or_task_tracking",
@@ -433,6 +435,8 @@ def classify_command_service_of(
             "environment_or_process_control": "environment_or_process_control",
         }[tool_action]
         return mapped, "medium", "tool_rule", ""
+    if primary_why == "source_inspection":
+        return "source_inspection", "low", "tool_rule", ""
     if tool_action == "unknown_tool":
         return "uncategorized", "low", "tool_rule", "unknown_tool"
     if not context_text.strip():
@@ -446,6 +450,7 @@ def build_command_attribution_v4_1_rows(rows: list[dict[str, Any]]) -> list[dict
     for row in rows:
         out = dict(row)
         out["schema_version"] = COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_1
+        out["service_classifier_revision"] = COMMAND_ATTRIBUTION_SERVICE_CLASSIFIER_REVISION
         session_id = Path(str(row.get("file") or "")).stem or digest_text(str(row.get("file") or ""))[:16]
         out["session_id"] = session_id
         tool_action, tool_action_source = command_attribution_tool_action(

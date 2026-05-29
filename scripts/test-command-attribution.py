@@ -115,6 +115,7 @@ class CommandAttributionTests(unittest.TestCase):
         enriched = report.build_command_attribution_v4_1_rows(rows)
 
         self.assertEqual(enriched[0]["schema_version"], "usage_command_attribution_v4_1")
+        self.assertEqual(enriched[0]["service_classifier_revision"], "service_context_v2")
         self.assertEqual(enriched[0]["tool_action"], "file_read")
         self.assertEqual(enriched[0]["service_of_why"], "autofix_or_failure_repair")
         self.assertEqual(enriched[0]["service_of_confidence"], "high")

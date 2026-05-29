@@ -224,7 +224,10 @@ def canonical_reports() -> list[dict[str, Any]]:
             ),
         },
     ]
-    command_filter = [filter_ref("schema_version", "usage_command_attribution_v4_1")]
+    command_filter = [
+        filter_ref("schema_version", "usage_command_attribution_v4_1"),
+        filter_ref("service_classifier_revision", "service_context_v2"),
+    ]
     reports.extend(
         [
             {

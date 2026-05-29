@@ -91,6 +91,7 @@ for family in ("usage_request_cache_diagnosis", "usage_request_tool_attribution"
         raise SystemExit(f"Expected {family} to omit legacy request_subpattern")
 required_command_fields = {
     "schema_version",
+    "service_classifier_revision",
     "command_preview",
     "command_hash",
     "primary_why",
