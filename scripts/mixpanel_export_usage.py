@@ -1587,7 +1587,7 @@ def build_command_attribution_events(
             "cost_is_estimated": to_bool(row.get("cost_is_estimated", True)),
             "cost_allocation_method": row.get("cost_allocation_method", "prompt_cost_output_weighted_v1"),
         })
-        if schema_version in {"usage_command_attribution_v4_2", "usage_command_attribution_v4_3"}:
+        if schema_version in {"usage_command_attribution_v4_2", "usage_command_attribution_v4_3", "usage_command_attribution_v4_4"}:
             for legacy_key in (
                 "why_tags",
                 "why_classifier",
@@ -1746,6 +1746,9 @@ def build_all_events(
     command_attribution_v4_3_path = input_root / "reports/usage-command-attribution-v4_3.csv"
     if command_attribution_v4_3_path.exists():
         command_attribution.extend(read_csv(command_attribution_v4_3_path))
+    command_attribution_v4_4_path = input_root / "reports/usage-command-attribution-v4_4.csv"
+    if command_attribution_v4_4_path.exists():
+        command_attribution.extend(read_csv(command_attribution_v4_4_path))
 
     epoch = report_epoch(report_date)
     families: dict[str, list[ExportEvent]] = {}

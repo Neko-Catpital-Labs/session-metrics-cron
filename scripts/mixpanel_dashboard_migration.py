@@ -245,6 +245,10 @@ def canonical_reports() -> list[dict[str, Any]]:
         filter_ref("schema_version", "usage_command_attribution_v4_3"),
         filter_ref("classification_revision", "classifier_v4_3"),
     ]
+    command_filter_v4_4 = [
+        filter_ref("schema_version", "usage_command_attribution_v4_4"),
+        filter_ref("classification_revision", "classifier_v4_4"),
+    ]
     reports.extend(
         [
             {
@@ -430,29 +434,29 @@ def canonical_reports() -> list[dict[str, Any]]:
                 ),
             },
             {
-                "name": "v4.3 Cost by Tool Intention",
+                "name": "v4.4 Cost by Tool Intention",
                 "board": "delegated_intention",
-                "description": "Estimated command cost by v4.3 underlying agent_tool_intention.",
+                "description": "Estimated command cost by v4.4 underlying agent_tool_intention.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
                     groups=[property_ref("agent_tool_intention")],
-                    filters=command_filter_v4_3,
+                    filters=command_filter_v4_4,
                 ),
             },
             {
-                "name": "v4.3 Cost by Execution Mode",
+                "name": "v4.4 Cost by Execution Mode",
                 "board": "delegated_intention",
-                "description": "Estimated command cost by v4.3 tool_execution_mode transport/control plane.",
+                "description": "Estimated command cost by v4.4 tool_execution_mode transport/control plane.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
                     groups=[property_ref("tool_execution_mode")],
-                    filters=command_filter_v4_3,
+                    filters=command_filter_v4_4,
                 ),
             },
             {
-                "name": "v4.3 Delegated Agent Intentions",
+                "name": "v4.4 Delegated Agent Intentions",
                 "board": "delegated_intention",
                 "description": "Delegated agent command cost by action, type, and inherited work intention.",
                 "params": insight_params(
@@ -463,13 +467,13 @@ def canonical_reports() -> list[dict[str, Any]]:
                         property_ref("delegated_agent_type"),
                         property_ref("agent_tool_intention"),
                     ],
-                    filters=[*command_filter_v4_3, filter_ref("tool_execution_mode", "agent_delegated")],
+                    filters=[*command_filter_v4_4, filter_ref("tool_execution_mode", "agent_delegated")],
                 ),
             },
             {
-                "name": "v4.3 Branch Stack Orchestration",
+                "name": "v4.4 Branch Stack Orchestration",
                 "board": "delegated_intention",
-                "description": "Branch stack/worktree/rebase/cherry-pick work by execution mode and delegation action.",
+                "description": "Branch stack/rebase/cherry-pick/Mergify queue work by execution mode and delegation action.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
@@ -478,13 +482,13 @@ def canonical_reports() -> list[dict[str, Any]]:
                         property_ref("delegated_agent_action"),
                         property_ref("function_name"),
                     ],
-                    filters=[*command_filter_v4_3, filter_ref("agent_tool_intention", "branch_stack_orchestration")],
+                    filters=[*command_filter_v4_4, filter_ref("agent_tool_intention", "branch_stack_orchestration")],
                 ),
             },
             {
-                "name": "v4.3 Review Queue",
+                "name": "v4.4 Review Queue",
                 "board": "delegated_intention",
-                "description": "v4.3 command cost needing review, grouped by review reason and delegated metadata.",
+                "description": "v4.4 command cost needing review, grouped by review reason and delegated metadata.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
@@ -494,7 +498,7 @@ def canonical_reports() -> list[dict[str, Any]]:
                         property_ref("delegated_agent_action"),
                         property_ref("agent_tool_intention"),
                     ],
-                    filters=[*command_filter_v4_3, filter_ref("classification_agreement", "needs_review")],
+                    filters=[*command_filter_v4_4, filter_ref("classification_agreement", "needs_review")],
                 ),
             },
         ]

@@ -626,6 +626,198 @@ class CommandAttributionTests(unittest.TestCase):
         self.assertEqual(props["delegated_agent_action"], "spawn")
         self.assertEqual(props["delegated_agent_id"], "agent-123")
 
+    def test_v4_4_worktree_failure_repair_is_fixing_failure(self) -> None:
+        prompt = "A build/test command failed. Fix the code so the command succeeds in /worktrees/job-123."
+        cases = [
+            ("read", "read", "src/app.py"),
+            ("exec_command", "rg", "rg failing /worktrees/job-123"),
+            ("exec_command", "sed", "sed -n '1,80p' /worktrees/job-123/src/app.py"),
+            ("exec_command", "ls", "ls /worktrees/job-123"),
+            ("apply_patch", "apply_patch", "apply_patch"),
+            ("exec_command", "pnpm", "pnpm test"),
+        ]
+        rows = [
+            {
+                "schema_version": "usage_command_attribution_v4",
+                "file": f"/tmp/session-v44-{index}.jsonl",
+                "bucket": "execution",
+                "prompt_index": 1,
+                "command_index": index,
+                "function_name": fn,
+                "shell_verb": verb,
+                "command_preview": command,
+                "target": "/worktrees/job-123/src/app.py",
+                "prompt_preview": prompt,
+                "allocated_total_cost_usd": 0.1,
+            }
+            for index, (fn, verb, command) in enumerate(cases, start=1)
+        ]
+
+        enriched, review = report.build_command_attribution_v4_4_rows(rows)
+
+        self.assertEqual(review, [])
+        for row in enriched:
+            self.assertEqual(row["schema_version"], "usage_command_attribution_v4_4")
+            self.assertEqual(row["classification_revision"], "classifier_v4_4")
+            self.assertEqual(row["agent_tool_intention"], "fixing_failure")
+            self.assertNotEqual(row["agent_tool_intention"], "branch_stack_orchestration")
+
+    def test_v4_4_bare_worktree_target_does_not_create_branch_stack_intention(self) -> None:
+        rows = [
+            {
+                "schema_version": "usage_command_attribution_v4",
+                "file": "/tmp/session-v44-worktree.jsonl",
+                "bucket": "execution",
+                "prompt_index": 1,
+                "command_index": 1,
+                "function_name": "exec_command",
+                "shell_verb": "ls",
+                "command_preview": "ls /worktrees/job-123",
+                "target": "/worktrees/job-123",
+                "prompt_preview": "Inspect the repo in the worktree",
+                "allocated_total_cost_usd": 0.1,
+            }
+        ]
+
+        enriched, _review = report.build_command_attribution_v4_4_rows(rows)
+
+        self.assertNotEqual(enriched[0]["agent_tool_intention"], "branch_stack_orchestration")
+        self.assertEqual(enriched[0]["agent_tool_intention"], "repo_orientation")
+
+    def test_v4_4_explicit_stack_and_queue_operations_remain_branch_stack(self) -> None:
+        cases = [
+            ("exec_command", "git", "git rebase upstream/master", "Rebase the branch", ""),
+            ("exec_command", "git", "git cherry-pick abc123", "Cherry-pick the stack fix", ""),
+            ("spawn_agent", "", "spawn_agent", "Delegate work", "Rebase the branch stack and resolve conflicts"),
+            ("exec_command", "gh", "gh pr comment 123 --body '@Mergifyio requeue'", "Operate the Mergify merge queue", ""),
+            ("spawn_agent", "", "spawn_agent", "Delegate queue work", "Manage the Mergify merge queue for the stack"),
+        ]
+        rows = [
+            {
+                "schema_version": "usage_command_attribution_v4",
+                "file": f"/tmp/session-v44-branch-{index}.jsonl",
+                "bucket": "execution",
+                "prompt_index": 1,
+                "command_index": index,
+                "function_name": fn,
+                "shell_verb": verb,
+                "command_preview": command,
+                "prompt_preview": prompt,
+                "delegated_agent_action": "spawn" if fn == "spawn_agent" else "none",
+                "delegated_agent_id": f"agent-{index}" if fn == "spawn_agent" else "",
+                "delegated_task_preview": delegated,
+                "allocated_total_cost_usd": 0.1,
+            }
+            for index, (fn, verb, command, prompt, delegated) in enumerate(cases, start=1)
+        ]
+
+        enriched, review = report.build_command_attribution_v4_4_rows(rows)
+
+        self.assertEqual(review, [])
+        for row in enriched:
+            self.assertEqual(row["agent_tool_intention"], "branch_stack_orchestration")
+
+    def test_v4_4_mixed_context_prefers_failure_repair_unless_queue_command(self) -> None:
+        rows = [
+            {
+                "schema_version": "usage_command_attribution_v4",
+                "file": "/tmp/session-v44-mixed-1.jsonl",
+                "bucket": "execution",
+                "prompt_index": 1,
+                "command_index": 1,
+                "function_name": "exec_command",
+                "shell_verb": "pytest",
+                "command_preview": "pytest tests/test_api.py",
+                "prompt_preview": "Fix failed tests after rebase in /worktrees/job-123.",
+                "allocated_total_cost_usd": 0.1,
+            },
+            {
+                "schema_version": "usage_command_attribution_v4",
+                "file": "/tmp/session-v44-mixed-2.jsonl",
+                "bucket": "execution",
+                "prompt_index": 1,
+                "command_index": 1,
+                "function_name": "spawn_agent",
+                "command_preview": "spawn_agent",
+                "prompt_preview": "Delegate stack repair",
+                "delegated_agent_action": "spawn",
+                "delegated_agent_id": "agent-stack",
+                "delegated_task_preview": "Rebase stack and resolve conflicts",
+                "allocated_total_cost_usd": 0.1,
+            },
+            {
+                "schema_version": "usage_command_attribution_v4",
+                "file": "/tmp/session-v44-mixed-3.jsonl",
+                "bucket": "execution",
+                "prompt_index": 1,
+                "command_index": 1,
+                "function_name": "exec_command",
+                "shell_verb": "gh",
+                "command_preview": "gh run view --log",
+                "prompt_preview": "Mergify queue is blocked by failed checks; inspect logs and fix.",
+                "allocated_total_cost_usd": 0.1,
+            },
+            {
+                "schema_version": "usage_command_attribution_v4",
+                "file": "/tmp/session-v44-mixed-4.jsonl",
+                "bucket": "execution",
+                "prompt_index": 1,
+                "command_index": 1,
+                "function_name": "exec_command",
+                "shell_verb": "gh",
+                "command_preview": "gh pr comment 123 --body '@Mergifyio requeue'",
+                "prompt_preview": "Mergify queue is blocked by failed checks; operate the queue.",
+                "allocated_total_cost_usd": 0.1,
+            },
+        ]
+
+        enriched, _review = report.build_command_attribution_v4_4_rows(rows)
+
+        self.assertEqual(enriched[0]["agent_tool_intention"], "fixing_failure")
+        self.assertEqual(enriched[1]["agent_tool_intention"], "branch_stack_orchestration")
+        self.assertEqual(enriched[2]["agent_tool_intention"], "fixing_failure")
+        self.assertEqual(enriched[3]["agent_tool_intention"], "branch_stack_orchestration")
+
+    def test_v4_4_mixpanel_props_include_revision(self) -> None:
+        task_categorizer = exporter.TaskCategorizer(exporter.DEFAULT_TASK_CATEGORIZATION_CONFIG)
+        request_categorizer = exporter.RequestPatternCategorizer(exporter.DEFAULT_REQUEST_PATTERN_CONFIG)
+        rows = [
+            {
+                "schema_version": "usage_command_attribution_v4_4",
+                "classification_revision": "classifier_v4_4",
+                "file": "/tmp/session-v44-export.jsonl",
+                "model": "codex",
+                "bucket": "execution",
+                "prompt_index": "1",
+                "command_index": "1",
+                "function_name": "exec_command",
+                "shell_verb": "pytest",
+                "command_preview": "pytest tests/test_api.py",
+                "command_hash": "ghi",
+                "primary_why": "ci_failure_fix",
+                "prompt_task_kind": "failure_diagnosis",
+                "agent_tool_intention": "fixing_failure",
+                "agent_tool_intention_source": "prompt_context",
+                "tool_execution_mode": "direct_tool",
+                "delegated_agent_action": "none",
+            }
+        ]
+
+        events = exporter.build_command_attribution_events(
+            rows,
+            [],
+            "token",
+            "distinct",
+            "2026-05-28",
+            task_categorizer,
+            request_categorizer,
+        )
+
+        props = events[0].properties
+        self.assertEqual(props["schema_version"], "usage_command_attribution_v4_4")
+        self.assertEqual(props["classification_revision"], "classifier_v4_4")
+        self.assertEqual(props["agent_tool_intention"], "fixing_failure")
+
     def test_v4_2_agent_tools_remain_remote_orchestration(self) -> None:
         row = {
             "prompt_preview": "Delegate branch stack work",
