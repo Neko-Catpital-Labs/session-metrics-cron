@@ -1,0 +1,5 @@
+{
+  "jobs": [
+    { "file": "session-04.jsonl", "model": "codex", "mode": "invoker_workflow" }
+  ]
+}

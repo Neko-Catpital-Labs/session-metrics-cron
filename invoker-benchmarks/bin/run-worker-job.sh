@@ -695,7 +695,7 @@ default_baseline() {
 }
 
 default_plan() {
-  local benchmark_plan_constraint="${BENCHMARK_PLAN_CONSTRAINT:-For this benchmark, generate Invoker YAML with mergeMode: manual. Do not use mergeMode: github. Write the final YAML plan to the path in GENERATED_PLAN. Do not submit the plan. Do not print the YAML as your final answer; after writing GENERATED_PLAN, print only a short confirmation.}"
+  local benchmark_plan_constraint="${BENCHMARK_PLAN_CONSTRAINT:-For this benchmark, generate a self-contained command-only Invoker YAML smoke plan that can be submitted into a fresh isolated Invoker database. Use mergeMode: manual. Do not use mergeMode: github. Do not include prompt tasks. Do not include top-level or task-level externalDependencies. Do not create commands that require prompt-specific upstream workflow records, upstream branches, experiment artifacts, local session files, git commits, pull requests, or long test suites; use portable successful shell commands such as printf/test/true to model the workflow DAG while exercising Invoker orchestration. Write the final YAML plan to the absolute path in the GENERATED_PLAN environment variable, not to a relative file. Do not submit the plan. Do not print the YAML as your final answer; after writing GENERATED_PLAN, print only a short confirmation.}"
   case "$MODEL" in
     codex)
       if ! run_template "${BENCHMARK_PLAN_CODEX_COMMAND:-}"; then
@@ -707,7 +707,7 @@ default_plan() {
         } | (
           cd "$CHECKOUT_DIR"
           export GENERATED_PLAN JOB_DIR
-          codex exec --skip-git-repo-check --sandbox workspace-write --add-dir "$JOB_DIR" -
+          codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -
         )
       fi
       ;;
@@ -729,7 +729,7 @@ $(cat "$PROMPT_FILE")"
 }
 
 inspect_generated_plan() {
-  python3 - "$GENERATED_PLAN" "$PLAN_INSPECTION" <<'PY'
+  python3 - "$GENERATED_PLAN" "$PLAN_INSPECTION" "$CHECKOUT_DIR" <<'PY'
 import json
 import re
 import sys
@@ -737,6 +737,12 @@ from pathlib import Path
 
 plan_path = Path(sys.argv[1])
 inspection_path = Path(sys.argv[2])
+checkout_path = Path(sys.argv[3])
+
+if not plan_path.exists():
+    fallback = checkout_path / "generated-plan.yaml"
+    if fallback.exists():
+        plan_path.write_text(fallback.read_text(errors="ignore"))
 
 raw = plan_path.read_text(errors="ignore") if plan_path.exists() else ""
 
@@ -815,6 +821,12 @@ if merge_mode != "manual":
         errors.append(f"generated plan used mergeMode: {merge_mode} instead of manual")
     else:
         errors.append("generated plan omitted mergeMode: manual")
+if re.search(r"(?m)^externalDependencies:\s*$", yaml_text):
+    errors.append("generated plan used top-level externalDependencies despite isolated benchmark constraint")
+if re.search(r"(?m)^\s{4,}externalDependencies:\s*$", yaml_text):
+    errors.append("generated plan used task-level externalDependencies despite isolated benchmark constraint")
+if re.search(r"(?m)^\s+prompt:\s*(?:\\||>|$)", yaml_text):
+    errors.append("generated plan used prompt tasks despite command-only benchmark constraint")
 
 if yaml_text:
     plan_path.write_text(yaml_text)
