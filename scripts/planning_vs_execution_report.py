@@ -50,8 +50,93 @@ PLANNING_RE = re.compile("|".join(re.escape(p) for p in PLANNING_PHRASES), re.IG
 SHELL_FUNCTION_NAMES = {"exec_command", "shell", "bash"}
 COMMAND_ATTRIBUTION_SCHEMA_VERSION = "usage_command_attribution_v4"
 COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_1 = "usage_command_attribution_v4_1"
+COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_2 = "usage_command_attribution_v4_2"
+COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_3 = "usage_command_attribution_v4_3"
 COMMAND_ATTRIBUTION_SERVICE_CLASSIFIER_REVISION = "service_context_v2"
+COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_2 = "classifier_v4_2"
+COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_3 = "classifier_v4_3"
 COMMAND_COST_ALLOCATION_METHOD = "prompt_cost_output_weighted_v1"
+
+PRIMARY_WHY_BUCKETS_V4_2 = {
+    "generated_invoker_task",
+    "invoker_auto_fix",
+    "invoker_task_failure_fix",
+    "merge_failure_fix",
+    "invoker_create_pr",
+    "ci_failure_fix",
+    "branch_stack_maintenance",
+    "previous_agent_plan",
+    "prompt_file_task_needs_review",
+    "human_direct_request",
+    "needs_review",
+    "needs_review_low_cost",
+}
+PROMPT_TASK_KIND_BUCKETS_V4_2 = {
+    "implementation",
+    "failure_diagnosis",
+    "test_validation",
+    "pr_review",
+    "pr_authoring",
+    "branch_stack",
+    "analytics_reporting",
+    "visual_proof",
+    "environment_setup",
+    "skill_plugin",
+    "planning",
+    "simple_request",
+    "needs_review",
+    "needs_review_low_cost",
+}
+AGENT_TOOL_INTENTION_BUCKETS_V4_2 = {
+    "repo_orientation",
+    "environment_initialization",
+    "failure_diagnosis_inspection",
+    "implementation_planning_inspection",
+    "diff_review",
+    "ci_monitoring",
+    "analytics_inspection",
+    "bug_fix_edit",
+    "feature_implementation_edit",
+    "refactor_edit",
+    "test_or_proof_edit",
+    "documentation_edit",
+    "generated_artifact_edit",
+    "failure_reproduction",
+    "test_execution",
+    "full_validation",
+    "pr_creation_or_update",
+    "remote_orchestration",
+    "process_control",
+    "planning_or_task_tracking",
+    "analytics_reporting",
+    "needs_review",
+    "needs_review_low_cost",
+}
+AGENT_TOOL_INTENTION_BUCKETS_V4_3 = AGENT_TOOL_INTENTION_BUCKETS_V4_2 | {
+    "branch_stack_orchestration",
+}
+AGENT_TOOL_INTENTION_SOURCES_V4_2 = {
+    "preceding_assistant_message",
+    "command_mechanics",
+    "prompt_context",
+    "codex_cluster_review",
+    "needs_review",
+}
+AGENT_TOOL_INTENTION_SOURCES_V4_3 = {
+    "delegated_task_message",
+    "delegated_agent_context",
+    "command_mechanics",
+    "prompt_context",
+    "needs_review",
+}
+TOOL_EXECUTION_MODES_V4_3 = {
+    "direct_tool",
+    "agent_delegated",
+    "remote_command",
+    "process_control",
+    "needs_review",
+}
+DELEGATED_AGENT_ACTIONS_V4_3 = {"none", "spawn", "send_input", "wait", "resume", "close"}
 
 
 @dataclass
@@ -90,6 +175,13 @@ class CommandCall:
     target: str = ""
     output_chars: int = 0
     output_token_estimate: int = 0
+    tool_arguments: dict[str, Any] = field(default_factory=dict)
+    delegated_agent_action: str = "none"
+    delegated_agent_id: str = ""
+    delegated_agent_type: str = ""
+    delegated_agent_nickname: str = ""
+    delegated_task_preview: str = ""
+    delegated_task_hash: str = ""
 
 
 @dataclass
@@ -284,6 +376,103 @@ def target_from_tool_arguments(arguments_raw: Any) -> tuple[str, str]:
                 target_type = "search_query" if key == "query" else "path"
                 return target_type, value.strip()[:180]
     return "", ""
+
+
+def delegated_message_from_arguments(args_obj: dict[str, Any]) -> str:
+    message = args_obj.get("message")
+    if isinstance(message, str):
+        return message
+    items = args_obj.get("items")
+    if isinstance(items, list):
+        parts: list[str] = []
+        for item in items:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text)
+        if parts:
+            return "\n".join(parts)
+    nested = args_obj.get("input")
+    if isinstance(nested, dict):
+        return delegated_message_from_arguments(nested)
+    return ""
+
+
+def delegated_target_ids_from_arguments(args_obj: dict[str, Any]) -> list[str]:
+    values: list[Any] = []
+    for key in ("target", "id", "agent_id"):
+        if key in args_obj:
+            values.append(args_obj.get(key))
+    for key in ("targets", "ids", "agent_ids"):
+        if key in args_obj:
+            values.append(args_obj.get(key))
+    nested = args_obj.get("input")
+    if isinstance(nested, dict):
+        values.extend(delegated_target_ids_from_arguments(nested))
+    ids: list[str] = []
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            ids.append(value.strip())
+        elif isinstance(value, list):
+            ids.extend(str(item).strip() for item in value if str(item).strip())
+    return list(dict.fromkeys(ids))
+
+
+def delegated_metadata_from_arguments(function_name: str, args_obj: dict[str, Any]) -> dict[str, str]:
+    fn = function_name.lower()
+    action_by_tool = {
+        "spawn_agent": "spawn",
+        "send_input": "send_input",
+        "wait_agent": "wait",
+        "resume_agent": "resume",
+        "close_agent": "close",
+    }
+    action = action_by_tool.get(fn, "none")
+    message = delegated_message_from_arguments(args_obj) if fn in {"spawn_agent", "send_input"} else ""
+    target_ids = delegated_target_ids_from_arguments(args_obj)
+    return {
+        "delegated_agent_action": action,
+        "delegated_agent_id": target_ids[0] if target_ids else "",
+        "delegated_agent_type": str(args_obj.get("agent_type") or args_obj.get("type") or ""),
+        "delegated_agent_nickname": "",
+        "delegated_task_preview": shorten(message, 280),
+        "delegated_task_hash": digest_text(message) if message else "",
+    }
+
+
+def delegated_metadata_from_output(output: str) -> dict[str, str]:
+    text = output.strip()
+    metadata = {"delegated_agent_id": "", "delegated_agent_nickname": ""}
+    if not text:
+        return metadata
+    parsed: Any = None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            try:
+                parsed = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                parsed = None
+    if isinstance(parsed, dict):
+        for key in ("agent_id", "id"):
+            if isinstance(parsed.get(key), str):
+                metadata["delegated_agent_id"] = parsed[key]
+                break
+        for key in ("nickname", "name"):
+            if isinstance(parsed.get(key), str):
+                metadata["delegated_agent_nickname"] = parsed[key]
+                break
+    if not metadata["delegated_agent_id"]:
+        match = re.search(r"\bagent[_ -]?id[\"':=\s]+([A-Za-z0-9_.:-]+)", text, re.IGNORECASE)
+        if match:
+            metadata["delegated_agent_id"] = match.group(1)
+    if not metadata["delegated_agent_nickname"]:
+        match = re.search(r"\bnickname[\"':=\s]+([A-Za-z0-9_.:-]+)", text, re.IGNORECASE)
+        if match:
+            metadata["delegated_agent_nickname"] = match.group(1)
+    return metadata
 
 
 def output_text_from_payload(value: Any) -> str:
@@ -481,15 +670,464 @@ def build_command_attribution_v4_1_rows(rows: list[dict[str, Any]]) -> list[dict
     return enriched
 
 
+def _text_has_any(text: str, needles: list[str]) -> bool:
+    lowered = text.lower()
+    return any(needle in lowered for needle in needles)
+
+
+def _prompt_context_text(row: dict[str, Any]) -> str:
+    return " ".join(
+        str(row.get(key) or "")
+        for key in ("prompt_preview", "previous_prompt_preview", "first_prompt_preview", "final_answer_preview", "request_pattern")
+    )
+
+
+def classify_primary_why_v4_2(row: dict[str, Any]) -> tuple[str, str]:
+    prompt = _prompt_context_text(row)
+    prompt_lower = prompt.lower()
+    if prompt.startswith("A previous agent produced the plan below"):
+        return "previous_agent_plan", "exact_previous_agent_plan_prefix"
+    if prompt.startswith("Generated task for invoker") or prompt.startswith("Invoker generated task"):
+        return "generated_invoker_task", "exact_invoker_generated_prefix"
+    if prompt.startswith("Autofix for invoker") or prompt.startswith("Invoker autofix"):
+        return "invoker_auto_fix", "exact_invoker_autofix_prefix"
+    if prompt.startswith("Fix invoker task failure") or prompt.startswith("Invoker task failed"):
+        return "invoker_task_failure_fix", "exact_invoker_failure_prefix"
+    if prompt.startswith("Resolve merge failure") or prompt.startswith("Fix merge failure"):
+        return "merge_failure_fix", "exact_merge_failure_prefix"
+    if prompt.startswith("Create PR body for invoker") or prompt.startswith("Invoker create PR"):
+        return "invoker_create_pr", "exact_invoker_pr_prefix"
+    if "/tmp/invoker-agent-prompt-" in prompt_lower:
+        return "prompt_file_task_needs_review", "invoker_prompt_file_wrapper"
+    if _text_has_any(prompt_lower, ["failed checks", "github actions", "gh run", "ci failure", "workflow failed"]):
+        return "ci_failure_fix", "strong_ci_terms"
+    if _text_has_any(prompt_lower, ["rebase", "upstream/master", "stack maintenance", "branch stack", "stacked pr"]):
+        return "branch_stack_maintenance", "strong_branch_stack_terms"
+    if _text_has_any(prompt_lower, ["merge conflict", "merge failed", "merge failure"]):
+        return "merge_failure_fix", "merge_failure_terms"
+    if _text_has_any(prompt_lower, ["autofix", "auto-fix"]):
+        return "invoker_auto_fix", "autofix_terms"
+    if prompt.strip():
+        return "human_direct_request", "human_prompt_fallback"
+    return "needs_review", "missing_prompt_context"
+
+
+def classify_prompt_task_kind_v4_2(row: dict[str, Any]) -> tuple[str, str]:
+    text = " ".join([_prompt_context_text(row), str(row.get("command_preview") or ""), str(row.get("target") or "")]).lower()
+    ordered_rules: list[tuple[str, list[str], str]] = [
+        ("visual_proof", ["visual proof", "screenshot", "playwright", "video"], "visual_terms"),
+        ("pr_authoring", ["pr body", "pull request body", "create pr", "gh pr create"], "pr_authoring_terms"),
+        ("pr_review", ["review this pr", "pr review", "pull request review"], "pr_review_terms"),
+        ("branch_stack", ["rebase", "upstream/master", "branch stack", "stacked pr", "cherry-pick"], "branch_stack_terms"),
+        ("analytics_reporting", ["mixpanel", "analytics", "metrics", "report", "csv"], "analytics_terms"),
+        ("skill_plugin", ["skill", "plugin", ".codex-plugin"], "skill_plugin_terms"),
+        ("environment_setup", ["install", "dependency", "setup", "env file", "configuration"], "environment_terms"),
+        ("test_validation", ["run tests", "test validation", "pytest", "pnpm test", "npm test", "make test", "full validation"], "test_terms"),
+        ("failure_diagnosis", ["diagnose", "investigate", "failure", "failed", "repro", "log"], "failure_terms"),
+        ("planning", ["plan", "planning", "todo", "checklist"], "planning_terms"),
+        ("implementation", ["implement", "fix", "update", "add ", "change", "refactor"], "implementation_terms"),
+        ("simple_request", ["what is", "show me", "print ", "date"], "simple_request_terms"),
+    ]
+    for bucket, needles, reason in ordered_rules:
+        if _text_has_any(text, needles):
+            return bucket, reason
+    if text.strip():
+        return "implementation", "default_nonempty_prompt"
+    return "needs_review", "missing_prompt_context"
+
+
+def classify_agent_tool_intention_v4_2(row: dict[str, Any]) -> tuple[str, str]:
+    fn = str(row.get("function_name") or "").lower()
+    verb = str(row.get("shell_verb") or "").lower()
+    command = str(row.get("command_preview") or "").lower()
+    target = str(row.get("target") or "").lower()
+    prompt = _prompt_context_text(row).lower()
+    text = " ".join([fn, verb, command, target, prompt])
+
+    if fn in {"spawn_agent", "send_input", "wait_agent", "resume_agent", "close_agent"}:
+        return "remote_orchestration", "agent_orchestration_tool"
+    if fn in {"todowrite", "taskupdate", "taskcreate", "update_plan"}:
+        return "planning_or_task_tracking", "planning_tool"
+    if fn == "write_stdin":
+        return "process_control", "terminal_stdin"
+    if fn in {"run_query", "dashboard", "property", "insights_query"}:
+        return "analytics_inspection", "analytics_tool_or_terms"
+    if _text_has_any(text, ["gh pr create", "gh pr edit", "pull request", "pr body"]):
+        return "pr_creation_or_update", "pr_terms"
+    if _text_has_any(text, ["gh run", "github actions", "failed checks", "workflow"]):
+        return "ci_monitoring", "ci_terms"
+    if _text_has_any(text, ["ssh ", "rsync", "scp ", "remote", "worktree"]):
+        return "remote_orchestration", "remote_terms"
+    if verb in {"pwd", "echo", "printf", "sleep", "ps", "kill", "jobs", "fg", "bg", "true", "false", "date"}:
+        return "process_control", "trivial_process_command"
+    if _text_has_any(text, ["pytest", "pnpm test", "npm test", "yarn test", "make test", "cargo test", "go test"]):
+        return "test_execution", "test_command"
+    if _text_has_any(text, ["build", "tsc", "lint", "test:all"]):
+        return "full_validation", "validation_command"
+
+    is_edit = fn in {"edit", "write", "apply_patch", "patch"} or verb == "apply_patch"
+    if is_edit:
+        if _text_has_any(text, ["docs/", ".md", "readme", "documentation"]):
+            return "documentation_edit", "documentation_edit_terms"
+        if _text_has_any(text, ["generated", "artifact", "csv", "json summary", "report"]):
+            return "generated_artifact_edit", "generated_artifact_terms"
+        if _text_has_any(text, ["refactor", "rename", "cleanup"]):
+            return "refactor_edit", "refactor_terms"
+        if _text_has_any(text, ["fix ", "fixing", "bug", "failure", "failed", "regression"]):
+            return "bug_fix_edit", "bug_fix_terms"
+        if _text_has_any(text, ["test", "proof", "fixture", "golden"]):
+            return "test_or_proof_edit", "test_or_proof_edit_terms"
+        return "feature_implementation_edit", "default_edit"
+
+    is_read_or_search = fn in {"read", "cat", "glob", "toolsearch", "grep", "search"} or verb in {"rg", "grep", "find", "fd", "ls", "cat", "sed", "nl", "less", "head", "tail"}
+    if _text_has_any(text, ["mixpanel", "analytics", "dashboard"]):
+        return "analytics_inspection", "analytics_terms"
+    if is_read_or_search:
+        if _text_has_any(text, ["git diff", "diff", "review"]):
+            return "diff_review", "diff_terms"
+        if _text_has_any(text, ["failure", "failed", "error", "diagnose", "repro"]):
+            return "failure_diagnosis_inspection", "failure_inspection_terms"
+        if _text_has_any(text, ["implement", "update", "change", "plan", "architecture"]):
+            return "implementation_planning_inspection", "implementation_inspection_terms"
+        return "repo_orientation", "default_read_or_search"
+
+    if _text_has_any(text, ["repro", "reproduce", "failed output"]):
+        return "failure_reproduction", "reproduction_terms"
+    if fn in SHELL_FUNCTION_NAMES:
+        return "environment_initialization", "default_terminal_command"
+    return "needs_review", "unknown_tool"
+
+
+def classify_agent_tool_intention_from_text_v4_3(text: str) -> tuple[str, str]:
+    lowered = text.lower()
+    if _text_has_any(lowered, ["rebase", "cherry-pick", "cherrypick", "worktree", "branch stack", "stacked pr", "stacked branch"]):
+        return "branch_stack_orchestration", "branch_stack_terms"
+    if _text_has_any(lowered, ["open pr", "create pr", "update pr", "pr body", "pull request"]):
+        return "pr_creation_or_update", "pr_terms"
+    if _text_has_any(lowered, ["full validation", "test:all", "lint", "typecheck", "build"]):
+        return "full_validation", "validation_terms"
+    if _text_has_any(lowered, ["run tests", "pytest", "pnpm test", "npm test", "yarn test", "make test", "verify"]):
+        return "test_execution", "test_terms"
+    if _text_has_any(lowered, ["fix bug", "bug", "failure", "failed", "regression", "repair"]):
+        return "bug_fix_edit", "bug_fix_terms"
+    if _text_has_any(lowered, ["refactor", "rename", "cleanup"]):
+        return "refactor_edit", "refactor_terms"
+    if _text_has_any(lowered, ["documentation", "docs", "readme"]):
+        return "documentation_edit", "documentation_terms"
+    if _text_has_any(lowered, ["implement", "add ", "update ", "feature", "change"]):
+        return "feature_implementation_edit", "implementation_terms"
+    if _text_has_any(lowered, ["investigate", "diagnose", "inspect", "find why"]):
+        return "failure_diagnosis_inspection", "inspection_terms"
+    return "needs_review", "missing_delegated_intent_terms"
+
+
+def tool_execution_mode_v4_3(row: dict[str, Any]) -> tuple[str, str]:
+    fn = str(row.get("function_name") or "").lower()
+    verb = str(row.get("shell_verb") or "").lower()
+    command = str(row.get("command_preview") or "").lower()
+    text = " ".join([fn, verb, command])
+    if fn in {"spawn_agent", "send_input", "wait_agent", "resume_agent", "close_agent"}:
+        return "agent_delegated", "agent_control_tool"
+    if _text_has_any(text, ["ssh ", "scp ", "rsync"]):
+        return "remote_command", "remote_command_terms"
+    if fn == "write_stdin" or verb in {"pwd", "echo", "printf", "sleep", "ps", "kill", "jobs", "fg", "bg", "true", "false", "date"}:
+        return "process_control", "process_control_terms"
+    return "direct_tool", "default_direct_tool"
+
+
+def classify_agent_tool_intention_v4_3(row: dict[str, Any]) -> tuple[str, str, str]:
+    fn = str(row.get("function_name") or "").lower()
+    delegated_text = str(row.get("delegated_task_preview") or "")
+    if fn in {"spawn_agent", "send_input"} and delegated_text:
+        intention, reason = classify_agent_tool_intention_from_text_v4_3(delegated_text)
+        source = "delegated_task_message" if intention != "needs_review" else "needs_review"
+        return intention, source, reason
+    if _text_has_any(
+        " ".join(str(row.get(key) or "") for key in ("command_preview", "target", "prompt_preview")).lower(),
+        ["rebase", "cherry-pick", "cherrypick", "worktree", "branch stack", "stacked pr"],
+    ):
+        return "branch_stack_orchestration", "command_mechanics", "branch_stack_terms"
+    intention, reason = classify_agent_tool_intention_v4_2(row)
+    if intention == "remote_orchestration" and _text_has_any(
+        " ".join(str(row.get(key) or "") for key in ("function_name", "shell_verb", "command_preview")).lower(),
+        ["ssh ", "scp ", "rsync"],
+    ):
+        return "remote_orchestration", "command_mechanics", reason
+    return intention, "command_mechanics" if intention != "needs_review" else "needs_review", reason
+
+
+def _cluster_key_v4_2(row: dict[str, Any]) -> str:
+    parts = [
+        shorten(str(row.get("prompt_preview") or ""), 100).lower(),
+        str(row.get("function_name") or "").lower(),
+        str(row.get("shell_verb") or "").lower(),
+        shorten(str(row.get("command_preview") or ""), 100).lower(),
+        shorten(str(row.get("target") or ""), 80).lower(),
+    ]
+    return digest_text("\n".join(parts))[:16]
+
+
+def _coerce_cluster_labels(cluster_labels: dict[str, dict[str, str]] | None, cluster_key: str, deterministic: dict[str, str]) -> dict[str, str]:
+    if cluster_labels is None:
+        return {
+            "primary_why": deterministic["primary_why"],
+            "prompt_task_kind": deterministic["prompt_task_kind"],
+            "agent_tool_intention": deterministic["agent_tool_intention"],
+        }
+    return cluster_labels.get(cluster_key, {})
+
+
+def _validate_cluster_labels_v4_2(cluster_labels: dict[str, dict[str, str]] | None) -> None:
+    if not cluster_labels:
+        return
+    field_allowed = {
+        "primary_why": PRIMARY_WHY_BUCKETS_V4_2,
+        "prompt_task_kind": PROMPT_TASK_KIND_BUCKETS_V4_2,
+        "agent_tool_intention": AGENT_TOOL_INTENTION_BUCKETS_V4_2,
+    }
+    unapproved: list[str] = []
+    for cluster_key, labels in cluster_labels.items():
+        for field, allowed in field_allowed.items():
+            value = labels.get(field, "")
+            if value and value not in allowed:
+                unapproved.append(f"{cluster_key}.{field}={value}")
+    if unapproved:
+        raise ValueError(f"Unapproved v4.2 classifier bucket(s): {', '.join(unapproved)}")
+
+
+def _agreement_confidence(deterministic_value: str, codex_value: str, allowed: set[str]) -> tuple[str, str]:
+    if codex_value and codex_value not in allowed:
+        return "needs_review", "codex_suggested_unapproved_bucket"
+    if deterministic_value == codex_value and deterministic_value not in {"needs_review", "needs_review_low_cost"}:
+        return "high", "deterministic_and_codex_cluster_agree"
+    if not codex_value:
+        return "needs_review", "missing_codex_cluster_label"
+    return "needs_review", "deterministic_codex_disagreement"
+
+
+def _finalize_value_for_confidence(value: str, confidence: str, low_cost: bool) -> str:
+    if confidence == "high":
+        return value
+    return "needs_review_low_cost" if low_cost else "needs_review"
+
+
+def build_command_attribution_v4_2_rows(
+    rows: list[dict[str, Any]],
+    cluster_labels: dict[str, dict[str, str]] | None = None,
+    low_cost_threshold_usd: float = 0.01,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    _validate_cluster_labels_v4_2(cluster_labels)
+    enriched: list[dict[str, Any]] = []
+    ambiguous_clusters: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        out = {
+            key: value
+            for key, value in row.items()
+            if key not in {"prompt_primary_why", "row_primary_why", "why_tags", "why_classifier", "tool_action", "tool_action_source", "service_of_why", "service_of_confidence", "service_of_source", "uncategorized_reason", "session_root_cause_summary"}
+        }
+        primary_why, primary_reason = classify_primary_why_v4_2(row)
+        prompt_task_kind, task_reason = classify_prompt_task_kind_v4_2(row)
+        agent_tool_intention, intention_reason = classify_agent_tool_intention_v4_2(row)
+        deterministic = {
+            "primary_why": primary_why,
+            "prompt_task_kind": prompt_task_kind,
+            "agent_tool_intention": agent_tool_intention,
+        }
+        cluster_key = _cluster_key_v4_2(row)
+        codex = _coerce_cluster_labels(cluster_labels, cluster_key, deterministic)
+        primary_conf, primary_review = _agreement_confidence(primary_why, codex.get("primary_why", ""), PRIMARY_WHY_BUCKETS_V4_2)
+        task_conf, task_review = _agreement_confidence(prompt_task_kind, codex.get("prompt_task_kind", ""), PROMPT_TASK_KIND_BUCKETS_V4_2)
+        intention_conf, intention_review = _agreement_confidence(
+            agent_tool_intention,
+            codex.get("agent_tool_intention", ""),
+            AGENT_TOOL_INTENTION_BUCKETS_V4_2,
+        )
+        review_reasons = [reason for reason in (primary_review, task_review, intention_review) if reason != "deterministic_and_codex_cluster_agree"]
+        allocated_cost = float(row.get("allocated_total_cost_usd") or 0.0)
+        low_cost = allocated_cost <= low_cost_threshold_usd
+        out["schema_version"] = COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_2
+        out["classification_revision"] = COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_2
+        out["classification_cluster_key"] = cluster_key
+        out["classification_agreement"] = "agree" if not review_reasons else "needs_review"
+        out["review_reason"] = ";".join(dict.fromkeys(review_reasons))
+        out["primary_why"] = _finalize_value_for_confidence(primary_why, primary_conf, low_cost)
+        out["prompt_task_kind"] = _finalize_value_for_confidence(prompt_task_kind, task_conf, low_cost)
+        out["agent_tool_intention"] = _finalize_value_for_confidence(agent_tool_intention, intention_conf, low_cost)
+        out["agent_tool_intention_source"] = "command_mechanics" if intention_conf == "high" else "needs_review"
+        out["primary_why_confidence"] = primary_conf
+        out["prompt_task_kind_confidence"] = task_conf
+        out["agent_tool_intention_confidence"] = intention_conf
+        out["deterministic_primary_why"] = primary_why
+        out["deterministic_prompt_task_kind"] = prompt_task_kind
+        out["deterministic_agent_tool_intention"] = agent_tool_intention
+        out["codex_primary_why"] = codex.get("primary_why", "")
+        out["codex_prompt_task_kind"] = codex.get("prompt_task_kind", "")
+        out["codex_agent_tool_intention"] = codex.get("agent_tool_intention", "")
+        if review_reasons:
+            cluster = ambiguous_clusters.setdefault(
+                cluster_key,
+                {
+                    "classification_cluster_key": cluster_key,
+                    "proposed_primary_why": primary_why,
+                    "proposed_prompt_task_kind": prompt_task_kind,
+                    "proposed_agent_tool_intention": agent_tool_intention,
+                    "codex_primary_why": codex.get("primary_why", ""),
+                    "codex_prompt_task_kind": codex.get("prompt_task_kind", ""),
+                    "codex_agent_tool_intention": codex.get("agent_tool_intention", ""),
+                    "examples": shorten(str(row.get("prompt_preview") or ""), 220),
+                    "row_count": 0,
+                    "allocated_total_cost_usd": 0.0,
+                    "reason_for_review": out["review_reason"],
+                },
+            )
+            cluster["row_count"] += 1
+            cluster["allocated_total_cost_usd"] += allocated_cost
+        enriched.append(out)
+
+    review_rows = sorted(ambiguous_clusters.values(), key=lambda item: item["allocated_total_cost_usd"], reverse=True)
+    total_review_cost = sum(float(row.get("allocated_total_cost_usd") or 0.0) for row in review_rows)
+    cumulative = 0.0
+    selected_review_rows: list[dict[str, Any]] = []
+    for row in review_rows:
+        cumulative += float(row.get("allocated_total_cost_usd") or 0.0)
+        row["ambiguous_cost_coverage"] = safe_div(cumulative, total_review_cost)
+        selected_review_rows.append(row)
+        if total_review_cost and cumulative / total_review_cost >= 0.95:
+            break
+    return enriched, selected_review_rows
+
+
+def build_command_attribution_v4_3_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    enriched: list[dict[str, Any]] = []
+    review_rows: list[dict[str, Any]] = []
+    delegated_agent_context: dict[str, dict[str, str]] = {}
+    for row in rows:
+        out = {
+            key: value
+            for key, value in row.items()
+            if key not in {"prompt_primary_why", "row_primary_why", "why_tags", "why_classifier", "tool_action", "tool_action_source", "service_of_why", "service_of_confidence", "service_of_source", "uncategorized_reason", "session_root_cause_summary"}
+        }
+        fn = str(row.get("function_name") or "").lower()
+        primary_why, primary_reason = classify_primary_why_v4_2(row)
+        prompt_task_kind, task_reason = classify_prompt_task_kind_v4_2(row)
+        execution_mode, execution_reason = tool_execution_mode_v4_3(row)
+        intention, intention_source, intention_reason = classify_agent_tool_intention_v4_3(row)
+        delegated_action = str(row.get("delegated_agent_action") or "none")
+        delegated_id = str(row.get("delegated_agent_id") or "")
+        if fn in {"wait_agent", "resume_agent", "close_agent"}:
+            context = delegated_agent_context.get(delegated_id)
+            if context:
+                intention = context["agent_tool_intention"]
+                prompt_task_kind = context["prompt_task_kind"]
+                intention_source = "delegated_agent_context"
+                intention_reason = "target_agent_context"
+                out["delegated_agent_type"] = out.get("delegated_agent_type") or context.get("delegated_agent_type", "")
+                out["delegated_agent_nickname"] = out.get("delegated_agent_nickname") or context.get("delegated_agent_nickname", "")
+                out["delegated_task_preview"] = out.get("delegated_task_preview") or context.get("delegated_task_preview", "")
+                out["delegated_task_hash"] = out.get("delegated_task_hash") or context.get("delegated_task_hash", "")
+            else:
+                intention = "needs_review"
+                intention_source = "needs_review"
+                intention_reason = "missing_delegated_agent_context"
+        if fn == "spawn_agent" and delegated_id:
+            delegated_agent_context[delegated_id] = {
+                "agent_tool_intention": intention,
+                "prompt_task_kind": prompt_task_kind,
+                "delegated_agent_type": str(out.get("delegated_agent_type") or ""),
+                "delegated_agent_nickname": str(out.get("delegated_agent_nickname") or ""),
+                "delegated_task_preview": str(out.get("delegated_task_preview") or ""),
+                "delegated_task_hash": str(out.get("delegated_task_hash") or ""),
+            }
+
+        review_reasons: list[str] = []
+        if intention not in AGENT_TOOL_INTENTION_BUCKETS_V4_3:
+            review_reasons.append(f"unapproved_agent_tool_intention:{intention}")
+            intention = "needs_review"
+            intention_source = "needs_review"
+        if execution_mode not in TOOL_EXECUTION_MODES_V4_3:
+            review_reasons.append(f"unapproved_tool_execution_mode:{execution_mode}")
+            execution_mode = "needs_review"
+        if delegated_action not in DELEGATED_AGENT_ACTIONS_V4_3:
+            review_reasons.append(f"unapproved_delegated_agent_action:{delegated_action}")
+            delegated_action = "none"
+        if intention == "needs_review":
+            review_reasons.append(intention_reason)
+        cluster_key = _cluster_key_v4_2(row)
+        agreement = "needs_review" if review_reasons else "agree"
+        out["schema_version"] = COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_3
+        out["classification_revision"] = COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_3
+        out["classification_cluster_key"] = cluster_key
+        out["classification_agreement"] = agreement
+        out["review_reason"] = ";".join(dict.fromkeys(reason for reason in review_reasons if reason))
+        out["primary_why"] = primary_why
+        out["prompt_task_kind"] = prompt_task_kind
+        out["agent_tool_intention"] = intention
+        out["agent_tool_intention_source"] = intention_source
+        out["tool_execution_mode"] = execution_mode
+        out["tool_execution_mode_source"] = execution_reason
+        out["delegated_agent_action"] = delegated_action
+        out["primary_why_confidence"] = "high" if primary_why != "needs_review" else "needs_review"
+        out["prompt_task_kind_confidence"] = "high" if prompt_task_kind != "needs_review" else "needs_review"
+        out["agent_tool_intention_confidence"] = "high" if intention != "needs_review" else "needs_review"
+        out["deterministic_primary_why"] = primary_why
+        out["deterministic_prompt_task_kind"] = prompt_task_kind
+        out["deterministic_agent_tool_intention"] = intention
+        out["deterministic_tool_execution_mode"] = execution_mode
+        out["codex_primary_why"] = primary_why
+        out["codex_prompt_task_kind"] = prompt_task_kind
+        out["codex_agent_tool_intention"] = intention
+        enriched.append(out)
+        if agreement == "needs_review":
+            review_rows.append(
+                {
+                    "classification_cluster_key": cluster_key,
+                    "proposed_primary_why": primary_why,
+                    "proposed_prompt_task_kind": prompt_task_kind,
+                    "proposed_agent_tool_intention": intention,
+                    "tool_execution_mode": execution_mode,
+                    "delegated_agent_action": delegated_action,
+                    "examples": shorten(str(row.get("prompt_preview") or row.get("delegated_task_preview") or ""), 220),
+                    "row_count": 1,
+                    "allocated_total_cost_usd": float(row.get("allocated_total_cost_usd") or 0.0),
+                    "reason_for_review": out["review_reason"],
+                }
+            )
+    return enriched, review_rows
+
+
+def load_v4_2_cluster_labels(path: str | Path | None) -> dict[str, dict[str, str]] | None:
+    if not path:
+        return None
+    label_path = Path(path)
+    if not label_path.exists():
+        raise FileNotFoundError(f"Missing v4.2 cluster labels file: {label_path}")
+    raw = json.loads(label_path.read_text())
+    if not isinstance(raw, dict):
+        raise ValueError("v4.2 cluster labels must be a JSON object keyed by classification_cluster_key")
+    labels: dict[str, dict[str, str]] = {}
+    for cluster_key, value in raw.items():
+        if not isinstance(cluster_key, str) or not isinstance(value, dict):
+            raise ValueError("v4.2 cluster labels must map string cluster keys to label objects")
+        labels[cluster_key] = {str(k): str(v) for k, v in value.items() if v is not None}
+    _validate_cluster_labels_v4_2(labels)
+    return labels
+
+
 def add_command_call(window: PromptWindow | None, function_name: str, arguments: Any, call_id: str = "") -> CommandCall | None:
     if window is None:
         return None
+    args_obj = parse_tool_arguments(arguments)
     command = command_text_from_arguments(arguments)
+    delegated = delegated_metadata_from_arguments(function_name, args_obj)
+    if not command and delegated["delegated_task_preview"]:
+        command = delegated["delegated_task_preview"]
     workdir = workdir_from_arguments(arguments)
     shell_verb = extract_shell_verb(arguments) or ""
     target_type, target = command_target(command, workdir)
     if not target:
         target_type, target = target_from_tool_arguments(arguments)
+    if not target and delegated["delegated_agent_id"]:
+        target_type, target = "agent_id", delegated["delegated_agent_id"]
     call = CommandCall(
         command_index=len(window.command_calls) + 1,
         function_name=function_name,
@@ -501,6 +1139,8 @@ def add_command_call(window: PromptWindow | None, function_name: str, arguments:
         workdir=workdir,
         target_type=target_type,
         target=target,
+        tool_arguments=args_obj,
+        **delegated,
     )
     window.command_calls.append(call)
     return call
@@ -519,6 +1159,15 @@ def attach_command_output(window: PromptWindow | None, call_id: str, output: str
     call = candidates[-1]
     call.output_chars += len(output)
     call.output_token_estimate += max(1, round(len(output) / 4))
+    if call.function_name == "spawn_agent":
+        metadata = delegated_metadata_from_output(output)
+        if metadata["delegated_agent_id"]:
+            call.delegated_agent_id = metadata["delegated_agent_id"]
+            if not call.target:
+                call.target_type = "agent_id"
+                call.target = metadata["delegated_agent_id"]
+        if metadata["delegated_agent_nickname"]:
+            call.delegated_agent_nickname = metadata["delegated_agent_nickname"]
 
 
 def raw_total_tokens(
@@ -1038,6 +1687,12 @@ def build_rows_for_model(
                         "workdir": call.workdir,
                         "target_type": call.target_type,
                         "target": call.target,
+                        "delegated_agent_action": call.delegated_agent_action,
+                        "delegated_agent_id": call.delegated_agent_id,
+                        "delegated_agent_type": call.delegated_agent_type,
+                        "delegated_agent_nickname": call.delegated_agent_nickname,
+                        "delegated_task_preview": call.delegated_task_preview,
+                        "delegated_task_hash": call.delegated_task_hash,
                         "output_chars": call.output_chars,
                         "output_token_estimate": call.output_token_estimate,
                         "prompt_input_tokens": w.input_delta,
@@ -1270,7 +1925,13 @@ def audit_dedup_dirs(audit_path: Path, codex_dir: Path, claude_dir: Path) -> tup
     return codex_dir, claude_dir
 
 
-def build_report(out_dir: Path, audit_path: Path, codex_dir: Path, claude_dir: Path) -> dict[str, Any]:
+def build_report(
+    out_dir: Path,
+    audit_path: Path,
+    codex_dir: Path,
+    claude_dir: Path,
+    v4_2_cluster_labels: dict[str, dict[str, str]] | None = None,
+) -> dict[str, Any]:
     codex_dir, claude_dir = audit_dedup_dirs(audit_path, codex_dir, claude_dir)
     model_totals = load_model_totals(audit_path)
     pricing_table = load_pricing_table(None)
@@ -1288,6 +1949,8 @@ def build_report(out_dir: Path, audit_path: Path, codex_dir: Path, claude_dir: P
     all_attribution_rows = codex_attribution_rows + claude_attribution_rows
     all_command_rows = codex_command_rows + claude_command_rows
     all_command_rows_v4_1 = build_command_attribution_v4_1_rows(all_command_rows)
+    all_command_rows_v4_2, all_command_rows_v4_2_review = build_command_attribution_v4_2_rows(all_command_rows, v4_2_cluster_labels)
+    all_command_rows_v4_3, all_command_rows_v4_3_review = build_command_attribution_v4_3_rows(all_command_rows)
 
     codex_section = section_from_rows("codex", codex_sessions, codex_session_rows, codex_prompt_rows)
     claude_section = section_from_rows("claude", claude_sessions, claude_session_rows, claude_prompt_rows)
@@ -1360,6 +2023,14 @@ def build_report(out_dir: Path, audit_path: Path, codex_dir: Path, claude_dir: P
     write_csv(out_dir / "usage-command-attribution-v4_1.csv", all_command_rows_v4_1)
     (out_dir / "usage-command-attribution-v4_1-summary.json").write_text(json.dumps(command_summary(all_command_rows_v4_1), indent=2))
     (out_dir / "usage-command-attribution-v4_1-report.md").write_text(render_command_markdown(all_command_rows_v4_1))
+    write_csv(out_dir / "usage-command-attribution-v4_2.csv", all_command_rows_v4_2)
+    write_csv(out_dir / "usage-command-attribution-v4_2-review.csv", all_command_rows_v4_2_review)
+    (out_dir / "usage-command-attribution-v4_2-summary.json").write_text(json.dumps(command_summary(all_command_rows_v4_2), indent=2))
+    (out_dir / "usage-command-attribution-v4_2-report.md").write_text(render_command_markdown(all_command_rows_v4_2))
+    write_csv(out_dir / "usage-command-attribution-v4_3.csv", all_command_rows_v4_3)
+    write_csv(out_dir / "usage-command-attribution-v4_3-review.csv", all_command_rows_v4_3_review)
+    (out_dir / "usage-command-attribution-v4_3-summary.json").write_text(json.dumps(command_summary(all_command_rows_v4_3), indent=2))
+    (out_dir / "usage-command-attribution-v4_3-report.md").write_text(render_command_markdown(all_command_rows_v4_3))
 
     (out_dir / "planning-vs-execution-summary.md").write_text(render_markdown(report))
     return report
@@ -1393,7 +2064,7 @@ def top_counter_rows(rows: list[dict[str, Any]], key: str, cost_key: str = "allo
 
 
 def command_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
+    summary = {
         "schema_version": rows[0].get("schema_version", COMMAND_ATTRIBUTION_SCHEMA_VERSION) if rows else COMMAND_ATTRIBUTION_SCHEMA_VERSION,
         "command_count": len(rows),
         "estimated_cost_usd": sum(float(row.get("allocated_total_cost_usd") or 0.0) for row in rows),
@@ -1407,6 +2078,33 @@ def command_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "by_shell_verb": top_counter_rows(rows, "shell_verb"),
         "by_session": top_counter_rows(rows, "file", limit=25),
     }
+    if rows and rows[0].get("schema_version") in {COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_2, COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_3}:
+        high_rows = [
+            row
+            for row in rows
+            if row.get("primary_why_confidence") == "high"
+            and row.get("prompt_task_kind_confidence") == "high"
+            and row.get("agent_tool_intention_confidence") == "high"
+        ]
+        classifier_revision = (
+            COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_3
+            if rows[0].get("schema_version") == COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_3
+            else COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_2
+        )
+        summary.update(
+            {
+                "classifier_revision": classifier_revision,
+                "high_confidence_rows": len(high_rows),
+                "high_confidence_share": safe_div(len(high_rows), len(rows)),
+                "by_prompt_task_kind": top_counter_rows(rows, "prompt_task_kind"),
+                "by_agent_tool_intention": top_counter_rows(rows, "agent_tool_intention"),
+                "by_tool_execution_mode": top_counter_rows(rows, "tool_execution_mode"),
+                "by_delegated_agent_action": top_counter_rows(rows, "delegated_agent_action"),
+                "by_classification_agreement": top_counter_rows(rows, "classification_agreement"),
+                "by_review_reason": top_counter_rows(rows, "review_reason"),
+            }
+        )
+    return summary
 
 
 def render_command_markdown(rows: list[dict[str, Any]]) -> str:
@@ -1433,6 +2131,10 @@ def render_command_markdown(rows: list[dict[str, Any]]) -> str:
     if summary["by_tool_action"]:
         lines.extend(["", "## Cost by tool action", "", "| Tool action | Commands | Estimated cost |", "|---|---:|---:|"])
         for row in summary["by_tool_action"]:
+            lines.append(f"| `{row['name']}` | {fmt_int(row['commands'])} | {fmt_money(row['allocated_total_cost_usd'])} |")
+    if summary.get("by_agent_tool_intention"):
+        lines.extend(["", "## Cost by tool intention", "", "| Tool intention | Commands | Estimated cost |", "|---|---:|---:|"])
+        for row in summary["by_agent_tool_intention"]:
             lines.append(f"| `{row['name']}` | {fmt_int(row['commands'])} | {fmt_money(row['allocated_total_cost_usd'])} |")
     lines.extend(["", "## Why x tool matrix", "", "| Why | Tool | Commands | Estimated cost |", "|---|---|---:|---:|"])
     matrix: dict[tuple[str, str], dict[str, float]] = {}
@@ -1548,6 +2250,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--audit-report", default=str(DEFAULT_AUDIT_REPORT), help="Path to cache-hit-audit-report.json")
     parser.add_argument("--codex-sessions-dir", default=str(DEFAULT_CODEX_DIR), help="Codex sessions directory")
     parser.add_argument("--claude-sessions-dir", default=str(DEFAULT_CLAUDE_DIR), help="Claude sessions directory")
+    parser.add_argument(
+        "--v4-2-cluster-labels",
+        default="",
+        help="Optional JSON object keyed by classification_cluster_key with Codex-reviewed v4.2 labels.",
+    )
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out_dir)
@@ -1561,7 +2268,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Claude sessions directory does not exist: {claude_dir}", file=sys.stderr)
         return 1
 
-    report = build_report(out_dir, audit_path, codex_dir, claude_dir)
+    try:
+        v4_2_cluster_labels = load_v4_2_cluster_labels(args.v4_2_cluster_labels)
+    except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Failed to load v4.2 cluster labels: {exc}", file=sys.stderr)
+        return 1
+
+    report = build_report(out_dir, audit_path, codex_dir, claude_dir, v4_2_cluster_labels)
     print(f"Report written to: {out_dir}")
     for sec_name in ("combined", "codex", "claude"):
         sec = report[sec_name]

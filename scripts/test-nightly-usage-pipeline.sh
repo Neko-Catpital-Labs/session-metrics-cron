@@ -19,7 +19,15 @@ for required in \
   reports/usage-command-attribution-v4-report.md \
   reports/usage-command-attribution-v4_1.csv \
   reports/usage-command-attribution-v4_1-summary.json \
-  reports/usage-command-attribution-v4_1-report.md; do
+  reports/usage-command-attribution-v4_1-report.md \
+  reports/usage-command-attribution-v4_2.csv \
+  reports/usage-command-attribution-v4_2-summary.json \
+  reports/usage-command-attribution-v4_2-report.md \
+  reports/usage-command-attribution-v4_2-review.csv \
+  reports/usage-command-attribution-v4_3.csv \
+  reports/usage-command-attribution-v4_3-summary.json \
+  reports/usage-command-attribution-v4_3-report.md \
+  reports/usage-command-attribution-v4_3-review.csv; do
   [[ -f "$required" ]] || {
     echo "Missing required artifact: $required" >&2
     echo "Run: bash scripts/nightly_usage_pipeline.sh --dry-run --env-file config/nightly-usage.env" >&2

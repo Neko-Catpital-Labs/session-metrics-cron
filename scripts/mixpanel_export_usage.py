@@ -1494,8 +1494,10 @@ def build_command_attribution_events(
         context = prompt_context.get(key, {})
         schema_version = row.get("schema_version") or "usage_command_attribution_v4"
         service_classifier_revision = row.get("service_classifier_revision", "")
+        classification_revision = row.get("classification_revision", "")
         canonical_key = f"{row.get('model','')}:{row.get('bucket','')}:{session_id}:{prompt_index}:{command_index}:{row.get('command_hash','')}"
-        row_id_key = f"{schema_version}:{service_classifier_revision}:{canonical_key}" if service_classifier_revision else f"{schema_version}:{canonical_key}"
+        revision_key = service_classifier_revision or classification_revision
+        row_id_key = f"{schema_version}:{revision_key}:{canonical_key}" if revision_key else f"{schema_version}:{canonical_key}"
         row_id = insert_id_v4(event_date, "usage_command_attribution", row_id_key)
         props = with_common(token, distinct_id, report_epoch(event_date), row_id, event_date, {
             "schema_version": schema_version,
@@ -1542,6 +1544,24 @@ def build_command_attribution_events(
             "primary_why": row.get("primary_why", "uncategorized"),
             "why_tags": row.get("why_tags", row.get("primary_why", "uncategorized")),
             "why_classifier": row.get("why_classifier", "rules_v1"),
+            "classification_revision": row.get("classification_revision", ""),
+            "classification_cluster_key": row.get("classification_cluster_key", ""),
+            "prompt_task_kind": row.get("prompt_task_kind", ""),
+            "agent_tool_intention": row.get("agent_tool_intention", ""),
+            "agent_tool_intention_source": row.get("agent_tool_intention_source", ""),
+            "tool_execution_mode": row.get("tool_execution_mode", ""),
+            "tool_execution_mode_source": row.get("tool_execution_mode_source", ""),
+            "delegated_agent_action": row.get("delegated_agent_action", ""),
+            "delegated_agent_id": row.get("delegated_agent_id", ""),
+            "delegated_agent_type": row.get("delegated_agent_type", ""),
+            "delegated_agent_nickname": row.get("delegated_agent_nickname", ""),
+            "delegated_task_preview": row.get("delegated_task_preview", ""),
+            "delegated_task_hash": row.get("delegated_task_hash", ""),
+            "primary_why_confidence": row.get("primary_why_confidence", ""),
+            "prompt_task_kind_confidence": row.get("prompt_task_kind_confidence", ""),
+            "agent_tool_intention_confidence": row.get("agent_tool_intention_confidence", ""),
+            "classification_agreement": row.get("classification_agreement", ""),
+            "review_reason": row.get("review_reason", ""),
             "tool_action": row.get("tool_action", ""),
             "tool_action_source": row.get("tool_action_source", ""),
             "service_of_why": row.get("service_of_why", ""),
@@ -1567,6 +1587,21 @@ def build_command_attribution_events(
             "cost_is_estimated": to_bool(row.get("cost_is_estimated", True)),
             "cost_allocation_method": row.get("cost_allocation_method", "prompt_cost_output_weighted_v1"),
         })
+        if schema_version in {"usage_command_attribution_v4_2", "usage_command_attribution_v4_3"}:
+            for legacy_key in (
+                "why_tags",
+                "why_classifier",
+                "tool_action",
+                "tool_action_source",
+                "service_of_why",
+                "service_of_confidence",
+                "service_of_source",
+                "uncategorized_reason",
+                "session_root_cause_summary",
+                "prompt_primary_why",
+                "row_primary_why",
+            ):
+                props.pop(legacy_key, None)
         events.append(ExportEvent("usage_command_attribution", "usage_command_attribution", row_id, props))
     return events
 
@@ -1705,6 +1740,12 @@ def build_all_events(
     command_attribution_v4_1_path = input_root / "reports/usage-command-attribution-v4_1.csv"
     if command_attribution_v4_1_path.exists():
         command_attribution.extend(read_csv(command_attribution_v4_1_path))
+    command_attribution_v4_2_path = input_root / "reports/usage-command-attribution-v4_2.csv"
+    if command_attribution_v4_2_path.exists():
+        command_attribution.extend(read_csv(command_attribution_v4_2_path))
+    command_attribution_v4_3_path = input_root / "reports/usage-command-attribution-v4_3.csv"
+    if command_attribution_v4_3_path.exists():
+        command_attribution.extend(read_csv(command_attribution_v4_3_path))
 
     epoch = report_epoch(report_date)
     families: dict[str, list[ExportEvent]] = {}

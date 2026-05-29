@@ -20,6 +20,15 @@ MIXPANEL_BASE = "https://mixpanel.com"
 NEW_BOARD_TITLE = "Usage Cost Ops - request_pattern_layers_v1"
 TOP_LEVEL_BOARD_TITLE = "Usage Why / Cost Ops Over Time"
 SESSION_ROOT_CAUSE_BOARD_TITLE = "Usage Why / Session Root Cause"
+DELEGATED_INTENTION_BOARD_ID = 11221263
+DELEGATED_INTENTION_BOARD_TITLE = "Usage Why / v4.3 Delegated Intention"
+DELEGATED_INTENTION_VISIBLE_REPORT_IDS = {
+    "v4.3 Cost by Tool Intention": 90319562,
+    "v4.3 Cost by Execution Mode": 90319563,
+    "v4.3 Delegated Agent Intentions": 90319565,
+    "v4.3 Branch Stack Orchestration": 90319566,
+    "v4.3 Review Queue": 90319567,
+}
 DEPRECATED_PREFIX = "[Deprecated] "
 OLD_TAXONOMY_MARKERS = ("request_subpattern", "request_cache_sources_v3")
 NEW_DIAGNOSIS_VERSION = "request_pattern_layers_v1"
@@ -228,6 +237,14 @@ def canonical_reports() -> list[dict[str, Any]]:
         filter_ref("schema_version", "usage_command_attribution_v4_1"),
         filter_ref("service_classifier_revision", "service_context_v2"),
     ]
+    command_filter_v4_2 = [
+        filter_ref("schema_version", "usage_command_attribution_v4_2"),
+        filter_ref("classification_revision", "classifier_v4_2"),
+    ]
+    command_filter_v4_3 = [
+        filter_ref("schema_version", "usage_command_attribution_v4_3"),
+        filter_ref("classification_revision", "classifier_v4_3"),
+    ]
     reports.extend(
         [
             {
@@ -318,6 +335,168 @@ def canonical_reports() -> list[dict[str, Any]]:
                     filters=[*command_filter, filter_ref("primary_why", "source_inspection")],
                 ),
             },
+            {
+                "name": "v4.2 Cost by Primary Why",
+                "board": "top_level",
+                "description": "Estimated command cost by v4.2 workflow-origin primary_why.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[property_ref("primary_why")],
+                    filters=command_filter_v4_2,
+                ),
+            },
+            {
+                "name": "v4.2 Cost by Prompt Task Kind",
+                "board": "top_level",
+                "description": "Estimated command cost by v4.2 objective subtype prompt_task_kind.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[property_ref("prompt_task_kind")],
+                    filters=command_filter_v4_2,
+                ),
+            },
+            {
+                "name": "v4.2 Cost by Tool Intention",
+                "board": "top_level",
+                "description": "Estimated command cost by v4.2 purpose-oriented agent_tool_intention.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[property_ref("agent_tool_intention")],
+                    filters=command_filter_v4_2,
+                ),
+            },
+            {
+                "name": "v4.2 Primary Why x Task Kind",
+                "board": "top_level",
+                "description": "Estimated command cost by v4.2 workflow origin and objective subtype.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[property_ref("primary_why"), property_ref("prompt_task_kind")],
+                    filters=command_filter_v4_2,
+                ),
+            },
+            {
+                "name": "v4.2 Classifier Confidence",
+                "board": "session_root_cause",
+                "description": "Estimated command cost by v4.2 confidence fields and classifier agreement.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[
+                        property_ref("classification_agreement"),
+                        property_ref("primary_why_confidence"),
+                        property_ref("prompt_task_kind_confidence"),
+                        property_ref("agent_tool_intention_confidence"),
+                    ],
+                    filters=command_filter_v4_2,
+                ),
+            },
+            {
+                "name": "v4.2 Review Queue",
+                "board": "session_root_cause",
+                "description": "v4.2 command cost needing review, grouped by reason and proposed bucket fields.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[
+                        property_ref("review_reason"),
+                        property_ref("primary_why"),
+                        property_ref("prompt_task_kind"),
+                        property_ref("agent_tool_intention"),
+                    ],
+                    filters=[*command_filter_v4_2, filter_ref("classification_agreement", "needs_review")],
+                ),
+            },
+            {
+                "name": "v4.2 Session Command Drilldown",
+                "board": "session_root_cause",
+                "description": "Session to task to v4.2 origin/task/tool intention to target drilldown for command attribution.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[
+                        property_ref("session_id"),
+                        property_ref("task_label"),
+                        property_ref("primary_why"),
+                        property_ref("prompt_task_kind"),
+                        property_ref("agent_tool_intention"),
+                        property_ref("target"),
+                    ],
+                    filters=command_filter_v4_2,
+                ),
+            },
+            {
+                "name": "v4.3 Cost by Tool Intention",
+                "board": "delegated_intention",
+                "description": "Estimated command cost by v4.3 underlying agent_tool_intention.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[property_ref("agent_tool_intention")],
+                    filters=command_filter_v4_3,
+                ),
+            },
+            {
+                "name": "v4.3 Cost by Execution Mode",
+                "board": "delegated_intention",
+                "description": "Estimated command cost by v4.3 tool_execution_mode transport/control plane.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[property_ref("tool_execution_mode")],
+                    filters=command_filter_v4_3,
+                ),
+            },
+            {
+                "name": "v4.3 Delegated Agent Intentions",
+                "board": "delegated_intention",
+                "description": "Delegated agent command cost by action, type, and inherited work intention.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[
+                        property_ref("delegated_agent_action"),
+                        property_ref("delegated_agent_type"),
+                        property_ref("agent_tool_intention"),
+                    ],
+                    filters=[*command_filter_v4_3, filter_ref("tool_execution_mode", "agent_delegated")],
+                ),
+            },
+            {
+                "name": "v4.3 Branch Stack Orchestration",
+                "board": "delegated_intention",
+                "description": "Branch stack/worktree/rebase/cherry-pick work by execution mode and delegation action.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[
+                        property_ref("tool_execution_mode"),
+                        property_ref("delegated_agent_action"),
+                        property_ref("function_name"),
+                    ],
+                    filters=[*command_filter_v4_3, filter_ref("agent_tool_intention", "branch_stack_orchestration")],
+                ),
+            },
+            {
+                "name": "v4.3 Review Queue",
+                "board": "delegated_intention",
+                "description": "v4.3 command cost needing review, grouped by review reason and delegated metadata.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[
+                        property_ref("review_reason"),
+                        property_ref("tool_execution_mode"),
+                        property_ref("delegated_agent_action"),
+                        property_ref("agent_tool_intention"),
+                    ],
+                    filters=[*command_filter_v4_3, filter_ref("classification_agreement", "needs_review")],
+                ),
+            },
         ]
     )
     return reports
@@ -350,6 +529,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--new-board-title", default=NEW_BOARD_TITLE)
     parser.add_argument("--top-level-board-title", default=TOP_LEVEL_BOARD_TITLE)
     parser.add_argument("--session-root-cause-board-title", default=SESSION_ROOT_CAUSE_BOARD_TITLE)
+    parser.add_argument("--delegated-intention-board-id", type=int, default=DELEGATED_INTENTION_BOARD_ID)
+    parser.add_argument("--delegated-intention-board-title", default=DELEGATED_INTENTION_BOARD_TITLE)
     return parser.parse_args()
 
 
@@ -412,12 +593,30 @@ def main() -> int:
             "title": args.session_root_cause_board_title,
             "description": "Session breakdown and root-cause drilldowns for token and command spend.",
         },
+        "delegated_intention": {
+            "id": args.delegated_intention_board_id,
+            "title": args.delegated_intention_board_title,
+            "description": "v4.3 delegated-agent intention and execution-mode command spend.",
+        },
     }
     new_dashboards: dict[str, dict[str, Any]] = {}
     for board_key, spec in board_specs.items():
-        existing_new = next((item for item in dashboards if item.get("title") == spec["title"]), None)
+        existing_new = next((item for item in dashboards if spec.get("id") and item.get("id") == spec.get("id")), None)
+        if not existing_new:
+            existing_new = next((item for item in dashboards if item.get("title") == spec["title"]), None)
         if existing_new:
             new_dashboard = deepcopy(existing_new)
+            if args.execute and new_dashboard.get("title") != spec["title"]:
+                try:
+                    result = client.patch_one(
+                        "dashboards",
+                        int(new_dashboard["id"]),
+                        {"title": spec["title"], "description": spec["description"]},
+                    ).get("results", {})
+                    new_dashboard.update(result)
+                    new_dashboard["title"] = spec["title"]
+                except RuntimeError as exc:
+                    summary["errors"].append({"asset": "dashboard", "id": new_dashboard["id"], "title": spec["title"], "error": str(exc)})
         elif args.execute:
             try:
                 created = client.create_dashboard(
@@ -457,6 +656,9 @@ def main() -> int:
         new_dashboard = new_dashboards[board_key]
         planned = {"name": report["name"], "board": board_key, "dashboard_id": new_dashboard.get("id")}
         existing_report = existing_by_name.get(report["name"])
+        visible_report_id = DELEGATED_INTENTION_VISIBLE_REPORT_IDS.get(report["name"]) if board_key == "delegated_intention" else None
+        if visible_report_id:
+            existing_report = {"id": visible_report_id}
         if args.execute:
             try:
                 if existing_report:
