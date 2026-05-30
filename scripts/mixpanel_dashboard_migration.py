@@ -21,13 +21,16 @@ NEW_BOARD_TITLE = "Usage Cost Ops - request_pattern_layers_v1"
 TOP_LEVEL_BOARD_TITLE = "Usage Why / Cost Ops Over Time"
 SESSION_ROOT_CAUSE_BOARD_TITLE = "Usage Why / Session Root Cause"
 DELEGATED_INTENTION_BOARD_ID = 11221263
-DELEGATED_INTENTION_BOARD_TITLE = "Usage Why / v4.3 Delegated Intention"
+DELEGATED_INTENTION_BOARD_TITLE = "Usage Why / v4.5 Delegated Intention"
 DELEGATED_INTENTION_VISIBLE_REPORT_IDS = {
-    "v4.3 Cost by Tool Intention": 90319562,
-    "v4.3 Cost by Execution Mode": 90319563,
-    "v4.3 Delegated Agent Intentions": 90319565,
-    "v4.3 Branch Stack Orchestration": 90319566,
-    "v4.3 Review Queue": 90319567,
+    "v4.5 Cost by Tool Intention": 90319562,
+    "v4.5 Cost by Execution Mode": 90319563,
+    "v4.5 Token Cost Composition by Category": 90413710,
+    "v4.5 Delegated Agent Intentions": 90319565,
+    "v4.5 Tool Intention Drilldown": 90319566,
+    "v4.5 Review Queue": 90413631,
+    "v4.5 Exec Command Breakdown": 90413443,
+    "v4.5 Write Stdin Breakdown": 90413444,
 }
 DEPRECATED_PREFIX = "[Deprecated] "
 OLD_TAXONOMY_MARKERS = ("request_subpattern", "request_cache_sources_v3")
@@ -237,17 +240,17 @@ def canonical_reports() -> list[dict[str, Any]]:
         filter_ref("schema_version", "usage_command_attribution_v4_1"),
         filter_ref("service_classifier_revision", "service_context_v2"),
     ]
-    command_filter_v4_2 = [
-        filter_ref("schema_version", "usage_command_attribution_v4_2"),
-        filter_ref("classification_revision", "classifier_v4_2"),
+    command_filter_v4_5 = [
+        filter_ref("schema_version", "usage_command_attribution_v4_5"),
+        filter_ref("classification_revision", "classifier_v4_5"),
     ]
-    command_filter_v4_3 = [
-        filter_ref("schema_version", "usage_command_attribution_v4_3"),
-        filter_ref("classification_revision", "classifier_v4_3"),
+    command_filter_v4_5_phase = [
+        *command_filter_v4_5,
+        filter_ref("phase_classification_revision", "phase_classifier_v1"),
     ]
-    command_filter_v4_4 = [
-        filter_ref("schema_version", "usage_command_attribution_v4_4"),
-        filter_ref("classification_revision", "classifier_v4_4"),
+    prompt_phase_segment_filter = [
+        filter_ref("schema_version", "session_phase_narratives_v1"),
+        filter_ref("phase_classification_revision", "phase_classifier_v1"),
     ]
     reports.extend(
         [
@@ -340,123 +343,199 @@ def canonical_reports() -> list[dict[str, Any]]:
                 ),
             },
             {
-                "name": "v4.2 Cost by Primary Why",
+                "name": "v4.5 Cost by Request Origin",
                 "board": "top_level",
-                "description": "Estimated command cost by v4.2 workflow-origin primary_why.",
+                "description": "Estimated command cost by v4.5 workflow-origin request_origin.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
-                    groups=[property_ref("primary_why")],
-                    filters=command_filter_v4_2,
+                    groups=[property_ref("request_origin")],
+                    filters=command_filter_v4_5,
                 ),
             },
             {
-                "name": "v4.2 Cost by Prompt Task Kind",
+                "name": "v4.5 Cost by Work Motivation",
                 "board": "top_level",
-                "description": "Estimated command cost by v4.2 objective subtype prompt_task_kind.",
+                "description": "Estimated command cost by v4.5 objective subtype work_motivation.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
-                    groups=[property_ref("prompt_task_kind")],
-                    filters=command_filter_v4_2,
+                    groups=[property_ref("work_motivation")],
+                    filters=command_filter_v4_5,
                 ),
             },
             {
-                "name": "v4.2 Cost by Tool Intention",
+                "name": "v4.5 Cost by Agent Tool Intention",
                 "board": "top_level",
-                "description": "Estimated command cost by v4.2 purpose-oriented agent_tool_intention.",
+                "description": "Estimated command cost by v4.5 purpose-oriented agent_tool_intention.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
                     groups=[property_ref("agent_tool_intention")],
-                    filters=command_filter_v4_2,
+                    filters=command_filter_v4_5,
                 ),
             },
             {
-                "name": "v4.2 Primary Why x Task Kind",
+                "name": "v4.5 Request Origin x Work Motivation",
                 "board": "top_level",
-                "description": "Estimated command cost by v4.2 workflow origin and objective subtype.",
+                "description": "Estimated command cost by v4.5 workflow origin and objective subtype.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
-                    groups=[property_ref("primary_why"), property_ref("prompt_task_kind")],
-                    filters=command_filter_v4_2,
+                    groups=[property_ref("request_origin"), property_ref("work_motivation")],
+                    filters=command_filter_v4_5,
                 ),
             },
             {
-                "name": "v4.2 Classifier Confidence",
+                "name": "v4.5 Classifier Confidence",
                 "board": "session_root_cause",
-                "description": "Estimated command cost by v4.2 confidence fields and classifier agreement.",
+                "description": "Estimated command cost by v4.5 confidence fields and classifier agreement.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
                     groups=[
                         property_ref("classification_agreement"),
-                        property_ref("primary_why_confidence"),
-                        property_ref("prompt_task_kind_confidence"),
+                        property_ref("request_origin_confidence"),
+                        property_ref("work_motivation_confidence"),
                         property_ref("agent_tool_intention_confidence"),
                     ],
-                    filters=command_filter_v4_2,
+                    filters=command_filter_v4_5,
                 ),
             },
             {
-                "name": "v4.2 Review Queue",
+                "name": "v4.5 Motivation Review Queue",
                 "board": "session_root_cause",
-                "description": "v4.2 command cost needing review, grouped by reason and proposed bucket fields.",
+                "description": "v4.5 command cost needing review, grouped by reason and proposed bucket fields.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
                     groups=[
                         property_ref("review_reason"),
-                        property_ref("primary_why"),
-                        property_ref("prompt_task_kind"),
+                        property_ref("request_origin"),
+                        property_ref("work_motivation"),
                         property_ref("agent_tool_intention"),
                     ],
-                    filters=[*command_filter_v4_2, filter_ref("classification_agreement", "needs_review")],
+                    filters=[*command_filter_v4_5, filter_ref("classification_agreement", "needs_review")],
                 ),
             },
             {
-                "name": "v4.2 Session Command Drilldown",
+                "name": "v4.5 Session Command Drilldown",
                 "board": "session_root_cause",
-                "description": "Session to task to v4.2 origin/task/tool intention to target drilldown for command attribution.",
+                "description": "Session to task to v4.5 origin/task/tool intention to target drilldown for command attribution.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
                     groups=[
                         property_ref("session_id"),
                         property_ref("task_label"),
-                        property_ref("primary_why"),
-                        property_ref("prompt_task_kind"),
+                        property_ref("request_origin"),
+                        property_ref("work_motivation"),
                         property_ref("agent_tool_intention"),
                         property_ref("target"),
                     ],
-                    filters=command_filter_v4_2,
+                    filters=command_filter_v4_5,
                 ),
             },
             {
-                "name": "v4.4 Cost by Tool Intention",
+                "name": "v4.5 Cost by Workflow Phase",
                 "board": "delegated_intention",
-                "description": "Estimated command cost by v4.4 underlying agent_tool_intention.",
+                "description": "Estimated v4.5 command cost by prompt-window workflow phase.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
-                    groups=[property_ref("agent_tool_intention")],
-                    filters=command_filter_v4_4,
+                    groups=[property_ref("workflow_phase")],
+                    filters=command_filter_v4_5_phase,
                 ),
             },
             {
-                "name": "v4.4 Cost by Execution Mode",
+                "name": "v4.5 Workflow Phase x Efficiency",
                 "board": "delegated_intention",
-                "description": "Estimated command cost by v4.4 tool_execution_mode transport/control plane.",
+                "description": "Estimated v4.5 command cost by workflow phase and efficiency label.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[property_ref("workflow_phase"), property_ref("efficiency_label")],
+                    filters=command_filter_v4_5_phase,
+                ),
+            },
+            {
+                "name": "v4.5 Phase Drilldown",
+                "board": "delegated_intention",
+                "description": "Workflow phase drilldown through efficiency, work motivation, tool intention, and function.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[
+                        property_ref("workflow_phase"),
+                        property_ref("efficiency_label"),
+                        property_ref("work_motivation"),
+                        property_ref("agent_tool_intention"),
+                        property_ref("function_name"),
+                    ],
+                    filters=command_filter_v4_5_phase,
+                ),
+            },
+            {
+                "name": "v4.5 Prompt Phase Segments",
+                "board": "delegated_intention",
+                "description": "Prompt-window phase segment cost by workflow phase, efficiency, session, and prompt.",
+                "params": insight_params(
+                    event_name="usage_prompt_phase_segment",
+                    metrics=[metric("usage_prompt_phase_segment", "total", "segment_cost_usd")],
+                    groups=[
+                        property_ref("workflow_phase"),
+                        property_ref("efficiency_label"),
+                        property_ref("session_id"),
+                        property_ref("prompt_index", "number"),
+                    ],
+                    filters=prompt_phase_segment_filter,
+                ),
+            },
+            {
+                "name": "v4.5 Cost by Tool Intention",
+                "board": "delegated_intention",
+                "description": "Estimated command cost by v4.5 agent_tool_intention with execution mode, delegation action, and function drilldown.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[
+                        property_ref("agent_tool_intention"),
+                        property_ref("tool_execution_mode"),
+                        property_ref("delegated_agent_action"),
+                        property_ref("function_name"),
+                    ],
+                    filters=command_filter_v4_5,
+                ),
+            },
+            {
+                "name": "v4.5 Cost by Execution Mode",
+                "board": "delegated_intention",
+                "description": "Estimated command cost by v4.5 tool_execution_mode transport/control plane.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
                     groups=[property_ref("tool_execution_mode")],
-                    filters=command_filter_v4_4,
+                    filters=command_filter_v4_5,
                 ),
             },
             {
-                "name": "v4.4 Delegated Agent Intentions",
+                "name": "v4.5 Token Cost Composition by Category",
+                "board": "delegated_intention",
+                "description": "Fresh input, cache-read input, cache-creation input, and output cost composition by v4.5 category.",
+                "params": insight_params(
+                    event_name="usage_command_cost_component",
+                    metrics=[metric("usage_command_cost_component", "total", "allocated_component_cost_usd")],
+                    groups=[
+                        property_ref("category_dimension"),
+                        property_ref("category_value"),
+                        property_ref("token_component"),
+                    ],
+                    filters=command_filter_v4_5_phase,
+                    chart_type="bar",
+                ),
+            },
+            {
+                "name": "v4.5 Delegated Agent Intentions",
                 "board": "delegated_intention",
                 "description": "Delegated agent command cost by action, type, and inherited work intention.",
                 "params": insight_params(
@@ -467,13 +546,13 @@ def canonical_reports() -> list[dict[str, Any]]:
                         property_ref("delegated_agent_type"),
                         property_ref("agent_tool_intention"),
                     ],
-                    filters=[*command_filter_v4_4, filter_ref("tool_execution_mode", "agent_delegated")],
+                    filters=[*command_filter_v4_5, filter_ref("tool_execution_mode", "agent_delegated")],
                 ),
             },
             {
-                "name": "v4.4 Branch Stack Orchestration",
+                "name": "v4.5 Tool Intention Drilldown",
                 "board": "delegated_intention",
-                "description": "Branch stack/rebase/cherry-pick/Mergify queue work by execution mode and delegation action.",
+                "description": "Agent_tool_intention work by execution mode and delegation action. Change the agent_tool_intention report filter to inspect one intention.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
@@ -482,13 +561,13 @@ def canonical_reports() -> list[dict[str, Any]]:
                         property_ref("delegated_agent_action"),
                         property_ref("function_name"),
                     ],
-                    filters=[*command_filter_v4_4, filter_ref("agent_tool_intention", "branch_stack_orchestration")],
+                    filters=[*command_filter_v4_5, filter_ref("agent_tool_intention", "branch_stack_orchestration")],
                 ),
             },
             {
-                "name": "v4.4 Review Queue",
+                "name": "v4.5 Review Queue",
                 "board": "delegated_intention",
-                "description": "v4.4 command cost needing review, grouped by review reason and delegated metadata.",
+                "description": "v4.5 command cost needing review, grouped by review reason and delegated metadata.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
@@ -498,7 +577,38 @@ def canonical_reports() -> list[dict[str, Any]]:
                         property_ref("delegated_agent_action"),
                         property_ref("agent_tool_intention"),
                     ],
-                    filters=[*command_filter_v4_4, filter_ref("classification_agreement", "needs_review")],
+                    filters=[*command_filter_v4_5, filter_ref("classification_agreement", "needs_review")],
+                ),
+            },
+            {
+                "name": "v4.5 Exec Command Breakdown",
+                "board": "delegated_intention",
+                "description": "Terminal exec_command cost by work motivation, tool intention, and shell verb.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[
+                        property_ref("work_motivation"),
+                        property_ref("agent_tool_intention"),
+                        property_ref("shell_verb"),
+                    ],
+                    filters=[*command_filter_v4_5, filter_ref("function_name", "exec_command")],
+                ),
+            },
+            {
+                "name": "v4.5 Write Stdin Breakdown",
+                "board": "delegated_intention",
+                "description": "Terminal write_stdin cost by input kind, inherited work context, and parent shell verb.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[
+                        property_ref("stdin_input_kind"),
+                        property_ref("work_motivation"),
+                        property_ref("agent_tool_intention"),
+                        property_ref("terminal_context_parent_shell_verb"),
+                    ],
+                    filters=[*command_filter_v4_5, filter_ref("function_name", "write_stdin")],
                 ),
             },
         ]
@@ -600,7 +710,7 @@ def main() -> int:
         "delegated_intention": {
             "id": args.delegated_intention_board_id,
             "title": args.delegated_intention_board_title,
-            "description": "v4.3 delegated-agent intention and execution-mode command spend.",
+            "description": "v4.5 delegated-agent intention and execution-mode command spend.",
         },
     }
     new_dashboards: dict[str, dict[str, Any]] = {}
@@ -615,7 +725,10 @@ def main() -> int:
                     result = client.patch_one(
                         "dashboards",
                         int(new_dashboard["id"]),
-                        {"title": spec["title"], "description": spec["description"]},
+                        {
+                            "title": spec["title"],
+                            "description": spec["description"],
+                        },
                     ).get("results", {})
                     new_dashboard.update(result)
                     new_dashboard["title"] = spec["title"]

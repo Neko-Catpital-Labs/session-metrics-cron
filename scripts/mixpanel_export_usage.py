@@ -23,6 +23,9 @@ from datetime import date, datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from session_phase_narrative_report import classify_prompt_window
+from usage_costing import load_pricing_table, price_component, pricing_for_model
+
 
 DEFAULT_TASK_CATEGORIZATION_CONFIG: dict[str, Any] = {
     "version": "builtin_regex_v1",
@@ -143,6 +146,18 @@ DEFAULT_REQUEST_PATTERN_CONFIG: dict[str, Any] = {
         },
     ],
 }
+
+PHASE_SCHEMA_VERSION = "session_phase_narratives_v1"
+PHASE_CLASSIFICATION_REVISION = "phase_classifier_v1"
+COMMAND_ATTRIBUTION_V4_5_IMPORT_REVISION = f"terminal_attribution_v1:{PHASE_CLASSIFICATION_REVISION}"
+COMMAND_COST_COMPONENT_IMPORT_REVISION = "cost_component_v1"
+PROMPT_PHASE_SEGMENT_IMPORT_REVISION = PHASE_CLASSIFICATION_REVISION
+COMMAND_COST_COMPONENTS = (
+    "fresh_input",
+    "cache_read_input",
+    "cache_creation_input",
+    "output",
+)
 
 
 def to_int(value: Any, default: int = 0) -> int:
@@ -1497,8 +1512,15 @@ def build_command_attribution_events(
         classification_revision = row.get("classification_revision", "")
         canonical_key = f"{row.get('model','')}:{row.get('bucket','')}:{session_id}:{prompt_index}:{command_index}:{row.get('command_hash','')}"
         revision_key = service_classifier_revision or classification_revision
+        is_v4_5 = schema_version == "usage_command_attribution_v4_5"
         row_id_key = f"{schema_version}:{revision_key}:{canonical_key}" if revision_key else f"{schema_version}:{canonical_key}"
+        if is_v4_5:
+            row_id_key = f"{COMMAND_ATTRIBUTION_V4_5_IMPORT_REVISION}:{row_id_key}"
         row_id = insert_id_v4(event_date, "usage_command_attribution", row_id_key)
+        request_origin = row.get("request_origin", row.get("primary_why", "uncategorized"))
+        work_motivation = row.get("work_motivation", row.get("prompt_task_kind", ""))
+        request_origin_confidence = row.get("request_origin_confidence", row.get("primary_why_confidence", ""))
+        work_motivation_confidence = row.get("work_motivation_confidence", row.get("prompt_task_kind_confidence", ""))
         props = with_common(token, distinct_id, report_epoch(event_date), row_id, event_date, {
             "schema_version": schema_version,
             "service_classifier_revision": service_classifier_revision,
@@ -1539,6 +1561,21 @@ def build_command_attribution_events(
             "workdir": row.get("workdir", ""),
             "target_type": row.get("target_type", ""),
             "target": row.get("target", ""),
+            "stdin_preview": row.get("stdin_preview", ""),
+            "stdin_hash": row.get("stdin_hash", ""),
+            "stdin_input_kind": row.get("stdin_input_kind", ""),
+            "stdin_input_reason": row.get("stdin_input_reason", ""),
+            "stdin_input_confidence": row.get("stdin_input_confidence", ""),
+            "terminal_context_source": row.get("terminal_context_source", ""),
+            "terminal_context_reason": row.get("terminal_context_reason", ""),
+            "terminal_context_confidence": row.get("terminal_context_confidence", ""),
+            "terminal_context_parent_function_name": row.get("terminal_context_parent_function_name", ""),
+            "terminal_context_parent_command_index": row.get("terminal_context_parent_command_index", ""),
+            "terminal_context_parent_command_preview": row.get("terminal_context_parent_command_preview", ""),
+            "terminal_context_parent_command_hash": row.get("terminal_context_parent_command_hash", ""),
+            "terminal_context_parent_shell_verb": row.get("terminal_context_parent_shell_verb", ""),
+            "terminal_context_parent_work_motivation": row.get("terminal_context_parent_work_motivation", ""),
+            "terminal_context_parent_agent_tool_intention": row.get("terminal_context_parent_agent_tool_intention", ""),
             "output_chars": to_int(row.get("output_chars")),
             "output_token_estimate": to_float(row.get("output_token_estimate")),
             "primary_why": row.get("primary_why", "uncategorized"),
@@ -1547,6 +1584,8 @@ def build_command_attribution_events(
             "classification_revision": row.get("classification_revision", ""),
             "classification_cluster_key": row.get("classification_cluster_key", ""),
             "prompt_task_kind": row.get("prompt_task_kind", ""),
+            "request_origin": request_origin,
+            "work_motivation": work_motivation,
             "agent_tool_intention": row.get("agent_tool_intention", ""),
             "agent_tool_intention_source": row.get("agent_tool_intention_source", ""),
             "tool_execution_mode": row.get("tool_execution_mode", ""),
@@ -1559,6 +1598,8 @@ def build_command_attribution_events(
             "delegated_task_hash": row.get("delegated_task_hash", ""),
             "primary_why_confidence": row.get("primary_why_confidence", ""),
             "prompt_task_kind_confidence": row.get("prompt_task_kind_confidence", ""),
+            "request_origin_confidence": request_origin_confidence,
+            "work_motivation_confidence": work_motivation_confidence,
             "agent_tool_intention_confidence": row.get("agent_tool_intention_confidence", ""),
             "classification_agreement": row.get("classification_agreement", ""),
             "review_reason": row.get("review_reason", ""),
@@ -1587,7 +1628,21 @@ def build_command_attribution_events(
             "cost_is_estimated": to_bool(row.get("cost_is_estimated", True)),
             "cost_allocation_method": row.get("cost_allocation_method", "prompt_cost_output_weighted_v1"),
         })
-        if schema_version in {"usage_command_attribution_v4_2", "usage_command_attribution_v4_3", "usage_command_attribution_v4_4"}:
+        if is_v4_5:
+            props.update(
+                {
+                    "phase_schema_version": row.get("phase_schema_version", ""),
+                    "phase_classification_revision": row.get("phase_classification_revision", ""),
+                    "workflow_phase": row.get("workflow_phase", ""),
+                    "efficiency_label": row.get("efficiency_label", ""),
+                    "phase_reason": row.get("phase_reason", ""),
+                    "phase_confidence": row.get("phase_confidence", ""),
+                    "prompt_window_phase_index": to_int(row.get("prompt_window_phase_index")),
+                    "phase_start_command_index": to_int(row.get("phase_start_command_index")),
+                    "phase_end_command_index": to_int(row.get("phase_end_command_index")),
+                }
+            )
+        if schema_version in {"usage_command_attribution_v4_2", "usage_command_attribution_v4_3", "usage_command_attribution_v4_4", "usage_command_attribution_v4_5"}:
             for legacy_key in (
                 "why_tags",
                 "why_classifier",
@@ -1602,7 +1657,301 @@ def build_command_attribution_events(
                 "row_primary_why",
             ):
                 props.pop(legacy_key, None)
+        if is_v4_5:
+            for old_motivation_key in (
+                "primary_why",
+                "prompt_task_kind",
+                "primary_why_confidence",
+                "prompt_task_kind_confidence",
+            ):
+                props.pop(old_motivation_key, None)
+        else:
+            props.pop("request_origin", None)
+            props.pop("work_motivation", None)
+            props.pop("request_origin_confidence", None)
+            props.pop("work_motivation_confidence", None)
+            props.pop("phase_schema_version", None)
+            props.pop("phase_classification_revision", None)
+            props.pop("workflow_phase", None)
+            props.pop("efficiency_label", None)
+            props.pop("phase_reason", None)
+            props.pop("phase_confidence", None)
+            props.pop("prompt_window_phase_index", None)
+            props.pop("phase_start_command_index", None)
+            props.pop("phase_end_command_index", None)
         events.append(ExportEvent("usage_command_attribution", "usage_command_attribution", row_id, props))
+    return events
+
+
+def v4_5_phase_rows(rows: list[dict[str, str]], report_date: str) -> list[dict[str, str]]:
+    selected = []
+    for row in rows:
+        if row.get("schema_version") != "usage_command_attribution_v4_5":
+            continue
+        if row.get("classification_revision") != "classifier_v4_5":
+            continue
+        if is_after_report_date(row_report_date(row, report_date), report_date):
+            continue
+        selected.append(row)
+    return selected
+
+
+def prompt_window_key(row: dict[str, str]) -> tuple[str, int]:
+    return (session_identity(row.get("file", "")), to_int(row.get("prompt_index")))
+
+
+def enrich_v4_5_phase_fields(rows: list[dict[str, str]], report_date: str) -> list[dict[str, str]]:
+    enriched = [dict(row) for row in rows]
+    grouped: dict[tuple[str, int], list[dict[str, str]]] = {}
+    for row in v4_5_phase_rows(enriched, report_date):
+        grouped.setdefault(prompt_window_key(row), []).append(row)
+
+    for group_rows in grouped.values():
+        classified = classify_prompt_window(group_rows)
+        current_key: tuple[str, str] | None = None
+        segment_index = -1
+        segment_start = 0
+        segment_items: list[tuple[dict[str, str], Any]] = []
+        pending_segments: list[tuple[int, int, list[tuple[dict[str, str], Any]]]] = []
+        for item in classified:
+            key = (item.workflow_phase, item.efficiency_label)
+            if segment_items and key != current_key:
+                pending_segments.append((segment_index, segment_start, segment_items))
+                segment_items = []
+            if key != current_key:
+                segment_index += 1
+                segment_start = to_int(item.row.get("command_index"))
+                current_key = key
+            segment_items.append((item.row, item))
+        if segment_items:
+            pending_segments.append((segment_index, segment_start, segment_items))
+
+        for index, start_command_index, items in pending_segments:
+            end_command_index = to_int(items[-1][0].get("command_index"))
+            for row, item in items:
+                row["phase_schema_version"] = PHASE_SCHEMA_VERSION
+                row["phase_classification_revision"] = PHASE_CLASSIFICATION_REVISION
+                row["workflow_phase"] = item.workflow_phase
+                row["efficiency_label"] = item.efficiency_label
+                row["phase_reason"] = item.reason
+                row["phase_confidence"] = item.confidence
+                row["prompt_window_phase_index"] = str(index)
+                row["phase_start_command_index"] = str(start_command_index)
+                row["phase_end_command_index"] = str(end_command_index)
+    return enriched
+
+
+def top_command_examples(rows: list[dict[str, str]], limit: int = 3) -> list[str]:
+    examples = []
+    for row in sorted(rows, key=lambda item: to_float(item.get("allocated_total_cost_usd")), reverse=True):
+        preview = normalize_preview(
+            row.get("command_preview")
+            or row.get("stdin_preview")
+            or row.get("terminal_context_parent_command_preview")
+            or row.get("function_name", ""),
+            160,
+        )
+        if preview and preview not in examples:
+            examples.append(preview)
+        if len(examples) >= limit:
+            break
+    return examples
+
+
+def build_prompt_phase_segment_events(
+    rows: list[dict[str, str]],
+    token: str,
+    distinct_id: str,
+    report_date: str,
+) -> list[ExportEvent]:
+    grouped: dict[tuple[str, int, int], list[dict[str, str]]] = {}
+    for row in v4_5_phase_rows(rows, report_date):
+        phase_index = to_int(row.get("prompt_window_phase_index"), -1)
+        if phase_index < 0:
+            continue
+        session_id = session_identity(row.get("file", ""))
+        prompt_index = to_int(row.get("prompt_index"))
+        grouped.setdefault((session_id, prompt_index, phase_index), []).append(row)
+
+    events: list[ExportEvent] = []
+    for (session_id, prompt_index, phase_index), group_rows in sorted(grouped.items()):
+        ordered = sorted(group_rows, key=lambda row: to_int(row.get("command_index")))
+        first = ordered[0]
+        event_date = row_report_date(first, report_date)
+        if is_after_report_date(event_date, report_date):
+            continue
+        segment_cost = sum(to_float(row.get("allocated_total_cost_usd")) for row in ordered)
+        reason_counts: dict[str, int] = {}
+        confidence_counts: dict[str, int] = {}
+        for row in ordered:
+            reason = row.get("phase_reason") or "unknown"
+            confidence = row.get("phase_confidence") or "unknown"
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+            confidence_counts[confidence] = confidence_counts.get(confidence, 0) + 1
+        row_id_key = (
+            f"{PROMPT_PHASE_SEGMENT_IMPORT_REVISION}:"
+            f"{session_id}:{prompt_index}:{phase_index}:{event_date}"
+        )
+        row_id = insert_id_v4(event_date, "usage_prompt_phase_segment", row_id_key)
+        props = with_common(
+            token,
+            distinct_id,
+            report_epoch(event_date),
+            row_id,
+            event_date,
+            {
+                "schema_version": PHASE_SCHEMA_VERSION,
+                "phase_classification_revision": PHASE_CLASSIFICATION_REVISION,
+                "source_schema_version": first.get("schema_version", ""),
+                "source_classification_revision": first.get("classification_revision", ""),
+                "batch_report_date": report_date,
+                "session_id": session_id,
+                "session_file": first.get("file", ""),
+                "prompt_index": prompt_index,
+                "prompt_window_phase_index": phase_index,
+                "phase_start_command_index": to_int(first.get("phase_start_command_index")),
+                "phase_end_command_index": to_int(first.get("phase_end_command_index")),
+                "workflow_phase": first.get("workflow_phase", ""),
+                "efficiency_label": first.get("efficiency_label", ""),
+                "phase_reason_counts": reason_counts,
+                "phase_confidence_counts": confidence_counts,
+                "phase_reason_counts_json": json.dumps(reason_counts, sort_keys=True),
+                "phase_confidence_counts_json": json.dumps(confidence_counts, sort_keys=True),
+                "segment_cost_usd": segment_cost,
+                "segment_event_count": len(ordered),
+                "prompt_preview": normalize_preview(first.get("prompt_preview", ""), 320),
+                "first_prompt_preview": normalize_preview(first.get("first_prompt_preview", ""), 320),
+                "final_answer_preview": normalize_preview(first.get("final_answer_preview", ""), 320),
+                "top_command_examples": top_command_examples(ordered),
+                "top_command_examples_json": json.dumps(top_command_examples(ordered)),
+            },
+        )
+        events.append(ExportEvent("usage_prompt_phase_segment", "usage_prompt_phase_segment", row_id, props))
+    return events
+
+
+def command_component_values(row: dict[str, str], pricing_table: dict[str, Any]) -> list[dict[str, float | str]]:
+    pricing = pricing_for_model(pricing_table, row.get("billable_model", ""))
+    input_price = price_component(pricing, "input_cost_per_token", "prompt_cost_per_token") or 0.0
+    output_price = price_component(pricing, "output_cost_per_token", "completion_cost_per_token") or 0.0
+    cache_read_price = price_component(pricing, "cache_read_input_token_cost", "cache_read_cost_per_token")
+    cache_creation_price = price_component(pricing, "cache_creation_input_token_cost", "cache_creation_cost_per_token")
+    cache_read_price = input_price if cache_read_price is None else cache_read_price
+    cache_creation_price = input_price if cache_creation_price is None else cache_creation_price
+
+    cache_read_tokens = to_float(row.get("allocated_cache_read_tokens"))
+    cache_creation_tokens = to_float(row.get("allocated_cache_creation_tokens"))
+    output_tokens = to_float(row.get("allocated_output_tokens"))
+    fresh_input_tokens = max(0.0, to_float(row.get("allocated_input_tokens")) - cache_read_tokens - cache_creation_tokens)
+    components: list[dict[str, float | str]] = [
+        {
+            "token_component": "fresh_input",
+            "allocated_component_tokens": fresh_input_tokens,
+            "raw_component_cost_usd": fresh_input_tokens * input_price,
+        },
+        {
+            "token_component": "cache_read_input",
+            "allocated_component_tokens": cache_read_tokens,
+            "raw_component_cost_usd": cache_read_tokens * cache_read_price,
+        },
+        {
+            "token_component": "cache_creation_input",
+            "allocated_component_tokens": cache_creation_tokens,
+            "raw_component_cost_usd": cache_creation_tokens * cache_creation_price,
+        },
+        {
+            "token_component": "output",
+            "allocated_component_tokens": output_tokens,
+            "raw_component_cost_usd": output_tokens * output_price,
+        },
+    ]
+    allocated_total_cost = to_optional_float(row.get("allocated_total_cost_usd"))
+    raw_total = sum(float(component["raw_component_cost_usd"]) for component in components)
+    scale = allocated_total_cost / raw_total if allocated_total_cost is not None and raw_total else 1.0
+    for component in components:
+        component["allocated_component_cost_usd"] = float(component["raw_component_cost_usd"]) * scale
+    return components
+
+
+def build_command_cost_component_events(
+    rows: list[dict[str, str]],
+    token: str,
+    distinct_id: str,
+    report_date: str,
+) -> list[ExportEvent]:
+    pricing_table = load_pricing_table(None)
+    events: list[ExportEvent] = []
+    for row in rows:
+        schema_version = row.get("schema_version") or ""
+        classification_revision = row.get("classification_revision", "")
+        if schema_version != "usage_command_attribution_v4_5" or classification_revision != "classifier_v4_5":
+            continue
+        event_date = row_report_date(row, report_date)
+        if is_after_report_date(event_date, report_date):
+            continue
+        session_id = session_identity(row.get("file", ""))
+        prompt_index = to_int(row.get("prompt_index"))
+        command_index = to_int(row.get("command_index"))
+        canonical_key = f"{row.get('model','')}:{row.get('bucket','')}:{session_id}:{prompt_index}:{command_index}:{row.get('command_hash','')}"
+        for category_dimension, category_value in (
+            ("agent_tool_intention", row.get("agent_tool_intention", "")),
+            ("work_motivation", row.get("work_motivation", "")),
+            ("workflow_phase", row.get("workflow_phase", "")),
+            ("efficiency_label", row.get("efficiency_label", "")),
+        ):
+            for component in command_component_values(row, pricing_table):
+                component_name = str(component["token_component"])
+                row_id_key = (
+                    f"{COMMAND_COST_COMPONENT_IMPORT_REVISION}:"
+                    f"{schema_version}:{classification_revision}:{canonical_key}:"
+                    f"{category_dimension}:{category_value}:{component_name}"
+                )
+                row_id = insert_id_v4(event_date, "usage_command_cost_component", row_id_key)
+                props = with_common(
+                    token,
+                    distinct_id,
+                    report_epoch(event_date),
+                    row_id,
+                    event_date,
+                    {
+                        "schema_version": schema_version,
+                        "classification_revision": classification_revision,
+                        "model": row.get("model", ""),
+                        "provider": row.get("provider", ""),
+                        "billable_model": row.get("billable_model", ""),
+                        "billable_model_source": row.get("billable_model_source", ""),
+                        "usage_source": row.get("usage_source", ""),
+                        "bucket": row.get("bucket", ""),
+                        "batch_report_date": report_date,
+                        "session_id": session_id,
+                        "session_file": row.get("file", ""),
+                        "prompt_index": prompt_index,
+                        "command_index": command_index,
+                        "canonical_key": canonical_key,
+                        "function_name": row.get("function_name", ""),
+                        "shell_verb": row.get("shell_verb", ""),
+                        "command_hash": row.get("command_hash", ""),
+                        "work_motivation": row.get("work_motivation", ""),
+                        "agent_tool_intention": row.get("agent_tool_intention", ""),
+                        "phase_schema_version": row.get("phase_schema_version", ""),
+                        "phase_classification_revision": row.get("phase_classification_revision", ""),
+                        "workflow_phase": row.get("workflow_phase", ""),
+                        "efficiency_label": row.get("efficiency_label", ""),
+                        "phase_reason": row.get("phase_reason", ""),
+                        "phase_confidence": row.get("phase_confidence", ""),
+                        "category_dimension": category_dimension,
+                        "category_value": category_value or "uncategorized",
+                        "token_component": component_name,
+                        "allocated_component_tokens": float(component["allocated_component_tokens"]),
+                        "allocated_component_cost_usd": float(component["allocated_component_cost_usd"]),
+                        "raw_component_cost_usd": float(component["raw_component_cost_usd"]),
+                        "allocated_total_cost_usd": to_optional_float(row.get("allocated_total_cost_usd")),
+                        "cost_is_estimated": to_bool(row.get("cost_is_estimated", True)),
+                        "cost_allocation_method": row.get("cost_allocation_method", "prompt_cost_output_weighted_v1"),
+                        "component_cost_method": "allocated_token_component_pricing_scaled_v1",
+                    },
+                )
+                events.append(ExportEvent("usage_command_cost_component", "usage_command_cost_component", row_id, props))
     return events
 
 
@@ -1727,7 +2076,14 @@ def build_all_events(
     max_cache_sources_per_request: int,
     task_categorizer: TaskCategorizer,
     request_pattern_categorizer: RequestPatternCategorizer,
+    selected_families: set[str] | None = None,
+    pilot_max_events_per_family: int = 0,
+    command_attribution_schema_version: str = "",
 ) -> tuple[dict[str, list[ExportEvent]], dict[str, int]]:
+    def want(family: str) -> bool:
+        return not selected_families or family in selected_families
+
+    capped: dict[str, int] = {}
     audit = read_json(input_root / "cache-hit-audit-report.json")
     report = read_json(input_root / "reports/planning-vs-execution-report.json")
     sessions = read_csv(input_root / "reports/planning-vs-execution-sessions.csv")
@@ -1735,56 +2091,91 @@ def build_all_events(
     tools = read_csv(input_root / "reports/planning-vs-execution-tool-breakdown.csv")
     attribution_path = input_root / "reports/planning-vs-execution-tool-attribution.csv"
     tool_attribution = read_csv(attribution_path) if attribution_path.exists() else []
-    command_attribution_path = input_root / "reports/usage-command-attribution-v4.csv"
-    command_attribution = read_csv(command_attribution_path) if command_attribution_path.exists() else []
-    command_attribution_v4_1_path = input_root / "reports/usage-command-attribution-v4_1.csv"
-    if command_attribution_v4_1_path.exists():
-        command_attribution.extend(read_csv(command_attribution_v4_1_path))
-    command_attribution_v4_2_path = input_root / "reports/usage-command-attribution-v4_2.csv"
-    if command_attribution_v4_2_path.exists():
-        command_attribution.extend(read_csv(command_attribution_v4_2_path))
-    command_attribution_v4_3_path = input_root / "reports/usage-command-attribution-v4_3.csv"
-    if command_attribution_v4_3_path.exists():
-        command_attribution.extend(read_csv(command_attribution_v4_3_path))
-    command_attribution_v4_4_path = input_root / "reports/usage-command-attribution-v4_4.csv"
-    if command_attribution_v4_4_path.exists():
-        command_attribution.extend(read_csv(command_attribution_v4_4_path))
+    command_attribution_files = [
+        ("usage_command_attribution_v4", input_root / "reports/usage-command-attribution-v4.csv"),
+        ("usage_command_attribution_v4_1", input_root / "reports/usage-command-attribution-v4_1.csv"),
+        ("usage_command_attribution_v4_2", input_root / "reports/usage-command-attribution-v4_2.csv"),
+        ("usage_command_attribution_v4_3", input_root / "reports/usage-command-attribution-v4_3.csv"),
+        ("usage_command_attribution_v4_4", input_root / "reports/usage-command-attribution-v4_4.csv"),
+        ("usage_command_attribution_v4_5", input_root / "reports/usage-command-attribution-v4_5.csv"),
+    ]
+    command_attribution: list[dict[str, str]] = []
+    for schema_version, path in command_attribution_files:
+        if command_attribution_schema_version and schema_version != command_attribution_schema_version:
+            continue
+        if path.exists():
+            command_attribution.extend(read_csv(path))
+    if command_attribution_schema_version:
+        command_attribution = [
+            row for row in command_attribution
+            if row.get("schema_version") == command_attribution_schema_version
+        ]
+    if pilot_max_events_per_family > 0 and selected_families and selected_families & {
+        "usage_command_attribution",
+        "usage_command_cost_component",
+        "usage_prompt_phase_segment",
+    }:
+        original = len(command_attribution)
+        command_attribution = command_attribution[:pilot_max_events_per_family]
+        if original > len(command_attribution):
+            capped["usage_command_attribution_source_pilot_cap"] = original - len(command_attribution)
+    command_attribution = enrich_v4_5_phase_fields(command_attribution, report_date)
 
     epoch = report_epoch(report_date)
     families: dict[str, list[ExportEvent]] = {}
-    capped: dict[str, int] = {}
 
-    families["usage_daily_rollup"] = build_daily_rollups(report, audit, token, distinct_id, epoch, report_date)
-    families["usage_session"] = build_session_events(sessions, token, distinct_id, epoch, report_date)
-    prompt_events, prompt_skipped = build_prompt_events(
-        prompts, token, distinct_id, epoch, report_date, max_unique_prompt_hashes
-    )
-    families["usage_prompt"] = prompt_events
-    diagnosis_events, diagnosis_skipped = build_request_cache_diagnosis_events(
-        prompts, audit, token, distinct_id, report_date, max_unique_prompt_hashes, task_categorizer, request_pattern_categorizer
-    )
-    families["usage_request_cache_diagnosis"] = diagnosis_events
-    source_events, source_skipped = build_request_cache_source_events(
-        prompts,
-        audit,
-        token,
-        distinct_id,
-        report_date,
-        max_unique_prompt_hashes,
-        max_cache_sources_per_request,
-        task_categorizer,
-        request_pattern_categorizer,
-    )
-    families["usage_request_cache_source"] = source_events
-    families["usage_tool_breakdown"] = build_tool_events(tools, token, distinct_id, epoch, report_date)
-    families["usage_tool_attribution"] = build_tool_attribution_events(tool_attribution, token, distinct_id, epoch, report_date)
-    families["usage_request_tool_attribution"] = build_request_tool_attribution_events(
-        tool_attribution, prompts, token, distinct_id, report_date, task_categorizer, request_pattern_categorizer
-    )
-    families["usage_command_attribution"] = build_command_attribution_events(
-        command_attribution, prompts, token, distinct_id, report_date, task_categorizer, request_pattern_categorizer
-    )
-    families["usage_cache_driver"] = build_cache_driver_events(report, audit, token, distinct_id, epoch, report_date)
+    prompt_skipped = 0
+    diagnosis_skipped = 0
+    source_skipped = 0
+    if want("usage_daily_rollup"):
+        families["usage_daily_rollup"] = build_daily_rollups(report, audit, token, distinct_id, epoch, report_date)
+    if want("usage_session"):
+        families["usage_session"] = build_session_events(sessions, token, distinct_id, epoch, report_date)
+    if want("usage_prompt"):
+        prompt_events, prompt_skipped = build_prompt_events(
+            prompts, token, distinct_id, epoch, report_date, max_unique_prompt_hashes
+        )
+        families["usage_prompt"] = prompt_events
+    if want("usage_request_cache_diagnosis"):
+        diagnosis_events, diagnosis_skipped = build_request_cache_diagnosis_events(
+            prompts, audit, token, distinct_id, report_date, max_unique_prompt_hashes, task_categorizer, request_pattern_categorizer
+        )
+        families["usage_request_cache_diagnosis"] = diagnosis_events
+    if want("usage_request_cache_source"):
+        source_events, source_skipped = build_request_cache_source_events(
+            prompts,
+            audit,
+            token,
+            distinct_id,
+            report_date,
+            max_unique_prompt_hashes,
+            max_cache_sources_per_request,
+            task_categorizer,
+            request_pattern_categorizer,
+        )
+        families["usage_request_cache_source"] = source_events
+    if want("usage_tool_breakdown"):
+        families["usage_tool_breakdown"] = build_tool_events(tools, token, distinct_id, epoch, report_date)
+    if want("usage_tool_attribution"):
+        families["usage_tool_attribution"] = build_tool_attribution_events(tool_attribution, token, distinct_id, epoch, report_date)
+    if want("usage_request_tool_attribution"):
+        families["usage_request_tool_attribution"] = build_request_tool_attribution_events(
+            tool_attribution, prompts, token, distinct_id, report_date, task_categorizer, request_pattern_categorizer
+        )
+    if want("usage_command_attribution"):
+        families["usage_command_attribution"] = build_command_attribution_events(
+            command_attribution, prompts, token, distinct_id, report_date, task_categorizer, request_pattern_categorizer
+        )
+    if want("usage_command_cost_component"):
+        families["usage_command_cost_component"] = build_command_cost_component_events(
+            command_attribution, token, distinct_id, report_date
+        )
+    if want("usage_prompt_phase_segment"):
+        families["usage_prompt_phase_segment"] = build_prompt_phase_segment_events(
+            command_attribution, token, distinct_id, report_date
+        )
+    if want("usage_cache_driver"):
+        families["usage_cache_driver"] = build_cache_driver_events(report, audit, token, distinct_id, epoch, report_date)
     if prompt_skipped:
         capped["usage_prompt_prompt_hash_cap"] = prompt_skipped
     if diagnosis_skipped:
@@ -1793,7 +2184,7 @@ def build_all_events(
         capped["usage_request_cache_source_prompt_hash_cap"] = source_skipped
 
     for name, rows in list(families.items()):
-        if name == "usage_command_attribution":
+        if name in {"usage_command_attribution", "usage_command_cost_component", "usage_prompt_phase_segment"}:
             continue
         limited, dropped = limit_family(rows, max_events_per_family)
         families[name] = limited
@@ -1810,6 +2201,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ignore-local-state", action="store_true", help="Do not suppress events using local state file; rely on deterministic $insert_id for Mixpanel dedupe.")
     parser.add_argument("--summary-path", default="")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--families",
+        default="",
+        help="Comma-separated event families to export. Default exports all families.",
+    )
+    parser.add_argument(
+        "--pilot-max-events-per-family",
+        type=int,
+        default=0,
+        help="Optional cap applied after --families selection for a limited pilot backfill. Default sends all selected events.",
+    )
+    parser.add_argument(
+        "--command-attribution-schema-version",
+        default="",
+        help="Optional schema_version filter for command attribution-derived families, e.g. usage_command_attribution_v4_5.",
+    )
     parser.add_argument("--max-events-per-family", type=int, default=to_int(os.getenv("MAX_EVENTS_PER_FAMILY"), 100000))
     parser.add_argument(
         "--max-unique-prompt-hashes",
@@ -1874,6 +2281,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Missing required input: {required}", file=sys.stderr)
             return 1
 
+    selected_families = {name.strip() for name in args.families.split(",") if name.strip()}
     families, capped = build_all_events(
         input_root=input_root,
         report_date=args.date,
@@ -1884,8 +2292,23 @@ def main(argv: list[str] | None = None) -> int:
         max_cache_sources_per_request=args.max_cache_sources_per_request,
         task_categorizer=task_categorizer,
         request_pattern_categorizer=request_pattern_categorizer,
+        selected_families=selected_families or None,
+        pilot_max_events_per_family=args.pilot_max_events_per_family,
+        command_attribution_schema_version=args.command_attribution_schema_version,
     )
     task_cache.save()
+    if selected_families:
+        unknown_families = sorted(selected_families - set(families))
+        if unknown_families:
+            print(f"Unknown event families: {', '.join(unknown_families)}", file=sys.stderr)
+            return 1
+        families = {name: rows for name, rows in families.items() if name in selected_families}
+    if args.pilot_max_events_per_family > 0:
+        for family, rows in list(families.items()):
+            limited, dropped = limit_family(rows, args.pilot_max_events_per_family)
+            families[family] = limited
+            if dropped:
+                capped[f"{family}_pilot_cap"] = dropped
 
     state = StateStore(Path(args.state_file).expanduser(), args.max_state_ids)
     to_send: dict[str, list[ExportEvent]] = {}
@@ -1915,6 +2338,8 @@ def main(argv: list[str] | None = None) -> int:
         "usage_tool_attribution",
         "usage_request_tool_attribution",
         "usage_command_attribution",
+        "usage_command_cost_component",
+        "usage_prompt_phase_segment",
         "usage_cache_driver",
     ):
         ordered.extend(to_send.get(family, []))

@@ -53,11 +53,30 @@ COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_1 = "usage_command_attribution_v4_1"
 COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_2 = "usage_command_attribution_v4_2"
 COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_3 = "usage_command_attribution_v4_3"
 COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_4 = "usage_command_attribution_v4_4"
+COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_5 = "usage_command_attribution_v4_5"
 COMMAND_ATTRIBUTION_SERVICE_CLASSIFIER_REVISION = "service_context_v2"
 COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_2 = "classifier_v4_2"
 COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_3 = "classifier_v4_3"
 COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_4 = "classifier_v4_4"
+COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_5 = "classifier_v4_5"
 COMMAND_COST_ALLOCATION_METHOD = "prompt_cost_output_weighted_v1"
+
+MOTIVATION_FIELD_RENAMES_V4_5 = {
+    "primary_why": "request_origin",
+    "prompt_task_kind": "work_motivation",
+    "primary_why_confidence": "request_origin_confidence",
+    "prompt_task_kind_confidence": "work_motivation_confidence",
+    "deterministic_primary_why": "deterministic_request_origin",
+    "deterministic_prompt_task_kind": "deterministic_work_motivation",
+    "codex_primary_why": "codex_request_origin",
+    "codex_prompt_task_kind": "codex_work_motivation",
+}
+REVIEW_FIELD_RENAMES_V4_5 = {
+    "proposed_primary_why": "proposed_request_origin",
+    "proposed_prompt_task_kind": "proposed_work_motivation",
+    "codex_primary_why": "codex_request_origin",
+    "codex_prompt_task_kind": "codex_work_motivation",
+}
 
 PRIMARY_WHY_BUCKETS_V4_2 = {
     "generated_invoker_task",
@@ -178,6 +197,8 @@ class CommandCall:
     workdir: str = ""
     target_type: str = ""
     target: str = ""
+    stdin_preview: str = ""
+    stdin_hash: str = ""
     output_chars: int = 0
     output_token_estimate: int = 0
     tool_arguments: dict[str, Any] = field(default_factory=dict)
@@ -358,6 +379,21 @@ def command_text_from_arguments(arguments_raw: Any) -> str:
     args_obj = parse_tool_arguments(arguments_raw)
     command = args_obj.get("cmd") or args_obj.get("command") or (args_obj.get("input") or {}).get("command")
     return command if isinstance(command, str) else ""
+
+
+def stdin_text_from_arguments(arguments_raw: Any) -> str:
+    args_obj = parse_tool_arguments(arguments_raw)
+    for key in ("chars", "stdin", "input_text", "text"):
+        value = args_obj.get(key)
+        if isinstance(value, str):
+            return value
+    nested = args_obj.get("input")
+    if isinstance(nested, dict):
+        for key in ("chars", "stdin", "input_text", "text"):
+            value = nested.get(key)
+            if isinstance(value, str):
+                return value
+    return ""
 
 
 def workdir_from_arguments(arguments_raw: Any) -> str:
@@ -1338,6 +1374,205 @@ def build_command_attribution_v4_4_rows(rows: list[dict[str, Any]]) -> tuple[lis
     return enriched, review_rows
 
 
+def classify_stdin_input_kind_v4_5(row: dict[str, Any]) -> tuple[str, str, str]:
+    preview = str(row.get("stdin_preview") or row.get("command_preview") or "")
+    if row.get("function_name") != "write_stdin":
+        return "", "", ""
+    if preview == "":
+        return "wait_for_process", "empty_stdin_poll", "medium"
+    lowered = preview.strip().lower()
+    if preview in {"\x03", "\\u0003", "^C"} or "\\u0003" in preview or "^c" in lowered:
+        return "control_interrupt", "interrupt_sequence", "high"
+    if preview in {"\x04", "\\u0004"} or "\\u0004" in preview:
+        return "control_eof", "eof_sequence", "high"
+    if lowered in {"q", "quit", "exit", ":q", ":qa"}:
+        return "control_exit", "exit_token", "high"
+    if lowered in {"", "\\n", "\\r", "y", "yes", "n", "no"} or preview in {"\n", "\r", "\r\n"}:
+        return "control_continue", "confirmation_or_enter", "medium"
+    if re.search(r"\bselect\b.+\bfrom\b|\\.schema\\b|\\bpragma\\b", lowered, re.IGNORECASE):
+        return "interactive_query", "sql_like_input", "high"
+    if re.search(r"\b(print|import|def|class|const|let|var|console\\.log)\\b", preview):
+        return "interactive_code", "code_like_input", "medium"
+    if re.match(r"^\s*(cd|ls|pwd|cat|rg|grep|git|pnpm|npm|yarn|pytest|python|node)\b", preview):
+        return "interactive_shell", "shell_command_input", "medium"
+    if len(lowered) <= 3 and re.fullmatch(r"[0-9a-z]+", lowered):
+        return "interactive_selection", "short_menu_selection", "medium"
+    return "payload_text", "nonempty_stdin_payload", "low"
+
+
+def classify_agent_tool_intention_v4_5(row: dict[str, Any]) -> tuple[str, str, str]:
+    fn = str(row.get("function_name") or "").lower()
+    verb = str(row.get("shell_verb") or "").lower()
+    delegated_text = str(row.get("delegated_task_preview") or "")
+    command_text = str(row.get("command_preview") or "")
+    target_text = str(row.get("target") or "")
+    command_only = " ".join(str(row.get(key) or "") for key in ("function_name", "shell_verb", "command_preview")).lower()
+    prompt_text = _prompt_context_text(row).lower()
+
+    if fn in {"spawn_agent", "send_input"} and delegated_text:
+        intention, reason = classify_agent_tool_intention_from_text_v4_4(delegated_text)
+        source = "delegated_task_message" if intention != "needs_review" else "needs_review"
+        return intention, source, reason
+
+    if _has_branch_stack_orchestration_terms_v4_4(command_text) or _has_branch_stack_target_terms_v4_4(target_text) or _text_has_any(
+        command_only, ["mergify stack", "mergify queue"]
+    ):
+        return "branch_stack_orchestration", "command_mechanics", "explicit_branch_stack_or_queue_terms"
+    if _text_has_any(command_only, ["gh pr create", "gh pr edit", "gh pr close", "pull request", "pr body"]):
+        return "pr_creation_or_update", "command_mechanics", "pr_terms"
+    if verb in {"git"}:
+        if _text_has_any(command_only, [" rebase", " cherry-pick", " cherrypick", " merge ", " fetch "]):
+            return "branch_stack_orchestration", "command_mechanics", "git_stack_operation"
+        if _text_has_any(command_only, [" diff", " show", " log"]):
+            return "diff_review", "command_mechanics", "git_review_command"
+        return "environment_initialization", "command_mechanics", "git_state_command"
+    if _text_has_any(command_only, ["playwright test", "vitest", "pytest", "pnpm test", "npm test", "yarn test", "make test", "cargo test", "go test"]) or re.search(
+        r"\b(pnpm|npm|yarn)\b.*\btest\b", command_only
+    ):
+        return "test_execution", "command_mechanics", "test_command"
+    if _text_has_any(command_only, ["build", "tsc", "lint", "typecheck", "check:types", "test:all", "check:all", "visual-proof"]):
+        return "full_validation", "command_mechanics", "validation_command"
+    if _text_has_any(command_only, ["ssh ", "scp ", "rsync"]):
+        return "remote_orchestration", "command_mechanics", "remote_command_terms"
+    if _text_has_any(command_only, ["sqlite3", "psql", "mysql", "redis-cli"]):
+        return "analytics_inspection", "command_mechanics", "database_query_command"
+    if fn in {"read", "cat", "glob", "toolsearch", "grep", "search"} or verb in {"rg", "grep", "find", "fd", "ls", "cat", "sed", "nl", "less", "head", "tail"}:
+        if _text_has_any(command_only, ["git diff", "diff"]):
+            return "diff_review", "command_mechanics", "diff_terms"
+        if _text_has_any(prompt_text, ["failure", "failed", "error", "diagnose", "repro", "ci"]):
+            return "failure_diagnosis_inspection", "prompt_context", "failure_inspection_terms"
+        if _text_has_any(prompt_text, ["implement", "update", "change", "plan", "architecture"]):
+            return "implementation_planning_inspection", "prompt_context", "implementation_inspection_terms"
+        return "repo_orientation", "command_mechanics", "default_read_or_search"
+    if fn == "write_stdin":
+        return "process_control", "terminal_stdin_without_context"
+
+    intention, reason = classify_agent_tool_intention_v4_2(row)
+    if intention == "remote_orchestration" and reason == "remote_terms":
+        without_prompt = dict(row)
+        without_prompt["prompt_preview"] = ""
+        without_prompt["previous_prompt_preview"] = ""
+        without_prompt["first_prompt_preview"] = ""
+        without_prompt["final_answer_preview"] = ""
+        retry_intention, retry_reason = classify_agent_tool_intention_v4_2(without_prompt)
+        if retry_intention != "remote_orchestration":
+            return retry_intention, "command_mechanics" if retry_intention != "needs_review" else "needs_review", retry_reason
+    return intention, "command_mechanics" if intention != "needs_review" else "needs_review", reason
+
+
+def _terminal_context_key(row: dict[str, Any], include_prompt: bool = True) -> tuple[str, str, str] | tuple[str, str]:
+    if include_prompt:
+        return (str(row.get("file") or ""), str(row.get("bucket") or ""), str(row.get("prompt_index") or ""))
+    return (str(row.get("file") or ""), str(row.get("bucket") or ""))
+
+
+def build_command_attribution_v4_5_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    v4_4_rows, v4_4_review_rows = build_command_attribution_v4_4_rows(rows)
+    rows_by_identity: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        rows_by_identity[
+            (
+                str(row.get("file") or ""),
+                str(row.get("bucket") or ""),
+                str(row.get("prompt_index") or ""),
+                str(row.get("command_index") or ""),
+                str(row.get("function_name") or ""),
+            )
+        ] = row
+
+    def rename_row(row: dict[str, Any], renames: dict[str, str]) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for key, value in row.items():
+            out[renames.get(key, key)] = value
+        return out
+
+    enriched: list[dict[str, Any]] = []
+    latest_by_prompt: dict[tuple[str, str, str], dict[str, Any]] = {}
+    latest_by_file_bucket: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in v4_4_rows:
+        raw_row = rows_by_identity.get(
+            (
+                str(row.get("file") or ""),
+                str(row.get("bucket") or ""),
+                str(row.get("prompt_index") or ""),
+                str(row.get("command_index") or ""),
+                str(row.get("function_name") or ""),
+            ),
+            row,
+        )
+        fn = str(row.get("function_name") or "").lower()
+        if fn != "write_stdin":
+            intention, source, reason = classify_agent_tool_intention_v4_5(row)
+            row["agent_tool_intention"] = intention
+            row["agent_tool_intention_source"] = source
+            row["agent_tool_intention_confidence"] = "high" if intention != "needs_review" else "needs_review"
+            if intention == "needs_review":
+                row["classification_agreement"] = "needs_review"
+                row["review_reason"] = ";".join(dict.fromkeys([str(row.get("review_reason") or ""), reason]))
+            if fn == "exec_command":
+                context = {
+                    "parent_function_name": fn,
+                    "parent_command_index": row.get("command_index", ""),
+                    "parent_command_preview": row.get("command_preview", ""),
+                    "parent_command_hash": row.get("command_hash", ""),
+                    "parent_shell_verb": row.get("shell_verb", ""),
+                    "parent_work_motivation": row.get("prompt_task_kind", ""),
+                    "parent_agent_tool_intention": row.get("agent_tool_intention", ""),
+                }
+                latest_by_prompt[_terminal_context_key(row, True)] = context  # type: ignore[index]
+                latest_by_file_bucket[_terminal_context_key(row, False)] = context  # type: ignore[index]
+        else:
+            stdin_kind, stdin_reason, stdin_confidence = classify_stdin_input_kind_v4_5(raw_row)
+            row["stdin_preview"] = raw_row.get("stdin_preview", row.get("stdin_preview", ""))
+            row["stdin_hash"] = raw_row.get("stdin_hash", row.get("stdin_hash", ""))
+            row["stdin_input_kind"] = stdin_kind
+            row["stdin_input_reason"] = stdin_reason
+            row["stdin_input_confidence"] = stdin_confidence
+            parent = latest_by_prompt.get(_terminal_context_key(row, True))  # type: ignore[arg-type]
+            terminal_reason = "same_prompt_latest_exec_command"
+            terminal_confidence = "high"
+            if parent is None:
+                parent = latest_by_file_bucket.get(_terminal_context_key(row, False))  # type: ignore[arg-type]
+                terminal_reason = "same_session_latest_exec_command"
+                terminal_confidence = "medium"
+            if parent is None:
+                row["prompt_task_kind"] = "needs_review"
+                row["agent_tool_intention"] = "needs_review"
+                row["agent_tool_intention_source"] = "needs_review"
+                row["prompt_task_kind_confidence"] = "needs_review"
+                row["agent_tool_intention_confidence"] = "needs_review"
+                row["classification_agreement"] = "needs_review"
+                row["review_reason"] = ";".join(dict.fromkeys([str(row.get("review_reason") or ""), "missing_terminal_context_for_write_stdin"]))
+                row["terminal_context_source"] = "missing"
+                row["terminal_context_reason"] = "missing_terminal_context_for_write_stdin"
+                row["terminal_context_confidence"] = "needs_review"
+            else:
+                row["prompt_task_kind"] = parent.get("parent_work_motivation", "")
+                row["prompt_task_kind_confidence"] = "high" if terminal_confidence == "high" else "medium"
+                if stdin_kind in {"control_interrupt", "control_eof", "control_exit"}:
+                    row["agent_tool_intention"] = "process_control"
+                    row["agent_tool_intention_source"] = "terminal_control_input"
+                else:
+                    row["agent_tool_intention"] = parent.get("parent_agent_tool_intention", "")
+                    row["agent_tool_intention_source"] = "terminal_context_wait" if stdin_kind == "wait_for_process" else "terminal_context"
+                row["agent_tool_intention_confidence"] = terminal_confidence
+                row["terminal_context_source"] = "previous_exec_command"
+                row["terminal_context_reason"] = terminal_reason
+                row["terminal_context_confidence"] = terminal_confidence
+                for key, value in parent.items():
+                    row[f"terminal_context_{key}"] = value
+        out = rename_row(row, MOTIVATION_FIELD_RENAMES_V4_5)
+        out["schema_version"] = COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_5
+        out["classification_revision"] = COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_5
+        enriched.append(out)
+
+    review_rows: list[dict[str, Any]] = []
+    for row in v4_4_review_rows:
+        review_rows.append(rename_row(row, REVIEW_FIELD_RENAMES_V4_5))
+
+    return enriched, review_rows
+
+
 def load_v4_2_cluster_labels(path: str | Path | None) -> dict[str, dict[str, str]] | None:
     if not path:
         return None
@@ -1361,6 +1596,7 @@ def add_command_call(window: PromptWindow | None, function_name: str, arguments:
         return None
     args_obj = parse_tool_arguments(arguments)
     command = command_text_from_arguments(arguments)
+    stdin_text = stdin_text_from_arguments(arguments) if function_name.lower() == "write_stdin" else ""
     delegated = delegated_metadata_from_arguments(function_name, args_obj)
     if not command and delegated["delegated_task_preview"]:
         command = delegated["delegated_task_preview"]
@@ -1382,6 +1618,8 @@ def add_command_call(window: PromptWindow | None, function_name: str, arguments:
         workdir=workdir,
         target_type=target_type,
         target=target,
+        stdin_preview=shorten(stdin_text, 180),
+        stdin_hash=digest_text(stdin_text) if stdin_text else "",
         tool_arguments=args_obj,
         **delegated,
     )
@@ -1930,6 +2168,8 @@ def build_rows_for_model(
                         "workdir": call.workdir,
                         "target_type": call.target_type,
                         "target": call.target,
+                        "stdin_preview": call.stdin_preview,
+                        "stdin_hash": call.stdin_hash,
                         "delegated_agent_action": call.delegated_agent_action,
                         "delegated_agent_id": call.delegated_agent_id,
                         "delegated_agent_type": call.delegated_agent_type,
@@ -2195,6 +2435,7 @@ def build_report(
     all_command_rows_v4_2, all_command_rows_v4_2_review = build_command_attribution_v4_2_rows(all_command_rows, v4_2_cluster_labels)
     all_command_rows_v4_3, all_command_rows_v4_3_review = build_command_attribution_v4_3_rows(all_command_rows)
     all_command_rows_v4_4, all_command_rows_v4_4_review = build_command_attribution_v4_4_rows(all_command_rows)
+    all_command_rows_v4_5, all_command_rows_v4_5_review = build_command_attribution_v4_5_rows(all_command_rows)
 
     codex_section = section_from_rows("codex", codex_sessions, codex_session_rows, codex_prompt_rows)
     claude_section = section_from_rows("claude", claude_sessions, claude_session_rows, claude_prompt_rows)
@@ -2242,7 +2483,14 @@ def build_report(
     def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         with path.open("w", newline="", encoding="utf-8") as f:
             if rows:
-                w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                fieldnames = list(rows[0].keys())
+                seen = set(fieldnames)
+                for row in rows[1:]:
+                    for key in row:
+                        if key not in seen:
+                            fieldnames.append(key)
+                            seen.add(key)
+                w = csv.DictWriter(f, fieldnames=fieldnames)
                 w.writeheader()
                 w.writerows(rows)
             else:
@@ -2279,6 +2527,10 @@ def build_report(
     write_csv(out_dir / "usage-command-attribution-v4_4-review.csv", all_command_rows_v4_4_review)
     (out_dir / "usage-command-attribution-v4_4-summary.json").write_text(json.dumps(command_summary(all_command_rows_v4_4), indent=2))
     (out_dir / "usage-command-attribution-v4_4-report.md").write_text(render_command_markdown(all_command_rows_v4_4))
+    write_csv(out_dir / "usage-command-attribution-v4_5.csv", all_command_rows_v4_5)
+    write_csv(out_dir / "usage-command-attribution-v4_5-review.csv", all_command_rows_v4_5_review)
+    (out_dir / "usage-command-attribution-v4_5-summary.json").write_text(json.dumps(command_summary(all_command_rows_v4_5), indent=2))
+    (out_dir / "usage-command-attribution-v4_5-report.md").write_text(render_command_markdown(all_command_rows_v4_5))
 
     (out_dir / "planning-vs-execution-summary.md").write_text(render_markdown(report))
     return report
@@ -2312,13 +2564,22 @@ def top_counter_rows(rows: list[dict[str, Any]], key: str, cost_key: str = "allo
 
 
 def command_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    motivation_origin_key = "request_origin" if rows and rows[0].get("schema_version") == COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_5 else "primary_why"
+    motivation_work_key = "work_motivation" if rows and rows[0].get("schema_version") == COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_5 else "prompt_task_kind"
+    origin_confidence_key = (
+        "request_origin_confidence" if rows and rows[0].get("schema_version") == COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_5 else "primary_why_confidence"
+    )
+    work_confidence_key = (
+        "work_motivation_confidence" if rows and rows[0].get("schema_version") == COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_5 else "prompt_task_kind_confidence"
+    )
     summary = {
         "schema_version": rows[0].get("schema_version", COMMAND_ATTRIBUTION_SCHEMA_VERSION) if rows else COMMAND_ATTRIBUTION_SCHEMA_VERSION,
         "command_count": len(rows),
         "estimated_cost_usd": sum(float(row.get("allocated_total_cost_usd") or 0.0) for row in rows),
         "cost_allocation_method": COMMAND_COST_ALLOCATION_METHOD,
         "cost_is_estimated": True,
-        "by_primary_why": top_counter_rows(rows, "primary_why"),
+        "by_primary_why": top_counter_rows(rows, motivation_origin_key),
+        "by_request_origin": top_counter_rows(rows, "request_origin"),
         "by_service_of_why": top_counter_rows(rows, "service_of_why"),
         "by_tool_action": top_counter_rows(rows, "tool_action"),
         "by_uncategorized_reason": top_counter_rows(rows, "uncategorized_reason"),
@@ -2330,21 +2591,26 @@ def command_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_2,
         COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_3,
         COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_4,
+        COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_5,
     }:
         high_rows = [
             row
             for row in rows
-            if row.get("primary_why_confidence") == "high"
-            and row.get("prompt_task_kind_confidence") == "high"
+            if row.get(origin_confidence_key) == "high"
+            and row.get(work_confidence_key) == "high"
             and row.get("agent_tool_intention_confidence") == "high"
         ]
         classifier_revision = (
-            COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_4
-            if rows[0].get("schema_version") == COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_4
+            COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_5
+            if rows[0].get("schema_version") == COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_5
             else (
-                COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_3
-                if rows[0].get("schema_version") == COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_3
-                else COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_2
+                COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_4
+                if rows[0].get("schema_version") == COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_4
+                else (
+                    COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_3
+                    if rows[0].get("schema_version") == COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_3
+                    else COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_2
+                )
             )
         )
         summary.update(
@@ -2352,7 +2618,8 @@ def command_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "classifier_revision": classifier_revision,
                 "high_confidence_rows": len(high_rows),
                 "high_confidence_share": safe_div(len(high_rows), len(rows)),
-                "by_prompt_task_kind": top_counter_rows(rows, "prompt_task_kind"),
+                "by_prompt_task_kind": top_counter_rows(rows, motivation_work_key),
+                "by_work_motivation": top_counter_rows(rows, "work_motivation"),
                 "by_agent_tool_intention": top_counter_rows(rows, "agent_tool_intention"),
                 "by_tool_execution_mode": top_counter_rows(rows, "tool_execution_mode"),
                 "by_delegated_agent_action": top_counter_rows(rows, "delegated_agent_action"),
@@ -2394,8 +2661,9 @@ def render_command_markdown(rows: list[dict[str, Any]]) -> str:
             lines.append(f"| `{row['name']}` | {fmt_int(row['commands'])} | {fmt_money(row['allocated_total_cost_usd'])} |")
     lines.extend(["", "## Why x tool matrix", "", "| Why | Tool | Commands | Estimated cost |", "|---|---|---:|---:|"])
     matrix: dict[tuple[str, str], dict[str, float]] = {}
+    why_key = "request_origin" if summary["schema_version"] == COMMAND_ATTRIBUTION_SCHEMA_VERSION_V4_5 else "primary_why"
     for row in rows:
-        key = (str(row.get("primary_why") or "uncategorized"), str(row.get("function_name") or "unknown"))
+        key = (str(row.get(why_key) or "uncategorized"), str(row.get("function_name") or "unknown"))
         current = matrix.setdefault(key, {"commands": 0.0, "cost": 0.0})
         current["commands"] += 1
         current["cost"] += float(row.get("allocated_total_cost_usd") or 0.0)

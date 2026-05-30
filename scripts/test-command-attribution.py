@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 import mixpanel_export_usage as exporter
+import mixpanel_dashboard_migration as dashboard_migration
 import planning_vs_execution_report as report
 
 
@@ -817,6 +818,608 @@ class CommandAttributionTests(unittest.TestCase):
         self.assertEqual(props["schema_version"], "usage_command_attribution_v4_4")
         self.assertEqual(props["classification_revision"], "classifier_v4_4")
         self.assertEqual(props["agent_tool_intention"], "fixing_failure")
+
+    def test_v4_5_rows_rename_motivation_fields_without_old_aliases(self) -> None:
+        rows = [
+            {
+                "schema_version": "usage_command_attribution_v4",
+                "file": "/tmp/session-v45.jsonl",
+                "bucket": "execution",
+                "prompt_index": 1,
+                "command_index": 1,
+                "function_name": "apply_patch",
+                "shell_verb": "apply_patch",
+                "command_preview": "apply_patch",
+                "target": "src/app.py",
+                "prompt_preview": "Please implement the requested change",
+                "allocated_total_cost_usd": 0.1,
+            },
+            {
+                "schema_version": "usage_command_attribution_v4",
+                "file": "/tmp/session-v45.jsonl",
+                "bucket": "execution",
+                "prompt_index": 2,
+                "command_index": 1,
+                "function_name": "exec_command",
+                "shell_verb": "rg",
+                "command_preview": "rg failure logs",
+                "target": "logs",
+                "prompt_preview": "Diagnose the failure and inspect logs",
+                "allocated_total_cost_usd": 0.1,
+            },
+        ]
+
+        enriched, review = report.build_command_attribution_v4_5_rows(rows)
+
+        self.assertEqual(review, [])
+        self.assertEqual(enriched[0]["schema_version"], "usage_command_attribution_v4_5")
+        self.assertEqual(enriched[0]["classification_revision"], "classifier_v4_5")
+        self.assertEqual(enriched[0]["request_origin"], "human_direct_request")
+        self.assertEqual(enriched[0]["work_motivation"], "implementation")
+        self.assertEqual(enriched[1]["work_motivation"], "failure_diagnosis")
+        for row in enriched:
+            self.assertNotIn("primary_why", row)
+            self.assertNotIn("prompt_task_kind", row)
+            self.assertNotIn("primary_why_confidence", row)
+            self.assertNotIn("prompt_task_kind_confidence", row)
+            self.assertNotIn("deterministic_primary_why", row)
+            self.assertNotIn("deterministic_prompt_task_kind", row)
+            self.assertNotIn("codex_primary_why", row)
+            self.assertNotIn("codex_prompt_task_kind", row)
+
+    def test_v4_5_mixpanel_props_use_renamed_motivation_fields_only(self) -> None:
+        task_categorizer = exporter.TaskCategorizer(exporter.DEFAULT_TASK_CATEGORIZATION_CONFIG)
+        request_categorizer = exporter.RequestPatternCategorizer(exporter.DEFAULT_REQUEST_PATTERN_CONFIG)
+        rows = [
+            {
+                "schema_version": "usage_command_attribution_v4_5",
+                "classification_revision": "classifier_v4_5",
+                "file": "/tmp/session-v45-export.jsonl",
+                "model": "codex",
+                "bucket": "execution",
+                "prompt_index": "1",
+                "command_index": "1",
+                "function_name": "exec_command",
+                "shell_verb": "pytest",
+                "command_preview": "pytest tests/test_api.py",
+                "command_hash": "v45",
+                "request_origin": "human_direct_request",
+                "work_motivation": "failure_diagnosis",
+                "agent_tool_intention": "fixing_failure",
+                "agent_tool_intention_source": "prompt_context",
+                "tool_execution_mode": "direct_tool",
+                "delegated_agent_action": "none",
+                "request_origin_confidence": "high",
+                "work_motivation_confidence": "high",
+            }
+        ]
+
+        events = exporter.build_command_attribution_events(
+            rows,
+            [],
+            "token",
+            "distinct",
+            "2026-05-28",
+            task_categorizer,
+            request_categorizer,
+        )
+
+        props = events[0].properties
+        self.assertEqual(props["schema_version"], "usage_command_attribution_v4_5")
+        self.assertEqual(props["classification_revision"], "classifier_v4_5")
+        self.assertEqual(props["request_origin"], "human_direct_request")
+        self.assertEqual(props["work_motivation"], "failure_diagnosis")
+        self.assertNotIn("primary_why", props)
+        self.assertNotIn("prompt_task_kind", props)
+        self.assertNotIn("primary_why_confidence", props)
+        self.assertNotIn("prompt_task_kind_confidence", props)
+
+    def test_v4_5_mixpanel_props_include_phase_fields_only_for_v4_5(self) -> None:
+        task_categorizer = exporter.TaskCategorizer(exporter.DEFAULT_TASK_CATEGORIZATION_CONFIG)
+        request_categorizer = exporter.RequestPatternCategorizer(exporter.DEFAULT_REQUEST_PATTERN_CONFIG)
+        rows = [
+            {
+                "schema_version": "usage_command_attribution_v4_5",
+                "classification_revision": "classifier_v4_5",
+                "file": "/tmp/session-v45-phase.jsonl",
+                "model": "codex",
+                "bucket": "execution",
+                "prompt_index": "1",
+                "command_index": "1",
+                "function_name": "exec_command",
+                "shell_verb": "pytest",
+                "command_preview": "pytest tests/test_api.py",
+                "command_hash": "v45-phase",
+                "request_origin": "human_direct_request",
+                "work_motivation": "failure_diagnosis",
+                "agent_tool_intention": "test_execution",
+                "phase_schema_version": exporter.PHASE_SCHEMA_VERSION,
+                "phase_classification_revision": exporter.PHASE_CLASSIFICATION_REVISION,
+                "workflow_phase": "local_validation",
+                "efficiency_label": "productive",
+                "phase_reason": "first_focused_test_after_edit",
+                "phase_confidence": "high",
+                "prompt_window_phase_index": "0",
+                "phase_start_command_index": "1",
+                "phase_end_command_index": "1",
+            },
+            {
+                "schema_version": "usage_command_attribution_v4_4",
+                "classification_revision": "classifier_v4_4",
+                "file": "/tmp/session-v44-phase.jsonl",
+                "model": "codex",
+                "bucket": "execution",
+                "prompt_index": "1",
+                "command_index": "1",
+                "function_name": "exec_command",
+                "shell_verb": "pytest",
+                "command_preview": "pytest tests/test_api.py",
+                "command_hash": "v44-phase",
+                "primary_why": "human_direct_request",
+                "prompt_task_kind": "failure_diagnosis",
+                "agent_tool_intention": "test_execution",
+                "workflow_phase": "local_validation",
+            },
+        ]
+
+        events = exporter.build_command_attribution_events(
+            rows,
+            [],
+            "token",
+            "distinct",
+            "2026-05-28",
+            task_categorizer,
+            request_categorizer,
+        )
+
+        v4_5_props = events[0].properties
+        self.assertEqual(v4_5_props["phase_schema_version"], exporter.PHASE_SCHEMA_VERSION)
+        self.assertEqual(v4_5_props["phase_classification_revision"], exporter.PHASE_CLASSIFICATION_REVISION)
+        self.assertEqual(v4_5_props["workflow_phase"], "local_validation")
+        self.assertEqual(v4_5_props["efficiency_label"], "productive")
+        self.assertEqual(v4_5_props["prompt_window_phase_index"], 0)
+        self.assertNotIn("workflow_phase", events[1].properties)
+
+    def test_v4_5_mixpanel_insert_id_uses_terminal_import_revision(self) -> None:
+        task_categorizer = exporter.TaskCategorizer(exporter.DEFAULT_TASK_CATEGORIZATION_CONFIG)
+        request_categorizer = exporter.RequestPatternCategorizer(exporter.DEFAULT_REQUEST_PATTERN_CONFIG)
+        base_row = {
+            "file": "/tmp/session-v45-import-revision.jsonl",
+            "model": "codex",
+            "bucket": "execution",
+            "prompt_index": "1",
+            "command_index": "1",
+            "function_name": "exec_command",
+            "shell_verb": "pytest",
+            "command_preview": "pytest tests/test_api.py",
+            "command_hash": "import-revision",
+            "agent_tool_intention": "test_execution",
+        }
+
+        v4_5_events = exporter.build_command_attribution_events(
+            [
+                {
+                    **base_row,
+                    "schema_version": "usage_command_attribution_v4_5",
+                    "classification_revision": "classifier_v4_5",
+                    "request_origin": "human_direct_request",
+                    "work_motivation": "failure_diagnosis",
+                }
+            ],
+            [],
+            "token",
+            "distinct",
+            "2026-05-28",
+            task_categorizer,
+            request_categorizer,
+        )
+        v4_4_events = exporter.build_command_attribution_events(
+            [
+                {
+                    **base_row,
+                    "schema_version": "usage_command_attribution_v4_4",
+                    "classification_revision": "classifier_v4_4",
+                    "primary_why": "human_direct_request",
+                    "prompt_task_kind": "failure_diagnosis",
+                }
+            ],
+            [],
+            "token",
+            "distinct",
+            "2026-05-28",
+            task_categorizer,
+            request_categorizer,
+        )
+
+        canonical_key = "codex:execution:session-v45-import-revision:1:1:import-revision"
+        v4_5_key = (
+            f"{exporter.COMMAND_ATTRIBUTION_V4_5_IMPORT_REVISION}:"
+            f"usage_command_attribution_v4_5:classifier_v4_5:{canonical_key}"
+        )
+        old_v4_5_key = f"usage_command_attribution_v4_5:classifier_v4_5:{canonical_key}"
+        v4_4_key = f"usage_command_attribution_v4_4:classifier_v4_4:{canonical_key}"
+
+        self.assertEqual(
+            v4_5_events[0].insert_id,
+            exporter.insert_id_v4("2026-05-28", "usage_command_attribution", v4_5_key),
+        )
+        self.assertNotEqual(
+            v4_5_events[0].insert_id,
+            exporter.insert_id_v4("2026-05-28", "usage_command_attribution", old_v4_5_key),
+        )
+        self.assertEqual(
+            v4_4_events[0].insert_id,
+            exporter.insert_id_v4("2026-05-28", "usage_command_attribution", v4_4_key),
+        )
+
+    def test_v4_5_write_stdin_wait_inherits_build_validation_context(self) -> None:
+        rows = [
+            {
+                "schema_version": "usage_command_attribution_v4",
+                "file": "/tmp/session-v45-stdin.jsonl",
+                "bucket": "execution",
+                "prompt_index": 1,
+                "command_index": 1,
+                "function_name": "exec_command",
+                "shell_verb": "pnpm",
+                "command_preview": "pnpm --filter @invoker/app build",
+                "command_hash": "build-hash",
+                "target": "@invoker/app",
+                "prompt_preview": "Implement the dashboard fix and verify the app builds",
+                "allocated_total_cost_usd": 0.1,
+            },
+            {
+                "schema_version": "usage_command_attribution_v4",
+                "file": "/tmp/session-v45-stdin.jsonl",
+                "bucket": "execution",
+                "prompt_index": 1,
+                "command_index": 2,
+                "function_name": "write_stdin",
+                "stdin_preview": "",
+                "stdin_hash": "",
+                "prompt_preview": "Implement the dashboard fix and verify the app builds",
+                "allocated_total_cost_usd": 0.1,
+            },
+        ]
+
+        enriched, _review = report.build_command_attribution_v4_5_rows(rows)
+
+        self.assertEqual(enriched[0]["work_motivation"], "implementation")
+        self.assertEqual(enriched[0]["agent_tool_intention"], "full_validation")
+        self.assertEqual(enriched[1]["stdin_input_kind"], "wait_for_process")
+        self.assertEqual(enriched[1]["work_motivation"], "implementation")
+        self.assertEqual(enriched[1]["agent_tool_intention"], "full_validation")
+        self.assertEqual(enriched[1]["agent_tool_intention_source"], "terminal_context_wait")
+        self.assertEqual(enriched[1]["terminal_context_parent_command_preview"], "pnpm --filter @invoker/app build")
+        self.assertEqual(enriched[1]["terminal_context_parent_work_motivation"], "implementation")
+        self.assertEqual(enriched[1]["terminal_context_parent_agent_tool_intention"], "full_validation")
+
+    def test_v4_5_write_stdin_interrupt_keeps_work_motivation_but_process_control_intention(self) -> None:
+        rows = [
+            {
+                "schema_version": "usage_command_attribution_v4",
+                "file": "/tmp/session-v45-stdin-ctrl.jsonl",
+                "bucket": "execution",
+                "prompt_index": 1,
+                "command_index": 1,
+                "function_name": "exec_command",
+                "shell_verb": "pnpm",
+                "command_preview": "pnpm dev",
+                "command_hash": "dev-hash",
+                "prompt_preview": "Implement the dashboard fix and inspect it locally",
+                "allocated_total_cost_usd": 0.1,
+            },
+            {
+                "schema_version": "usage_command_attribution_v4",
+                "file": "/tmp/session-v45-stdin-ctrl.jsonl",
+                "bucket": "execution",
+                "prompt_index": 1,
+                "command_index": 2,
+                "function_name": "write_stdin",
+                "stdin_preview": "\\u0003",
+                "stdin_hash": "ctrl-c",
+                "prompt_preview": "Implement the dashboard fix and inspect it locally",
+                "allocated_total_cost_usd": 0.1,
+            },
+        ]
+
+        enriched, _review = report.build_command_attribution_v4_5_rows(rows)
+
+        self.assertEqual(enriched[1]["stdin_input_kind"], "control_interrupt")
+        self.assertEqual(enriched[1]["work_motivation"], "implementation")
+        self.assertEqual(enriched[1]["agent_tool_intention"], "process_control")
+        self.assertEqual(enriched[1]["agent_tool_intention_source"], "terminal_control_input")
+
+    def test_v4_5_playwright_test_does_not_become_branch_stack_from_prompt(self) -> None:
+        rows = [
+            {
+                "schema_version": "usage_command_attribution_v4",
+                "file": "/tmp/session-v45-playwright.jsonl",
+                "bucket": "execution",
+                "prompt_index": 1,
+                "command_index": 1,
+                "function_name": "exec_command",
+                "shell_verb": "pnpm",
+                "command_preview": "pnpm --filter @invoker/app exec playwright test e2e/startup.spec.ts",
+                "target": "@invoker/app",
+                "prompt_preview": "PR failed CI. Make sure you are rebased on upstream/master and fix the visual proof test.",
+                "allocated_total_cost_usd": 0.1,
+            }
+        ]
+
+        enriched, _review = report.build_command_attribution_v4_5_rows(rows)
+
+        self.assertEqual(enriched[0]["work_motivation"], "visual_proof")
+        self.assertEqual(enriched[0]["agent_tool_intention"], "test_execution")
+        self.assertNotEqual(enriched[0]["agent_tool_intention"], "branch_stack_orchestration")
+
+    def test_dashboard_payloads_reference_v4_5_and_renamed_motivation_fields(self) -> None:
+        payload = json.dumps(dashboard_migration.canonical_reports())
+
+        self.assertIn("usage_command_attribution_v4_5", payload)
+        self.assertIn("classifier_v4_5", payload)
+        self.assertIn("request_origin", payload)
+        self.assertIn("work_motivation", payload)
+        self.assertNotIn("usage_command_attribution_v4_4", payload)
+        self.assertNotIn("classifier_v4_4", payload)
+        self.assertNotIn("prompt_task_kind", payload)
+
+    def test_dashboard_payloads_include_terminal_breakdown_reports(self) -> None:
+        reports = {report["name"]: report for report in dashboard_migration.canonical_reports()}
+
+        self.assertIn("v4.5 Exec Command Breakdown", reports)
+        self.assertIn("v4.5 Write Stdin Breakdown", reports)
+
+        exec_report = reports["v4.5 Exec Command Breakdown"]
+        self.assertEqual(exec_report["board"], "delegated_intention")
+        exec_params = json.loads(exec_report["params"])
+        self.assertEqual(
+            [group["propertyName"] for group in exec_params["sections"]["group"]],
+            ["work_motivation", "agent_tool_intention", "shell_verb"],
+        )
+        exec_filters = {
+            filter_item["value"]: filter_item["filterValue"]
+            for filter_item in exec_params["sections"]["filter"]
+        }
+        self.assertEqual(exec_filters["schema_version"], ["usage_command_attribution_v4_5"])
+        self.assertEqual(exec_filters["classification_revision"], ["classifier_v4_5"])
+        self.assertEqual(exec_filters["function_name"], ["exec_command"])
+
+        stdin_report = reports["v4.5 Write Stdin Breakdown"]
+        self.assertEqual(stdin_report["board"], "delegated_intention")
+        stdin_params = json.loads(stdin_report["params"])
+        self.assertEqual(
+            [group["propertyName"] for group in stdin_params["sections"]["group"]],
+            [
+                "stdin_input_kind",
+                "work_motivation",
+                "agent_tool_intention",
+                "terminal_context_parent_shell_verb",
+            ],
+        )
+        stdin_filters = {
+            filter_item["value"]: filter_item["filterValue"]
+            for filter_item in stdin_params["sections"]["filter"]
+        }
+        self.assertEqual(stdin_filters["schema_version"], ["usage_command_attribution_v4_5"])
+        self.assertEqual(stdin_filters["classification_revision"], ["classifier_v4_5"])
+        self.assertEqual(stdin_filters["function_name"], ["write_stdin"])
+
+    def test_command_cost_component_events_reconcile_allocated_cost(self) -> None:
+        pricing = {
+            "gpt-5.5": {
+                "input_cost_per_token": 0.01,
+                "cache_read_input_token_cost": 0.001,
+                "cache_creation_input_token_cost": 0.002,
+                "output_cost_per_token": 0.03,
+            }
+        }
+        row = {
+            "schema_version": "usage_command_attribution_v4_5",
+            "classification_revision": "classifier_v4_5",
+            "model": "codex",
+            "provider": "openai",
+            "billable_model": "gpt-5.5",
+            "file": "/tmp/session.jsonl",
+            "session_date": "2026-05-29",
+            "bucket": "execution",
+            "prompt_index": "1",
+            "command_index": "2",
+            "command_hash": "abc123",
+            "function_name": "exec_command",
+            "shell_verb": "pytest",
+            "work_motivation": "failure_diagnosis",
+            "agent_tool_intention": "failure_diagnosis_inspection",
+            "allocated_input_tokens": "100",
+            "allocated_cache_read_tokens": "40",
+            "allocated_cache_creation_tokens": "10",
+            "allocated_output_tokens": "20",
+            "allocated_total_cost_usd": "2.0",
+            "cost_is_estimated": "true",
+        }
+
+        components = exporter.command_component_values(row, pricing)
+
+        self.assertEqual(
+            [component["token_component"] for component in components],
+            ["fresh_input", "cache_read_input", "cache_creation_input", "output"],
+        )
+        self.assertEqual(sum(float(component["allocated_component_tokens"]) for component in components), 120.0)
+        self.assertAlmostEqual(sum(float(component["allocated_component_cost_usd"]) for component in components), 2.0)
+
+    def test_prompt_phase_segment_events_are_deterministic_and_aggregate_cost(self) -> None:
+        rows = exporter.enrich_v4_5_phase_fields(
+            [
+                {
+                    "schema_version": "usage_command_attribution_v4_5",
+                    "classification_revision": "classifier_v4_5",
+                    "file": "/tmp/session-phase-segment.jsonl",
+                    "session_date": "2026-05-29",
+                    "model": "codex",
+                    "bucket": "execution",
+                    "prompt_index": "1",
+                    "command_index": "1",
+                    "function_name": "apply_patch",
+                    "command_preview": "apply_patch",
+                    "command_hash": "edit",
+                    "agent_tool_intention": "implementation",
+                    "prompt_preview": "Implement and test the change",
+                    "allocated_total_cost_usd": "1.25",
+                },
+                {
+                    "schema_version": "usage_command_attribution_v4_5",
+                    "classification_revision": "classifier_v4_5",
+                    "file": "/tmp/session-phase-segment.jsonl",
+                    "session_date": "2026-05-29",
+                    "model": "codex",
+                    "bucket": "execution",
+                    "prompt_index": "1",
+                    "command_index": "2",
+                    "function_name": "exec_command",
+                    "shell_verb": "pytest",
+                    "command_preview": "pytest tests/test_api.py",
+                    "command_hash": "test",
+                    "agent_tool_intention": "test_execution",
+                    "prompt_preview": "Implement and test the change",
+                    "allocated_total_cost_usd": "0.75",
+                },
+            ],
+            "2026-05-29",
+        )
+
+        events = exporter.build_prompt_phase_segment_events(rows, "token", "distinct", "2026-05-29")
+
+        self.assertEqual(len(events), 2)
+        first = events[0].properties
+        self.assertEqual(first["schema_version"], exporter.PHASE_SCHEMA_VERSION)
+        self.assertEqual(first["phase_classification_revision"], exporter.PHASE_CLASSIFICATION_REVISION)
+        self.assertEqual(first["session_id"], "session-phase-segment")
+        self.assertEqual(first["prompt_index"], 1)
+        self.assertEqual(first["prompt_window_phase_index"], 0)
+        self.assertEqual(first["phase_start_command_index"], 1)
+        self.assertEqual(first["phase_end_command_index"], 1)
+        self.assertAlmostEqual(sum(event.properties["segment_cost_usd"] for event in events), 2.0)
+        expected_key = (
+            f"{exporter.PROMPT_PHASE_SEGMENT_IMPORT_REVISION}:"
+            "session-phase-segment:1:0:2026-05-29"
+        )
+        self.assertEqual(
+            events[0].insert_id,
+            exporter.insert_id_v4("2026-05-29", "usage_prompt_phase_segment", expected_key),
+        )
+
+    def test_command_cost_component_events_include_phase_category_dimensions(self) -> None:
+        original_load_pricing_table = exporter.load_pricing_table
+        exporter.load_pricing_table = lambda _source: {
+            "gpt-5.5": {
+                "input_cost_per_token": 0.01,
+                "cache_read_input_token_cost": 0.001,
+                "cache_creation_input_token_cost": 0.002,
+                "output_cost_per_token": 0.03,
+            }
+        }
+        try:
+            events = exporter.build_command_cost_component_events(
+                [
+                    {
+                        "schema_version": "usage_command_attribution_v4_5",
+                        "classification_revision": "classifier_v4_5",
+                        "model": "codex",
+                        "provider": "openai",
+                        "billable_model": "gpt-5.5",
+                        "file": "/tmp/session.jsonl",
+                        "session_date": "2026-05-29",
+                        "bucket": "execution",
+                        "prompt_index": "1",
+                        "command_index": "2",
+                        "command_hash": "abc123",
+                        "function_name": "exec_command",
+                        "shell_verb": "pytest",
+                        "work_motivation": "failure_diagnosis",
+                        "agent_tool_intention": "failure_diagnosis_inspection",
+                        "allocated_input_tokens": "100",
+                        "allocated_cache_read_tokens": "40",
+                        "allocated_cache_creation_tokens": "10",
+                        "allocated_output_tokens": "20",
+                        "allocated_total_cost_usd": "2.0",
+                        "cost_is_estimated": "true",
+                    }
+                ],
+                "token",
+                "distinct",
+                "2026-05-29",
+            )
+        finally:
+            exporter.load_pricing_table = original_load_pricing_table
+
+        self.assertEqual(len(events), 16)
+        self.assertEqual({event.family for event in events}, {"usage_command_cost_component"})
+        self.assertEqual(
+            {event.properties["category_dimension"] for event in events},
+            {"agent_tool_intention", "work_motivation", "workflow_phase", "efficiency_label"},
+        )
+        self.assertEqual(
+            {event.properties["token_component"] for event in events},
+            {"fresh_input", "cache_read_input", "cache_creation_input", "output"},
+        )
+        by_dimension: dict[str, float] = {}
+        for event in events:
+            dimension = event.properties["category_dimension"]
+            by_dimension[dimension] = by_dimension.get(dimension, 0.0) + event.properties["allocated_component_cost_usd"]
+        self.assertAlmostEqual(by_dimension["agent_tool_intention"], 2.0)
+        self.assertAlmostEqual(by_dimension["work_motivation"], 2.0)
+        self.assertAlmostEqual(by_dimension["workflow_phase"], 2.0)
+        self.assertAlmostEqual(by_dimension["efficiency_label"], 2.0)
+
+    def test_dashboard_payloads_include_token_cost_composition_report(self) -> None:
+        reports = {report["name"]: report for report in dashboard_migration.canonical_reports()}
+
+        self.assertIn("v4.5 Token Cost Composition by Category", reports)
+        report_payload = reports["v4.5 Token Cost Composition by Category"]
+        self.assertEqual(report_payload["board"], "delegated_intention")
+        params = json.loads(report_payload["params"])
+        self.assertEqual(params["displayOptions"]["chartType"], "bar")
+        self.assertEqual(
+            [group["propertyName"] for group in params["sections"]["group"]],
+            ["category_dimension", "category_value", "token_component"],
+        )
+        filters = {
+            filter_item["value"]: filter_item["filterValue"]
+            for filter_item in params["sections"]["filter"]
+        }
+        self.assertEqual(filters["schema_version"], ["usage_command_attribution_v4_5"])
+        self.assertEqual(filters["classification_revision"], ["classifier_v4_5"])
+        self.assertEqual(filters["phase_classification_revision"], ["phase_classifier_v1"])
+
+    def test_dashboard_payloads_include_phase_reports(self) -> None:
+        reports = {report["name"]: report for report in dashboard_migration.canonical_reports()}
+
+        for name in (
+            "v4.5 Cost by Workflow Phase",
+            "v4.5 Workflow Phase x Efficiency",
+            "v4.5 Phase Drilldown",
+            "v4.5 Prompt Phase Segments",
+        ):
+            self.assertIn(name, reports)
+            self.assertEqual(reports[name]["board"], "delegated_intention")
+
+        phase_params = json.loads(reports["v4.5 Phase Drilldown"]["params"])
+        self.assertEqual(
+            [group["propertyName"] for group in phase_params["sections"]["group"]],
+            ["workflow_phase", "efficiency_label", "work_motivation", "agent_tool_intention", "function_name"],
+        )
+        phase_filters = {
+            filter_item["value"]: filter_item["filterValue"]
+            for filter_item in phase_params["sections"]["filter"]
+        }
+        self.assertEqual(phase_filters["phase_classification_revision"], ["phase_classifier_v1"])
+
+        segment_params = json.loads(reports["v4.5 Prompt Phase Segments"]["params"])
+        self.assertEqual(segment_params["sections"]["show"][0]["behavior"]["name"], "usage_prompt_phase_segment")
+        self.assertEqual(
+            [group["propertyName"] for group in segment_params["sections"]["group"]],
+            ["workflow_phase", "efficiency_label", "session_id", "prompt_index"],
+        )
 
     def test_v4_2_agent_tools_remain_remote_orchestration(self) -> None:
         row = {
