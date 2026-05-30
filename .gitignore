@@ -9,6 +9,7 @@ venv/
 
 # Local secrets/runtime state
 config/nightly-usage.env
+config/warehouse-analytics.env
 reports/
 cache-hit-audit-report.json
 

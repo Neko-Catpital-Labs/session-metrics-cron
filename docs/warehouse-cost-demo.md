@@ -8,7 +8,15 @@ Source data:
 reports/usage-command-attribution-v4_5.csv
 ```
 
-Local export:
+One-command full run:
+
+```bash
+bash scripts/run-warehouse-analytics.sh
+```
+
+That wrapper validates the local export, loads BigQuery, loads ClickHouse, and creates the matching Metabase dashboards. See `docs/run-your-own-analytics.md` for the full setup.
+
+Local export only:
 
 ```bash
 python3 scripts/warehouse_cost_demo.py validate-local --expect-full-row-count

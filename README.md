@@ -62,6 +62,7 @@ bash scripts/nightly_usage_pipeline.sh --dry-run --env-file config/nightly-usage
 - `docs/source-onboarding.md`
 - `docs/usage-metrics-nightly.md`
 - `docs/operations-backfill.md`
+- `docs/run-your-own-analytics.md`
 - `docs/warehouse-cost-demo.md`
 - `docs/reports/planning-vs-execution-tooling.md`
 - `docs/migration-from-invoker.md`
