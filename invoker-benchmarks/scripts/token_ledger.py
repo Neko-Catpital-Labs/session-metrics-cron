@@ -390,6 +390,67 @@ def rows_from_object(
     return out
 
 
+def rows_from_message_usage_group(
+    objects: list[tuple[dict[str, Any], str]],
+    *,
+    source_path: Path,
+    scenario: str,
+    mode: str,
+    benchmark_model: str,
+    task_ids: list[str],
+    pricing_table: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not objects:
+        return []
+    combined_raw = "\n".join(raw_text for _, raw_text in objects)
+    representative = objects[-1][0]
+    usage_payload = None
+    model_name = ""
+    observed = None
+    for obj, _ in objects:
+        message = obj.get("message")
+        if not isinstance(message, dict):
+            continue
+        if usage_payload is None and isinstance(message.get("usage"), dict):
+            usage_payload = message["usage"]
+        if not model_name:
+            model_name = nested_value(message, {"model", "modelName"})
+        for cost_key in ("estimated_cost_usd", "costUSD", "total_cost_usd", "totalCost"):
+            if observed is None and isinstance(obj.get(cost_key), (int, float)):
+                observed = number(obj[cost_key])
+            if observed is None and isinstance(message.get(cost_key), (int, float)):
+                observed = number(message[cost_key])
+    if not isinstance(usage_payload, dict):
+        return []
+    tokens = normalize_usage(usage_payload)
+    if not any(tokens[field] for field in TOKEN_FIELDS):
+        return []
+    source_text = f"{source_path} {combined_raw}"
+    task_id = nested_value(representative, {"task_id", "taskId"}) or find_task_id(source_text, task_ids)
+    session_id = (
+        nested_value(representative, {"agent_session_id", "agentSessionId", "session_id", "sessionId"})
+        or source_path.stem
+    )
+    provider = provider_for_session_family(benchmark_model) or benchmark_model
+    phase = phase_for(task_id, combined_raw, str(source_path), mode)
+    return [
+        make_row(
+            scenario=scenario,
+            phase=phase,
+            task_id=task_id,
+            agent_session_id=session_id,
+            provider=provider,
+            model=model_name,
+            tokens=tokens,
+            observed_cost=observed,
+            pricing_table=pricing_table,
+            source="session_message_usage",
+            source_path=str(source_path),
+            benchmark_model=benchmark_model,
+        )
+    ]
+
+
 def collect_rows(args: argparse.Namespace, plan: dict[str, Any], pricing_table: dict[str, Any]) -> list[dict[str, Any]]:
     scenario = scenario_key(Path(args.conversation_file), args.mode, args.model)
     rows: list[dict[str, Any]] = []
@@ -401,6 +462,7 @@ def collect_rows(args: argparse.Namespace, plan: dict[str, Any], pricing_table: 
         except Exception:
             continue
         latest_codex_by_session: dict[str, dict[str, Any]] = {}
+        message_usage_groups: dict[str, list[tuple[dict[str, Any], str]]] = {}
         immediate: list[dict[str, Any]] = []
         for line in lines:
             stripped = line.strip()
@@ -409,6 +471,10 @@ def collect_rows(args: argparse.Namespace, plan: dict[str, Any], pricing_table: 
             try:
                 obj = json.loads(stripped)
             except Exception:
+                continue
+            message = obj.get("message")
+            if isinstance(message, dict) and isinstance(message.get("usage"), dict) and message.get("id"):
+                message_usage_groups.setdefault(str(message["id"]), []).append((obj, stripped))
                 continue
             row_group = rows_from_object(
                 obj,
@@ -425,6 +491,18 @@ def collect_rows(args: argparse.Namespace, plan: dict[str, Any], pricing_table: 
                     latest_codex_by_session[row["agent_session_id"]] = row
                 else:
                     immediate.append(row)
+        for group in message_usage_groups.values():
+            immediate.extend(
+                rows_from_message_usage_group(
+                    group,
+                    source_path=path,
+                    scenario=scenario,
+                    mode=args.mode,
+                    benchmark_model=args.model,
+                    task_ids=plan["task_ids"],
+                    pricing_table=pricing_table,
+                )
+            )
         rows.extend(immediate)
         rows.extend(latest_codex_by_session.values())
 

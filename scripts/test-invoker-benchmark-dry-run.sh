@@ -312,6 +312,57 @@ assert usage["dependent_autofix_task_ids"] == ["prompt-b"], usage
 assert usage["cost_breakdown_complete"] is True
 PY
 
+claude_ledger_fixture="$TMP_ROOT/claude-ledger-fixture"
+mkdir -p "$claude_ledger_fixture/raw/.claude/projects/fixture"
+cat > "$claude_ledger_fixture/generated-plan.yaml" <<'EOF'
+name: claude ledger fixture
+repoUrl: https://example.test/repo.git
+mergeMode: manual
+tasks:
+  - id: verify-experiment-brief-thresholds-and-alternatives
+    title: Verify experiment brief
+    command: echo verify
+EOF
+cat > "$claude_ledger_fixture/raw/.claude/projects/fixture/session.jsonl" <<'EOF'
+{"type":"assistant","sessionId":"claude-session","message":{"id":"msg_planning","model":"claude-test","role":"assistant","content":[{"type":"text","text":"planning only"}],"usage":{"input_tokens":1,"cache_read_input_tokens":100,"cache_creation_input_tokens":10,"output_tokens":20}},"costUSD":0.11}
+{"type":"assistant","sessionId":"claude-session","message":{"id":"msg_split","model":"claude-test","role":"assistant","content":[{"type":"thinking","thinking":"prepare fix"}],"usage":{"input_tokens":1,"cache_read_input_tokens":200,"cache_creation_input_tokens":20,"output_tokens":30}},"costUSD":0.22}
+{"type":"assistant","sessionId":"claude-session","message":{"id":"msg_split","model":"claude-test","role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"content":"autofix retry verify-experiment-brief-thresholds-and-alternatives"}}],"usage":{"input_tokens":1,"cache_read_input_tokens":200,"cache_creation_input_tokens":20,"output_tokens":30}},"costUSD":0.22}
+EOF
+touch "$claude_ledger_fixture/stdout.log"
+cat > "$claude_ledger_fixture/pricing.json" <<'EOF'
+{}
+EOF
+PYTHONPATH="$BENCHMARK_SOURCE_ROOT/scripts" python3 "$TOKEN_LEDGER_SCRIPT" \
+  --raw-sessions-dir "$claude_ledger_fixture/raw" \
+  --stdout-log "$claude_ledger_fixture/stdout.log" \
+  --generated-plan "$claude_ledger_fixture/generated-plan.yaml" \
+  --token-usage-out "$claude_ledger_fixture/token-usage.json" \
+  --ledger-out "$claude_ledger_fixture/token-ledger.jsonl" \
+  --cost-calculation-out "$claude_ledger_fixture/cost-calculation.json" \
+  --model claude \
+  --batch-id claude-ledger-batch \
+  --run-id session-02__claude__invoker_auto_fix \
+  --conversation-file "$claude_ledger_fixture/session-02.jsonl" \
+  --mode invoker_auto_fix \
+  --pricing-source "$claude_ledger_fixture/pricing.json"
+python3 - "$claude_ledger_fixture/token-ledger.jsonl" "$claude_ledger_fixture/token-usage.json" <<'PY'
+import json
+import sys
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+usage = json.load(open(sys.argv[2]))
+assert len(rows) == 2, rows
+assert [row["phase"] for row in rows] == ["invoker_autofix_retry", "planning"], rows
+autofix = next(row for row in rows if row["phase"] == "invoker_autofix_retry")
+assert autofix["task_id"] == "verify-experiment-brief-thresholds-and-alternatives", autofix
+assert autofix["estimated_cost_usd"] == 0.22, autofix
+assert usage["planning_cost_usd"] == 0.11, usage
+assert usage["autofix_retry_cost_usd"] == 0.22, usage
+assert usage["estimated_cost_usd"] == 0.33, usage
+assert usage["model_call_count"] == 2, usage
+assert usage["autofix_model_call_count"] == 1, usage
+assert usage["dependent_autofix_task_ids"] == ["verify-experiment-brief-thresholds-and-alternatives"], usage
+PY
+
 fake_batch="$TMP_ROOT/runs/fake-batch"
 fake_run_id="019e1b94-1c63-7e02-a60f-febd3e3f2ff4__codex__baseline_direct"
 mkdir -p "$fake_batch/jobs/$fake_run_id"
