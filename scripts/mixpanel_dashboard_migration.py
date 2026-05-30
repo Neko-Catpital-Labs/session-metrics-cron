@@ -494,17 +494,17 @@ def canonical_reports() -> list[dict[str, Any]]:
             {
                 "name": "v4.5 Cost by Tool Intention",
                 "board": "delegated_intention",
-                "description": "Estimated command cost by v4.5 agent_tool_intention with execution mode, delegation action, and function drilldown.",
+                "description": "Estimated command cost by v4.5 tool intention, phase, efficiency, and request origin.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
                     groups=[
                         property_ref("agent_tool_intention"),
-                        property_ref("tool_execution_mode"),
-                        property_ref("delegated_agent_action"),
-                        property_ref("function_name"),
+                        property_ref("workflow_phase"),
+                        property_ref("efficiency_label"),
+                        property_ref("request_origin"),
                     ],
-                    filters=command_filter_v4_5,
+                    filters=command_filter_v4_5_phase,
                 ),
             },
             {
@@ -552,16 +552,20 @@ def canonical_reports() -> list[dict[str, Any]]:
             {
                 "name": "v4.5 Tool Intention Drilldown",
                 "board": "delegated_intention",
-                "description": "Agent_tool_intention work by execution mode and delegation action. Change the agent_tool_intention report filter to inspect one intention.",
+                "description": "Agent_tool_intention work by phase, efficiency, request origin, execution mode, and delegated action.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
                     groups=[
+                        property_ref("agent_tool_intention"),
+                        property_ref("workflow_phase"),
+                        property_ref("efficiency_label"),
+                        property_ref("request_origin"),
                         property_ref("tool_execution_mode"),
                         property_ref("delegated_agent_action"),
                         property_ref("function_name"),
                     ],
-                    filters=[*command_filter_v4_5, filter_ref("agent_tool_intention", "branch_stack_orchestration")],
+                    filters=command_filter_v4_5_phase,
                 ),
             },
             {
@@ -583,32 +587,36 @@ def canonical_reports() -> list[dict[str, Any]]:
             {
                 "name": "v4.5 Exec Command Breakdown",
                 "board": "delegated_intention",
-                "description": "Terminal exec_command cost by work motivation, tool intention, and shell verb.",
+                "description": "Terminal exec_command cost by tool intention, phase, efficiency, request origin, and shell verb.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
                     groups=[
-                        property_ref("work_motivation"),
                         property_ref("agent_tool_intention"),
+                        property_ref("workflow_phase"),
+                        property_ref("efficiency_label"),
+                        property_ref("request_origin"),
                         property_ref("shell_verb"),
                     ],
-                    filters=[*command_filter_v4_5, filter_ref("function_name", "exec_command")],
+                    filters=[*command_filter_v4_5_phase, filter_ref("function_name", "exec_command")],
                 ),
             },
             {
                 "name": "v4.5 Write Stdin Breakdown",
                 "board": "delegated_intention",
-                "description": "Terminal write_stdin cost by input kind, inherited work context, and parent shell verb.",
+                "description": "Terminal write_stdin cost by tool intention, phase, efficiency, request origin, input kind, and parent shell verb.",
                 "params": insight_params(
                     event_name="usage_command_attribution",
                     metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
                     groups=[
-                        property_ref("stdin_input_kind"),
-                        property_ref("work_motivation"),
                         property_ref("agent_tool_intention"),
+                        property_ref("workflow_phase"),
+                        property_ref("efficiency_label"),
+                        property_ref("request_origin"),
+                        property_ref("stdin_input_kind"),
                         property_ref("terminal_context_parent_shell_verb"),
                     ],
-                    filters=[*command_filter_v4_5, filter_ref("function_name", "write_stdin")],
+                    filters=[*command_filter_v4_5_phase, filter_ref("function_name", "write_stdin")],
                 ),
             },
         ]

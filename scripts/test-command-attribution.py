@@ -1175,7 +1175,7 @@ class CommandAttributionTests(unittest.TestCase):
         exec_params = json.loads(exec_report["params"])
         self.assertEqual(
             [group["propertyName"] for group in exec_params["sections"]["group"]],
-            ["work_motivation", "agent_tool_intention", "shell_verb"],
+            ["agent_tool_intention", "workflow_phase", "efficiency_label", "request_origin", "shell_verb"],
         )
         exec_filters = {
             filter_item["value"]: filter_item["filterValue"]
@@ -1183,6 +1183,7 @@ class CommandAttributionTests(unittest.TestCase):
         }
         self.assertEqual(exec_filters["schema_version"], ["usage_command_attribution_v4_5"])
         self.assertEqual(exec_filters["classification_revision"], ["classifier_v4_5"])
+        self.assertEqual(exec_filters["phase_classification_revision"], ["phase_classifier_v1"])
         self.assertEqual(exec_filters["function_name"], ["exec_command"])
 
         stdin_report = reports["v4.5 Write Stdin Breakdown"]
@@ -1191,9 +1192,11 @@ class CommandAttributionTests(unittest.TestCase):
         self.assertEqual(
             [group["propertyName"] for group in stdin_params["sections"]["group"]],
             [
-                "stdin_input_kind",
-                "work_motivation",
                 "agent_tool_intention",
+                "workflow_phase",
+                "efficiency_label",
+                "request_origin",
+                "stdin_input_kind",
                 "terminal_context_parent_shell_verb",
             ],
         )
@@ -1203,6 +1206,7 @@ class CommandAttributionTests(unittest.TestCase):
         }
         self.assertEqual(stdin_filters["schema_version"], ["usage_command_attribution_v4_5"])
         self.assertEqual(stdin_filters["classification_revision"], ["classifier_v4_5"])
+        self.assertEqual(stdin_filters["phase_classification_revision"], ["phase_classifier_v1"])
         self.assertEqual(stdin_filters["function_name"], ["write_stdin"])
 
     def test_command_cost_component_events_reconcile_allocated_cost(self) -> None:
