@@ -25,12 +25,12 @@ DELEGATED_INTENTION_BOARD_TITLE = "Usage Why / v4.5 Delegated Intention"
 DELEGATED_INTENTION_VISIBLE_REPORT_IDS = {
     "v4.5 Cost by Tool Intention": 90319562,
     "v4.5 Cost by Execution Mode": 90319563,
+    "v4.5 Cost by Efficiency Label": 90413443,
+    "v4.5 Cost by Workflow Phase": 90413444,
     "v4.5 Token Cost Composition by Category": 90413710,
     "v4.5 Delegated Agent Intentions": 90319565,
     "v4.5 Tool Intention Drilldown": 90319566,
     "v4.5 Review Queue": 90413631,
-    "v4.5 Exec Command Breakdown": 90413443,
-    "v4.5 Write Stdin Breakdown": 90413444,
 }
 DEPRECATED_PREFIX = "[Deprecated] "
 OLD_TAXONOMY_MARKERS = ("request_subpattern", "request_cache_sources_v3")
