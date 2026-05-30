@@ -1,4 +1,4 @@
-# Setup
+# Session Metrics Setup
 
 ## Prerequisites
 

@@ -1,6 +1,6 @@
-# Warehouse Cost Analytics Demo
+# Publishing Analytics Warehouse Demo
 
-This demo exports the cleaned v4.5 command attribution report into a compact one-row-per-command table, then can load the same table into BigQuery and ClickHouse for matching Metabase dashboards.
+The `session-metrics` publishing analytics demo exports the cleaned v4.5 command attribution report into a compact one-row-per-command table, then can load the same table into BigQuery and ClickHouse for matching Metabase dashboards.
 
 Source data:
 

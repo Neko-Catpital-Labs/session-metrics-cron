@@ -1,6 +1,6 @@
-# Nightly Usage Metrics (Mixpanel)
+# Session Metrics Nightly Pipeline
 
-This repository runs a nightly pipeline that:
+`session-metrics` runs a nightly pipeline that:
 
 1. audits cache-hit usage across local + SSH session sources,
 2. builds planning-vs-execution reports,

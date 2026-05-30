@@ -1,10 +1,16 @@
-# session-metrics-cron
+# session-metrics
 
-Standalone cron pipeline for session analytics and Mixpanel export.
+Session analytics for nightly usage metrics, warehouse publishing, and Invoker benchmark runs.
 
-This repository collects Codex/Claude session usage across local and SSH hosts, computes cache-hit + planning-vs-execution reports, and exports replay-safe events to Mixpanel.
+This repository collects Codex/Claude session usage across local and SSH hosts, computes cache-hit and planning-vs-execution reports, exports replay-safe events to Mixpanel, and publishes normalized command-cost analytics into warehouse-backed Metabase dashboards.
 
-## What this runs
+## Repo Map
+
+- Nightly pipeline: collects session usage, computes cache and attribution reports, and exports Mixpanel events through `scripts/nightly_usage_pipeline.sh`.
+- Publishing analytics: exports the normalized warehouse table, loads BigQuery and ClickHouse, and creates Metabase dashboards through `scripts/run-warehouse-analytics.sh`.
+- Benchmark harness: runs the Invoker nightly model/mode benchmark tooling from `invoker-benchmarks/`.
+
+## Nightly Pipeline
 
 1. `scripts/cache_hit_audit.py`
 2. `scripts/planning_vs_execution_report.py`
@@ -14,8 +20,13 @@ Orchestrated by:
 
 - `scripts/nightly_usage_pipeline.sh`
 
-This repo also includes a separate installable Invoker benchmark harness under
-`invoker-benchmarks/` for the nightly 48-session model/mode benchmark launcher.
+## Publishing Analytics
+
+The warehouse publishing surface is orchestrated by:
+
+- `scripts/run-warehouse-analytics.sh`
+
+It validates the local command-cost export, loads BigQuery, loads ClickHouse, and creates matching Metabase dashboards.
 
 ## Quickstart
 
@@ -45,6 +56,7 @@ bash scripts/nightly_usage_pipeline.sh --dry-run --env-file config/nightly-usage
 - `make report`
 - `make export-dry-run`
 - `make nightly-dry-run`
+- `make warehouse-demo-validate`
 - `make test`
 - `make benchmark-dry-run`
 
@@ -59,6 +71,7 @@ bash scripts/nightly_usage_pipeline.sh --dry-run --env-file config/nightly-usage
 ## Documentation
 
 - `docs/setup.md`
+- `docs/architecture.md`
 - `docs/source-onboarding.md`
 - `docs/usage-metrics-nightly.md`
 - `docs/operations-backfill.md`
@@ -77,6 +90,10 @@ bash scripts/nightly_usage_pipeline.sh --date 2026-05-25 --ignore-local-state --
 ```
 
 Mixpanel dedupe is driven by stable `$insert_id` values per logical row.
+
+## Repository Rename Note
+
+If the GitHub repository is renamed to `session-metrics`, GitHub should preserve redirects. After that rename, update local remotes with the new repository URL; script paths, runtime state paths, launchd identifiers, and env var names intentionally remain stable in this pass.
 
 ## Provenance
 

@@ -1,4 +1,4 @@
-# Invoker Benchmark Nightly Launcher
+# Invoker Benchmark Harness
 
 The benchmark harness lives in `invoker-benchmarks/` and is intended to be
 installed on the coordinator at:

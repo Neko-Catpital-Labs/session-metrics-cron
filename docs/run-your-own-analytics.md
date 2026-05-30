@@ -1,4 +1,4 @@
-# Run Your Own Analytics
+# Run Your Own Publishing Analytics
 
 The shortest path is one shell script:
 
