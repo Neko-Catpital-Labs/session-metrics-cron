@@ -437,6 +437,17 @@ def canonical_reports() -> list[dict[str, Any]]:
                 ),
             },
             {
+                "name": "v4.5 Cost by Efficiency Label",
+                "board": "delegated_intention",
+                "description": "Estimated v4.5 command cost by prompt-window efficiency label.",
+                "params": insight_params(
+                    event_name="usage_command_attribution",
+                    metrics=[metric("usage_command_attribution", "total", "allocated_total_cost_usd")],
+                    groups=[property_ref("efficiency_label")],
+                    filters=command_filter_v4_5_phase,
+                ),
+            },
+            {
                 "name": "v4.5 Cost by Workflow Phase",
                 "board": "delegated_intention",
                 "description": "Estimated v4.5 command cost by prompt-window workflow phase.",

@@ -1399,6 +1399,7 @@ class CommandAttributionTests(unittest.TestCase):
         reports = {report["name"]: report for report in dashboard_migration.canonical_reports()}
 
         for name in (
+            "v4.5 Cost by Efficiency Label",
             "v4.5 Cost by Workflow Phase",
             "v4.5 Workflow Phase x Efficiency",
             "v4.5 Phase Drilldown",
@@ -1407,6 +1408,16 @@ class CommandAttributionTests(unittest.TestCase):
             self.assertIn(name, reports)
             self.assertEqual(reports[name]["board"], "delegated_intention")
 
+        efficiency_params = json.loads(reports["v4.5 Cost by Efficiency Label"]["params"])
+        self.assertEqual(
+            [group["propertyName"] for group in efficiency_params["sections"]["group"]],
+            ["efficiency_label"],
+        )
+        workflow_params = json.loads(reports["v4.5 Cost by Workflow Phase"]["params"])
+        self.assertEqual(
+            [group["propertyName"] for group in workflow_params["sections"]["group"]],
+            ["workflow_phase"],
+        )
         phase_params = json.loads(reports["v4.5 Phase Drilldown"]["params"])
         self.assertEqual(
             [group["propertyName"] for group in phase_params["sections"]["group"]],
