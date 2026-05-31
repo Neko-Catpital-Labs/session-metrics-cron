@@ -518,6 +518,60 @@ cleanup_invoker_state_everywhere() {
 
 cleanup_invoker_state_everywhere
 
+INVOKER_SIZE_SAMPLES="$BATCH_DIR/invoker-size-samples.tsv"
+init_invoker_size_samples() {
+  printf 'sampled_at\tphase\trun_id\tdispatch_worker\ttarget_name\ttarget_host\ttarget_port\thostname\tinvoker_home\texists\tsize_kib\tsize_human\tdf_filesystem\tdf_size_kib\tdf_used_kib\tdf_avail_kib\tdf_use_pct\n' > "$INVOKER_SIZE_SAMPLES"
+}
+
+append_invoker_size_sample() {
+  local phase="$1"
+  local run_id="$2"
+  local dispatch_worker="$3"
+  local target_name="$4"
+  local target_host="$5"
+  local target_port="$6"
+  local sample="$7"
+  local sampled_at
+  sampled_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  while IFS= read -r sample_line; do
+    [[ -n "$sample_line" ]] || continue
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$sampled_at" "$phase" "$run_id" "$dispatch_worker" "$target_name" "$target_host" "$target_port" "$sample_line" >> "$INVOKER_SIZE_SAMPLES"
+  done <<< "$sample"
+}
+
+log_invoker_size_everywhere() {
+  local phase="$1"
+  local run_id="${2:-}"
+  local dispatch_worker="${3:-}"
+  local measure_script="$BENCHMARK_ROOT/bin/measure-invoker-size.sh"
+  if [[ ! -x "$measure_script" ]]; then
+    log "invoker-size skip: missing executable $measure_script"
+    return 0
+  fi
+
+  local sample
+  if sample="$("$measure_script" 2>/dev/null)"; then
+    append_invoker_size_sample "$phase" "$run_id" "$dispatch_worker" "coordinator" "local" "0" "$sample"
+  else
+    append_invoker_size_sample "$phase" "$run_id" "$dispatch_worker" "coordinator" "local" "0" "unknown	$HOME/.invoker	0	0	0					"
+  fi
+
+  local cleanup_target cleanup_name cleanup_host cleanup_port
+  for cleanup_target in "${CLEANUP_TARGETS[@]}"; do
+    IFS=$'\t' read -r cleanup_name cleanup_host cleanup_port <<<"$cleanup_target"
+    [[ -n "$cleanup_host" ]] || continue
+    if sample="$(ssh -p "$cleanup_port" "$cleanup_host" "bash -s" < "$measure_script" 2>/dev/null)"; then
+      append_invoker_size_sample "$phase" "$run_id" "$dispatch_worker" "$cleanup_name" "$cleanup_host" "$cleanup_port" "$sample"
+    else
+      append_invoker_size_sample "$phase" "$run_id" "$dispatch_worker" "$cleanup_name" "$cleanup_host" "$cleanup_port" "unknown	/home/invoker/.invoker	0	0	0					"
+      log "invoker-size warning target=$cleanup_name phase=$phase run_id=$run_id"
+    fi
+  done
+}
+
+init_invoker_size_samples
+log_invoker_size_everywhere "after-preflight-cleanup" "" ""
+
 run_worker_queue() {
   local worker_name="$1"
   local target="$2"
@@ -530,6 +584,7 @@ run_worker_queue() {
 
   while IFS=$'\t' read -r -u 3 run_id conversation_file session_id model mode; do
     [[ -n "$run_id" ]] || continue
+    log_invoker_size_everywhere "before-run" "$run_id" "$worker_name"
     log "dispatch worker=$worker_name run_id=$run_id"
     printf '[%s] START worker=%s run_id=%s conversation=%s model=%s mode=%s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$worker_name" "$run_id" "$conversation_file" "$model" "$mode" >>"$BATCH_DIR/job-events.log"
     if ssh -n -p "$port" "$target" \
@@ -566,6 +621,7 @@ if [[ "$BENCHMARK_SERIAL_JOBS" == "1" ]]; then
     fi
 
     log "dispatch worker=$worker_name run_id=$run_id serial=1"
+    log_invoker_size_everywhere "before-run" "$run_id" "$worker_name"
     printf '[%s] START worker=%s run_id=%s conversation=%s model=%s mode=%s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$worker_name" "$run_id" "$conversation_file" "$model" "$mode" >>"$BATCH_DIR/job-events.log"
     if ssh -n -p "$port" "$target" \
       "BENCHMARK_ROOT='$BENCHMARK_ROOT' BENCHMARK_ENV_FILE='$ENV_FILE' '$BENCHMARK_ROOT/bin/run-worker-job.sh' --batch-id '$BATCH_ID' --run-id '$run_id' --conversation-file '$conversation_file' --model '$model' --mode '$mode' --invoker-sha '$INVOKER_SHA'" \
