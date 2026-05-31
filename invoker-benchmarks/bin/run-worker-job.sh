@@ -262,6 +262,14 @@ def derive_failure(status_value, exit_code_value, stage_value):
     lowered = combined.lower()
     stage = stage_value or "unknown"
 
+    git_ref_signatures = (
+        "cannot lock ref",
+        "unable to create directory for .git/refs/heads",
+        "unable to create",
+        ".git/refs/heads",
+    )
+    if "cannot lock ref" in lowered and ".git/refs/heads" in lowered:
+        return stage, "invoker_git_ref_create_failed", matching_message(combined, *git_ref_signatures) or concise_message(stderr, stdout, "Invoker git ref creation failed")
     if "not logged in" in lowered and "please run /login" in lowered:
         return stage, "model_auth_failed", matching_message(combined, "not logged in", "please run /login") or concise_message(stderr, stdout, "Model authentication failed")
     if "failed to authenticate. api error: 401" in lowered or "api error: 401" in lowered or "status code: 401" in lowered:
@@ -475,6 +483,39 @@ clear_non_credential_state() {
     fi
     rm -rf "$scratch_path" 2>/dev/null || true
   done
+  cleanup_invoker_managed_worktrees_and_refs
+}
+
+cleanup_invoker_managed_worktrees_and_refs() {
+  [[ -n "${HOME:-}" && "$HOME" != "/" ]] || return 0
+  local invoker_home="$HOME/.invoker"
+  local repos_dir="$invoker_home/repos"
+  local worktrees_dir="$invoker_home/worktrees"
+
+  if [[ -d "$repos_dir" ]]; then
+    local repo
+    for repo in "$repos_dir"/*; do
+      [[ -d "$repo/.git" ]] || continue
+
+      local worktree
+      while IFS= read -r worktree; do
+        [[ -n "$worktree" ]] || continue
+        if [[ "$worktree" == "$worktrees_dir" || "$worktree" == "$worktrees_dir/"* ]]; then
+          git -C "$repo" worktree remove --force "$worktree" >/dev/null 2>&1 || true
+        fi
+      done < <(git -C "$repo" worktree list --porcelain 2>/dev/null | awk '/^worktree / { sub(/^worktree /, ""); print }' || true)
+
+      git -C "$repo" worktree prune >/dev/null 2>&1 || true
+      git -C "$repo" for-each-ref --format='%(refname)' \
+        refs/heads/experiment refs/heads/invoker refs/heads/reconciliation 2>/dev/null \
+        | while IFS= read -r ref; do
+            [[ -n "$ref" ]] || continue
+            git -C "$repo" update-ref -d "$ref" >/dev/null 2>&1 || true
+          done
+    done
+  fi
+
+  rm -rf "$worktrees_dir" 2>/dev/null || true
 }
 
 cleanup_job_runtime() {

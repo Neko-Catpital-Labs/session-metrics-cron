@@ -108,7 +108,8 @@ WORKER_CONCURRENCY_PER_HOST=1
 EOF
 resolved_output="$(PATH="$mock_bin:$PATH" "$TMP_ROOT/bin/run-nightly-benchmark.sh" --dry-run --limit 1 --env-file "$TMP_ROOT/config/benchmark-resolve-head.env")"
 grep -q "invoker_branch=master invoker_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" <<<"$resolved_output"
-resolved_snapshot="$(find "$TMP_ROOT/runs" -name config.json -print | sort | tail -1)"
+resolved_run_dir="$(sed -n 's/.*batch_dir=//p' <<<"$resolved_output" | head -1)"
+resolved_snapshot="$resolved_run_dir/config.json"
 python3 - "$resolved_snapshot" <<'PY'
 import json
 import sys
@@ -137,7 +138,8 @@ EOF
 job_set_output="$("$TMP_ROOT/bin/run-nightly-benchmark.sh" --dry-run --job-set "$TMP_ROOT/config/job-set.json" --env-file "$TMP_ROOT/config/benchmark.env")"
 grep -E "conversation_count=|model_count=|mode_count=|job_count=|worker_count=" <<<"$job_set_output"
 grep -q "job_count=3" <<<"$job_set_output"
-job_set_matrix="$(find "$TMP_ROOT/runs" -name job-matrix.tsv -print | sort | tail -1)"
+job_set_run_dir="$(sed -n 's/.*batch_dir=//p' <<<"$job_set_output" | head -1)"
+job_set_matrix="$job_set_run_dir/job-matrix.tsv"
 python3 - "$job_set_matrix" "$TMP_ROOT/corpus/submit-to-invoker-sessions-2026-05-26" <<'PY'
 import sys
 from pathlib import Path
@@ -666,6 +668,14 @@ switch (process.env.FAKE_INVOKER_FAILURE_KIND || "") {
     console.error("Strict validation failed: task id is required");
     process.exit(1);
     break;
+  case "git_ref":
+    console.error("Strict validation context: generated plan already passed validation");
+    console.error("Executor startup failed (ssh): SSH remote script failed (exit=255)");
+    console.error("STDERR:");
+    console.error("Preparing worktree (new branch 'experiment/wf-1/t1/g0.t0.a-a12345678-deadbeef')");
+    console.error("fatal: cannot lock ref 'refs/heads/experiment/wf-1/t1/g0.t0.a-a12345678-deadbeef': unable to create directory for .git/refs/heads/experiment/wf-1/t1/g0.t0.a-a12345678-deadbeef");
+    process.exit(1);
+    break;
   case "timeout":
     console.error("Invoker CLI timed out");
     process.exit(124);
@@ -700,7 +710,8 @@ git -C "$fake_invoker_repo" commit -m "fake invoker" >/dev/null
 fake_invoker_sha="$(git -C "$fake_invoker_repo" rev-parse HEAD)"
 
 worker_root="$TMP_ROOT/worker-root"
-mkdir -p "$worker_root/bin" "$worker_root/config" "$worker_root/corpus" "$worker_root/lib" "$worker_root/scripts"
+worker_home="$worker_root/home"
+mkdir -p "$worker_root/bin" "$worker_root/config" "$worker_root/corpus" "$worker_root/lib" "$worker_root/scripts" "$worker_home"
 cp -R "$BENCHMARK_SOURCE_ROOT/bin/." "$worker_root/bin/"
 cp -R "$BENCHMARK_SOURCE_ROOT/lib/." "$worker_root/lib/"
 cp "$USAGE_COSTING_SCRIPT" "$worker_root/scripts/usage_costing.py"
@@ -716,10 +727,55 @@ BENCHMARK_INVOKER_CLI_BUILD_COMMAND='node packages/cli/build.js'
 BENCHMARK_INVOKER_APP_BUILD_COMMAND='node packages/app/build.js'
 EOF
 
-if BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" FAKE_INVOKER_FAILURE_KIND=claude_auth "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id auth-failure --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/auth.out" 2>&1; then
+seed_invoker_cache_state() {
+  rm -rf "$worker_home/.invoker"
+  local repo="$worker_home/.invoker/repos/fake-repo"
+  local wt="$worker_home/.invoker/worktrees/fake-repo/experiment-wt-branch"
+  mkdir -p "$(dirname "$repo")" "$(dirname "$wt")"
+  git init -q "$repo"
+  git -C "$repo" config user.email benchmark-test@example.com
+  git -C "$repo" config user.name "Benchmark Test"
+  printf 'cache\n' > "$repo/file.txt"
+  git -C "$repo" add file.txt
+  git -C "$repo" commit -m "cache seed" >/dev/null
+  git -C "$repo" branch -M master
+  git -C "$repo" branch experiment/stale-task
+  git -C "$repo" branch invoker/stale-task
+  git -C "$repo" branch reconciliation/stale-workflow
+  git -C "$repo" branch keep/user-branch
+  git -C "$repo" worktree add -q -b experiment/wt-branch "$wt" master
+}
+
+assert_invoker_cache_cleaned() {
+  local repo="$worker_home/.invoker/repos/fake-repo"
+  [[ -d "$repo/.git" ]] || { echo "Expected cached repo to be preserved" >&2; exit 1; }
+  [[ ! -e "$worker_home/.invoker/worktrees/fake-repo/experiment-wt-branch" ]] || { echo "Expected managed worktree to be removed" >&2; exit 1; }
+  ! git -C "$repo" show-ref --verify --quiet refs/heads/experiment/stale-task || { echo "Expected experiment ref cleanup" >&2; exit 1; }
+  ! git -C "$repo" show-ref --verify --quiet refs/heads/experiment/wt-branch || { echo "Expected worktree branch cleanup" >&2; exit 1; }
+  ! git -C "$repo" show-ref --verify --quiet refs/heads/invoker/stale-task || { echo "Expected invoker ref cleanup" >&2; exit 1; }
+  ! git -C "$repo" show-ref --verify --quiet refs/heads/reconciliation/stale-workflow || { echo "Expected reconciliation ref cleanup" >&2; exit 1; }
+  git -C "$repo" show-ref --verify --quiet refs/heads/master || { echo "Expected master ref to be preserved" >&2; exit 1; }
+  git -C "$repo" show-ref --verify --quiet refs/heads/keep/user-branch || { echo "Expected non-managed ref to be preserved" >&2; exit 1; }
+}
+
+baseline_env="$worker_root/config/baseline.env"
+cat > "$baseline_env" <<EOF
+TZ=Asia/Hong_Kong
+BENCHMARK_ROOT=$worker_root
+INVOKER_REPO=$fake_invoker_repo
+INVOKER_BRANCH=master
+BENCHMARK_BASELINE_CODEX_COMMAND='printf "%s\n" baseline ok'
+EOF
+seed_invoker_cache_state
+HOME="$worker_home" BENCHMARK_ENV_FILE="$baseline_env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id baseline-cleanup --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode baseline_direct --invoker-sha "$fake_invoker_sha" >"$worker_root/baseline-cleanup.out" 2>&1
+assert_invoker_cache_cleaned
+
+seed_invoker_cache_state
+if HOME="$worker_home" BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" FAKE_INVOKER_FAILURE_KIND=claude_auth "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id auth-failure --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/auth.out" 2>&1; then
   echo "Expected auth failure worker job to fail" >&2
   exit 1
 fi
+assert_invoker_cache_cleaned
 python3 - "$worker_root/runs/worker-failures/jobs/auth-failure/job.json" <<'PY'
 import json
 import sys
@@ -736,7 +792,7 @@ PY
 grep -q "===== BENCHMARK JOB FAILURE =====" "$worker_root/auth.out"
 grep -q "Failed to authenticate. API Error: 401" "$worker_root/auth.out"
 
-if BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" FAKE_INVOKER_FAILURE_KIND=validation "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id validation-failure --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/validation.out" 2>&1; then
+if HOME="$worker_home" BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" FAKE_INVOKER_FAILURE_KIND=validation "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id validation-failure --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/validation.out" 2>&1; then
   echo "Expected validation failure worker job to fail" >&2
   exit 1
 fi
@@ -752,7 +808,21 @@ assert not __import__("pathlib").Path(job_dir, "checkout").exists()
 assert __import__("pathlib").Path(job_dir, "invoker-db").exists()
 PY
 
-BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id successful-invoker --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/success.out" 2>&1
+if HOME="$worker_home" BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" FAKE_INVOKER_FAILURE_KIND=git_ref "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id git-ref-failure --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/git-ref.out" 2>&1; then
+  echo "Expected git ref worker job to fail" >&2
+  exit 1
+fi
+python3 - "$worker_root/runs/worker-failures/jobs/git-ref-failure/job.json" <<'PY'
+import json
+import sys
+payload = json.load(open(sys.argv[1]))
+assert payload["failure_stage"] == "invoker_cli_run"
+assert payload["failure_reason"] == "invoker_git_ref_create_failed"
+assert "cannot lock ref" in payload["failure_message"]
+assert payload["failure_reason"] != "plan_validation_failed"
+PY
+
+BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" HOME="$worker_home" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id successful-invoker --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/success.out" 2>&1
 grep -q "FAKE_INSTALL_SKILLS packages/app/dist/main.js --headless install-skills reinstall" "$worker_root/success.out"
 python3 - "$worker_root/runs/worker-failures/jobs/successful-invoker/job.json" "$worker_root/runs/worker-failures/jobs/successful-invoker/cli-invocations.jsonl" <<'PY'
 import json
@@ -791,7 +861,7 @@ INVOKER_BRANCH=master
 BENCHMARK_PLAN_CODEX_COMMAND='printf "%s\n" "name: fake plan" "repoUrl: https://example.test/repo.git" "mergeMode: manual" "tasks:" "  - id: t1" "    title: T1" "    prompt: |" "      Do the benchmark task." "  - id: t2" "    title: T2" "    executionAgent: claude" "    command: true" > "\$GENERATED_PLAN"'
 BENCHMARK_INVOKER_CLI_BUILD_COMMAND='node packages/cli/build.js'
 EOF
-BENCHMARK_ENV_FILE="$prompt_task_env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id prompt-task-plan --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/prompt-task-plan.out" 2>&1
+HOME="$worker_home" BENCHMARK_ENV_FILE="$prompt_task_env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id prompt-task-plan --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/prompt-task-plan.out" 2>&1
 python3 - "$worker_root/runs/worker-failures/jobs/prompt-task-plan/job.json" "$worker_root/runs/worker-failures/jobs/prompt-task-plan/generated-plan.yaml" <<'PY'
 import json
 import sys
@@ -820,7 +890,7 @@ INVOKER_BRANCH=master
 BENCHMARK_PLAN_CODEX_COMMAND='printf "%s\n" "name: fake plan" "repoUrl: https://example.test/repo.git" "mergeMode: github" "tasks:" "  - id: t1" "    title: T1" > "\$GENERATED_PLAN"'
 BENCHMARK_INVOKER_CLI_BUILD_COMMAND='node packages/cli/build.js'
 EOF
-if BENCHMARK_ENV_FILE="$github_merge_env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id github-merge-plan --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/github-merge.out" 2>&1; then
+if HOME="$worker_home" BENCHMARK_ENV_FILE="$github_merge_env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id github-merge-plan --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/github-merge.out" 2>&1; then
   echo "Expected github merge plan generation to fail" >&2
   exit 1
 fi
@@ -849,7 +919,7 @@ sed -i.bak \
   -e "s|__FAKE_INVOKER_REPO__|$fake_invoker_repo|g" \
   "$temp_plan_env"
 rm -f "$temp_plan_env.bak"
-if BENCHMARK_ENV_FILE="$temp_plan_env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id temp-plan-artifact --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_auto_fix --invoker-sha "$fake_invoker_sha" >"$worker_root/temp-plan-artifact.out" 2>&1; then
+if HOME="$worker_home" BENCHMARK_ENV_FILE="$temp_plan_env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id temp-plan-artifact --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_auto_fix --invoker-sha "$fake_invoker_sha" >"$worker_root/temp-plan-artifact.out" 2>&1; then
   echo "Expected temp plan artifact generation to fail benchmark inspection" >&2
   exit 1
 fi
@@ -865,7 +935,9 @@ assert "skill-doctor.sh --skip-assumptions" in generated
 assert payload["plan_inspection"]["task_count"] == 0
 PY
 
-BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id successful-autofix --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_auto_fix --invoker-sha "$fake_invoker_sha" >"$worker_root/autofix.out" 2>&1
+seed_invoker_cache_state
+HOME="$worker_home" BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id successful-autofix --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_auto_fix --invoker-sha "$fake_invoker_sha" >"$worker_root/autofix.out" 2>&1
+assert_invoker_cache_cleaned
 python3 - "$worker_root/runs/worker-failures/jobs/successful-autofix/job.json" "$worker_root/runs/worker-failures/jobs/successful-autofix/cli-invocations.jsonl" <<'PY'
 import json
 import sys
@@ -878,7 +950,7 @@ job_dir = Path(sys.argv[1]).parent
 assert not (job_dir / "invoker-db").exists()
 PY
 
-if BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" FAKE_INVOKER_FAILURE_KIND=timeout "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id timeout-failure --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/timeout.out" 2>&1; then
+if HOME="$worker_home" BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" FAKE_INVOKER_FAILURE_KIND=timeout "$worker_root/bin/run-worker-job.sh" --batch-id worker-failures --run-id timeout-failure --conversation-file "$worker_root/corpus/session-01.jsonl" --model codex --mode invoker_workflow --invoker-sha "$fake_invoker_sha" >"$worker_root/timeout.out" 2>&1; then
   echo "Expected timeout-like worker job to fail" >&2
   exit 1
 fi
@@ -904,7 +976,8 @@ cat > "$cleanup_processes" <<EOF
 10006 1 /usr/bin/Invoker --config /tmp/other-benchmark/jobs/other/invoker-config.json
 10007 1 /usr/bin/node /repo/scripts/electron.cjs --socket $cleanup_job_dir/invoker-db/ipc-transport.sock
 EOF
-BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" \
+HOME="$worker_home" \
+  BENCHMARK_ENV_FILE="$worker_root/config/benchmark.env" \
   BENCHMARK_PROCESS_LIST_FILE="$cleanup_processes" \
   BENCHMARK_KILL_LOG="$cleanup_kill_log" \
   BENCHMARK_ELECTRON_CLEANUP_TERM_WAIT_SECONDS=0 \
