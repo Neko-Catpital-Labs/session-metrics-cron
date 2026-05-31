@@ -128,6 +128,43 @@ if [[ "$SMOKE" -eq 1 ]]; then
   WORKERS=("${WORKERS[0]}")
 fi
 
+mapfile -t CLEANUP_TARGETS < <(python3 - "$WORKERS_FILE" "$HOME/.invoker/config.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+workers_file = Path(sys.argv[1])
+invoker_config_file = Path(sys.argv[2])
+seen = set()
+
+def emit(name, user, host, port):
+    if not host:
+        return
+    user = user or "invoker"
+    port = int(port or 22)
+    name = name or host
+    key = (user, host, port)
+    if key in seen:
+        return
+    seen.add(key)
+    print(f"{name}\t{user}@{host}\t{port}")
+
+try:
+    data = json.load(open(workers_file))
+    for worker in data.get("workers", []):
+        emit(worker.get("name"), worker.get("user"), worker.get("host") or worker.get("name"), worker.get("port"))
+except Exception:
+    pass
+
+try:
+    data = json.load(open(invoker_config_file))
+    for name, target in (data.get("remoteTargets") or {}).items():
+        emit(name, target.get("user"), target.get("host") or name, target.get("port"))
+except Exception:
+    pass
+PY
+)
+
 INVOKER_SHA="${INVOKER_SHA:-}"
 if [[ -z "$INVOKER_SHA" ]]; then
   if INVOKER_SHA="$(git ls-remote "$INVOKER_REPO" "refs/heads/$INVOKER_BRANCH" | awk '{print $1}' | head -n 1)" && [[ -n "$INVOKER_SHA" ]]; then
@@ -455,6 +492,31 @@ sync_runtime_to_worker() {
     rsync -az -e "ssh -p $port" "$source_manifest" "$target:$source_manifest"
   fi
 }
+
+cleanup_invoker_state_everywhere() {
+  local cleanup_script="$BENCHMARK_ROOT/bin/cleanup-invoker-managed-state.sh"
+  if [[ ! -x "$cleanup_script" ]]; then
+    log "cleanup skip: missing executable $cleanup_script"
+    return 0
+  fi
+
+  log "cleanup local target=coordinator"
+  "$cleanup_script" || log "cleanup warning target=coordinator failed"
+
+  local cleanup_target
+  for cleanup_target in "${CLEANUP_TARGETS[@]}"; do
+    IFS=$'\t' read -r cleanup_name cleanup_host cleanup_port <<<"$cleanup_target"
+    [[ -n "$cleanup_host" ]] || continue
+    log "cleanup remote target=$cleanup_name host=$cleanup_host port=$cleanup_port"
+    if ssh -p "$cleanup_port" "$cleanup_host" "bash -s" < "$cleanup_script"; then
+      log "cleanup remote complete target=$cleanup_name"
+    else
+      log "cleanup remote warning target=$cleanup_name"
+    fi
+  done
+}
+
+cleanup_invoker_state_everywhere
 
 run_worker_queue() {
   local worker_name="$1"

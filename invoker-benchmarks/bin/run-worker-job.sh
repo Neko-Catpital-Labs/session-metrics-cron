@@ -483,97 +483,11 @@ clear_non_credential_state() {
     fi
     rm -rf "$scratch_path" 2>/dev/null || true
   done
-  cleanup_invoker_managed_worktrees_and_refs
-}
-
-cleanup_invoker_managed_worktrees_and_refs() {
-  [[ -n "${HOME:-}" && "$HOME" != "/" ]] || return 0
-  local invoker_home="$HOME/.invoker"
-  local repos_dir="$invoker_home/repos"
-  local worktrees_dir="$invoker_home/worktrees"
-
-  if [[ -d "$repos_dir" ]]; then
-    local repo
-    for repo in "$repos_dir"/*; do
-      [[ -d "$repo/.git" ]] || continue
-
-      local managed_branch
-      while IFS= read -r managed_branch; do
-        [[ -n "$managed_branch" ]] || continue
-        cleanup_invoker_remote_branch "$repo" origin "$managed_branch"
-        cleanup_invoker_remote_branch "$repo" upstream "$managed_branch"
-      done < <(collect_invoker_managed_worktree_branches "$repo" "$worktrees_dir")
-
-      local worktree
-      while IFS= read -r worktree; do
-        [[ -n "$worktree" ]] || continue
-        if [[ "$worktree" == "$worktrees_dir" || "$worktree" == "$worktrees_dir/"* ]]; then
-          git -C "$repo" worktree remove --force "$worktree" >/dev/null 2>&1 || true
-        fi
-      done < <(git -C "$repo" worktree list --porcelain 2>/dev/null | awk '/^worktree / { sub(/^worktree /, ""); print }' || true)
-
-      git -C "$repo" worktree prune >/dev/null 2>&1 || true
-      git -C "$repo" for-each-ref --format='%(refname)' \
-        refs/heads/experiment refs/heads/invoker refs/heads/reconciliation 2>/dev/null \
-        | while IFS= read -r ref; do
-            [[ -n "$ref" ]] || continue
-            git -C "$repo" update-ref -d "$ref" >/dev/null 2>&1 || true
-          done
-    done
+  if [[ -x "$BENCHMARK_ROOT/bin/cleanup-invoker-managed-state.sh" ]]; then
+    "$BENCHMARK_ROOT/bin/cleanup-invoker-managed-state.sh" || true
+  else
+    echo "WARN: cleanup script missing: $BENCHMARK_ROOT/bin/cleanup-invoker-managed-state.sh" >&2
   fi
-
-  rm -rf "$worktrees_dir" 2>/dev/null || true
-}
-
-collect_invoker_managed_worktree_branches() {
-  local repo="$1"
-  local worktrees_dir="$2"
-  local current_worktree=""
-  local current_branch=""
-
-  emit_managed_branch() {
-    [[ -n "$current_worktree" && -n "$current_branch" ]] || return 0
-    [[ "$current_worktree" == "$worktrees_dir" || "$current_worktree" == "$worktrees_dir/"* ]] || return 0
-    case "$current_branch" in
-      main|master|develop|development|trunk) return 0 ;;
-    esac
-    printf '%s\n' "$current_branch"
-  }
-
-  while IFS= read -r line; do
-    if [[ -z "$line" ]]; then
-      emit_managed_branch
-      current_worktree=""
-      current_branch=""
-      continue
-    fi
-    case "$line" in
-      worktree\ *) current_worktree="${line#worktree }" ;;
-      branch\ refs/heads/*) current_branch="${line#branch refs/heads/}" ;;
-      branch\ *) current_branch="" ;;
-    esac
-  done < <(git -C "$repo" worktree list --porcelain 2>/dev/null || true)
-  emit_managed_branch
-}
-
-cleanup_invoker_remote_branch() {
-  local repo="$1"
-  local remote="$2"
-  local branch="$3"
-
-  [[ -n "$branch" ]] || return 0
-  git -C "$repo" remote get-url "$remote" >/dev/null 2>&1 || return 0
-
-  local output
-  if output="$(git -C "$repo" push "$remote" ":refs/heads/$branch" 2>&1)"; then
-    return 0
-  fi
-
-  case "$output" in
-    *"remote ref does not exist"*|*"not found"*|*"unable to delete"*"not found"*) return 0 ;;
-  esac
-  echo "WARN: failed to delete managed worktree branch '$branch' from remote '$remote': $output" >&2
-  return 0
 }
 
 cleanup_job_runtime() {
