@@ -94,7 +94,7 @@ fi
 [[ "$BENCHMARK_SERIAL_JOBS" == "0" || "$BENCHMARK_SERIAL_JOBS" == "1" ]] || die "BENCHMARK_SERIAL_JOBS must be 0 or 1"
 [[ -n "${CORPUS_DIR:-}" ]] || die "Missing CORPUS_DIR"
 [[ -n "${INVOKER_REPO:-}" ]] || die "Missing INVOKER_REPO"
-[[ -n "${INVOKER_BRANCH:-}" ]] || die "Missing INVOKER_BRANCH"
+INVOKER_BRANCH="${INVOKER_BRANCH:-master}"
 if [[ -n "$JOB_SET_FILE" && ! -f "$JOB_SET_FILE" ]]; then
   die "Missing job set file: $JOB_SET_FILE"
 fi

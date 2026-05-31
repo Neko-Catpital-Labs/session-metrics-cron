@@ -83,6 +83,40 @@ assert payload["models"] == ["codex", "claude"]
 assert payload["modes"] == ["baseline_direct", "invoker_workflow", "invoker_auto_fix"]
 PY
 
+mock_bin="$TMP_ROOT/mock-bin"
+mkdir -p "$mock_bin"
+cat > "$mock_bin/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "ls-remote" ]]; then
+  [[ "${2:-}" == "https://example.test/invoker.git" ]] || exit 2
+  [[ "${3:-}" == "refs/heads/master" ]] || exit 3
+  printf '%s\t%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "refs/heads/master"
+  exit 0
+fi
+exec /usr/bin/git "$@"
+EOF
+chmod +x "$mock_bin/git"
+cat > "$TMP_ROOT/config/benchmark-resolve-head.env" <<EOF
+TZ=Asia/Hong_Kong
+BENCHMARK_ROOT=$TMP_ROOT
+INVOKER_REPO=https://example.test/invoker.git
+CORPUS_DIR=$TMP_ROOT/corpus/submit-to-invoker-sessions-2026-05-26
+MODELS=codex
+MODES=baseline_direct
+WORKER_CONCURRENCY_PER_HOST=1
+EOF
+resolved_output="$(PATH="$mock_bin:$PATH" "$TMP_ROOT/bin/run-nightly-benchmark.sh" --dry-run --limit 1 --env-file "$TMP_ROOT/config/benchmark-resolve-head.env")"
+grep -q "invoker_branch=master invoker_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" <<<"$resolved_output"
+resolved_snapshot="$(find "$TMP_ROOT/runs" -name config.json -print | sort | tail -1)"
+python3 - "$resolved_snapshot" <<'PY'
+import json
+import sys
+payload = json.load(open(sys.argv[1]))
+assert payload["invoker_branch"] == "master"
+assert payload["invoker_sha"] == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+PY
+
 smoke_output="$("$TMP_ROOT/bin/run-nightly-benchmark.sh" --dry-run --smoke --env-file "$TMP_ROOT/config/benchmark.env")"
 grep -E "conversation_count=|model_count=|mode_count=|job_count=|worker_count=" <<<"$smoke_output"
 grep -q "job_count=3" <<<"$smoke_output"
@@ -116,8 +150,6 @@ assert rows == [
 ], rows
 PY
 
-mock_bin="$TMP_ROOT/mock-bin"
-mkdir -p "$mock_bin"
 cat > "$mock_bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
