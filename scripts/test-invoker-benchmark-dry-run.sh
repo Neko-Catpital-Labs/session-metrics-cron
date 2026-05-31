@@ -729,12 +729,20 @@ EOF
 
 seed_invoker_cache_state() {
   rm -rf "$worker_home/.invoker"
+  rm -rf "$worker_root/remotes"
   local repo="$worker_home/.invoker/repos/fake-repo"
   local wt="$worker_home/.invoker/worktrees/fake-repo/experiment-wt-branch"
-  mkdir -p "$(dirname "$repo")" "$(dirname "$wt")"
+  local protected_wt="$worker_home/.invoker/worktrees/fake-repo/main-branch"
+  local origin_remote="$worker_root/remotes/fake-repo/origin.git"
+  local upstream_remote="$worker_root/remotes/fake-repo/upstream.git"
+  mkdir -p "$(dirname "$repo")" "$(dirname "$wt")" "$(dirname "$protected_wt")" "$(dirname "$origin_remote")"
+  git init -q --bare "$origin_remote"
+  git init -q --bare "$upstream_remote"
   git init -q "$repo"
   git -C "$repo" config user.email benchmark-test@example.com
   git -C "$repo" config user.name "Benchmark Test"
+  git -C "$repo" remote add origin "$origin_remote"
+  git -C "$repo" remote add upstream "$upstream_remote"
   printf 'cache\n' > "$repo/file.txt"
   git -C "$repo" add file.txt
   git -C "$repo" commit -m "cache seed" >/dev/null
@@ -744,18 +752,44 @@ seed_invoker_cache_state() {
   git -C "$repo" branch reconciliation/stale-workflow
   git -C "$repo" branch keep/user-branch
   git -C "$repo" worktree add -q -b experiment/wt-branch "$wt" master
+  git -C "$repo" worktree add -q -b main "$protected_wt" master
+  git -C "$repo" push -q origin \
+    master \
+    main \
+    experiment/stale-task \
+    experiment/wt-branch \
+    keep/user-branch
+  git -C "$repo" push -q upstream \
+    master \
+    main \
+    experiment/stale-task \
+    experiment/wt-branch \
+    keep/user-branch
 }
 
 assert_invoker_cache_cleaned() {
   local repo="$worker_home/.invoker/repos/fake-repo"
+  local origin_remote="$worker_root/remotes/fake-repo/origin.git"
+  local upstream_remote="$worker_root/remotes/fake-repo/upstream.git"
   [[ -d "$repo/.git" ]] || { echo "Expected cached repo to be preserved" >&2; exit 1; }
   [[ ! -e "$worker_home/.invoker/worktrees/fake-repo/experiment-wt-branch" ]] || { echo "Expected managed worktree to be removed" >&2; exit 1; }
+  [[ ! -e "$worker_home/.invoker/worktrees/fake-repo/main-branch" ]] || { echo "Expected protected-name managed worktree to be removed" >&2; exit 1; }
   ! git -C "$repo" show-ref --verify --quiet refs/heads/experiment/stale-task || { echo "Expected experiment ref cleanup" >&2; exit 1; }
   ! git -C "$repo" show-ref --verify --quiet refs/heads/experiment/wt-branch || { echo "Expected worktree branch cleanup" >&2; exit 1; }
   ! git -C "$repo" show-ref --verify --quiet refs/heads/invoker/stale-task || { echo "Expected invoker ref cleanup" >&2; exit 1; }
   ! git -C "$repo" show-ref --verify --quiet refs/heads/reconciliation/stale-workflow || { echo "Expected reconciliation ref cleanup" >&2; exit 1; }
   git -C "$repo" show-ref --verify --quiet refs/heads/master || { echo "Expected master ref to be preserved" >&2; exit 1; }
   git -C "$repo" show-ref --verify --quiet refs/heads/keep/user-branch || { echo "Expected non-managed ref to be preserved" >&2; exit 1; }
+  ! git --git-dir "$origin_remote" show-ref --verify --quiet refs/heads/experiment/wt-branch || { echo "Expected origin worktree branch cleanup" >&2; exit 1; }
+  ! git --git-dir "$upstream_remote" show-ref --verify --quiet refs/heads/experiment/wt-branch || { echo "Expected upstream worktree branch cleanup" >&2; exit 1; }
+  git --git-dir "$origin_remote" show-ref --verify --quiet refs/heads/master || { echo "Expected origin master to be preserved" >&2; exit 1; }
+  git --git-dir "$upstream_remote" show-ref --verify --quiet refs/heads/master || { echo "Expected upstream master to be preserved" >&2; exit 1; }
+  git --git-dir "$origin_remote" show-ref --verify --quiet refs/heads/main || { echo "Expected origin protected main to be preserved" >&2; exit 1; }
+  git --git-dir "$upstream_remote" show-ref --verify --quiet refs/heads/main || { echo "Expected upstream protected main to be preserved" >&2; exit 1; }
+  git --git-dir "$origin_remote" show-ref --verify --quiet refs/heads/experiment/stale-task || { echo "Expected origin non-worktree managed branch to be preserved" >&2; exit 1; }
+  git --git-dir "$upstream_remote" show-ref --verify --quiet refs/heads/experiment/stale-task || { echo "Expected upstream non-worktree managed branch to be preserved" >&2; exit 1; }
+  git --git-dir "$origin_remote" show-ref --verify --quiet refs/heads/keep/user-branch || { echo "Expected origin non-managed branch to be preserved" >&2; exit 1; }
+  git --git-dir "$upstream_remote" show-ref --verify --quiet refs/heads/keep/user-branch || { echo "Expected upstream non-managed branch to be preserved" >&2; exit 1; }
 }
 
 baseline_env="$worker_root/config/baseline.env"
