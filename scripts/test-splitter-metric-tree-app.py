@@ -158,7 +158,7 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertNotIn(".kind-col", html)
         self.assertIn(".node-col { width: 390px; }", html)
         self.assertIn("tr[data-depth=\"0\"] .name", html)
-        self.assertIn("white-space: normal", html)
+        self.assertIn("white-space: nowrap", html)
 
 
 if __name__ == "__main__":
