@@ -176,7 +176,8 @@ SELECT
   head_sha,
   variant,
   metric_path,
-  ROUND(value, 4) AS score
+  ROUND(value, 4) AS score,
+  ROUND(effective_weight * 100, 2) AS effective_weight_pct
 FROM `{table}`, selected
 WHERE dirty = FALSE
   AND variant = {{variant_param}}
@@ -349,6 +350,7 @@ def normalize_history(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, An
                 "short_sha": short_sha(row.get("head_sha")),
                 "variant": row.get("variant"),
                 "score": to_float(row.get("score")),
+                "effective_weight_pct": to_float(row.get("effective_weight_pct")),
             }
         )
     return history

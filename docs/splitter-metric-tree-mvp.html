@@ -150,7 +150,19 @@
     .history-chart {
       position: relative;
       padding: 12px 16px 16px;
-      min-height: 236px;
+      min-height: 456px;
+    }
+
+    .chart-stack {
+      display: grid;
+      gap: 14px;
+    }
+
+    .mini-chart h3 {
+      margin: 0 0 6px;
+      font-size: 13px;
+      font-weight: 650;
+      letter-spacing: 0;
     }
 
     .chart-svg {
@@ -176,16 +188,24 @@
       stroke-width: 2.5;
     }
 
-    .score-point {
+    .effective-line {
+      fill: none;
+      stroke: var(--effective);
+      stroke-width: 2.5;
+    }
+
+    .history-point {
       fill: #fff;
-      stroke: var(--score);
       stroke-width: 2;
       cursor: pointer;
       outline: none;
     }
 
-    .score-point:hover,
-    .score-point:focus {
+    .score-point { stroke: var(--score); }
+    .effective-point { stroke: var(--effective); }
+
+    .history-point:hover,
+    .history-point:focus {
       fill: #e8f2ff;
       stroke-width: 3;
     }
@@ -444,10 +464,10 @@
 
       .history-chart {
         padding: 8px 10px 12px;
-        min-height: 196px;
+        min-height: 376px;
       }
 
-      .chart-svg { height: 180px; }
+      .chart-svg { height: 170px; }
 
       .table-wrap {
         background: transparent;
@@ -718,53 +738,85 @@
         <span class="pill">Effective ${formatPct(row.effective_weight_pct)}</span>
         <span class="pill">${escapeHtml(latestPoint.short_sha || row.short_sha || "unknown sha")}</span>
       `;
-      setHistoryChart(scoreHistoryChart(points));
+      setHistoryChart(historyCharts(points));
     }
 
-    function scoreHistoryChart(points) {
-      if (!points.length) return `<div class="empty">No score history for this metric.</div>`;
+    function historyCharts(points) {
+      if (!points.length) return `<div class="empty">No metric history for this metric.</div>`;
+      return `<div class="chart-stack">
+        ${historyLineChart(points, {
+          title: "Score Over Time",
+          valueKey: "score",
+          maxValue: 1,
+          ticks: [1, 0.75, 0.5, 0.25, 0],
+          formatter: formatScore,
+          lineClass: "score-line",
+          pointClass: "score-point",
+          emptyText: "No score history for this metric."
+        })}
+        ${historyLineChart(points, {
+          title: "Effective Weight Over Time",
+          valueKey: "effective_weight_pct",
+          maxValue: 100,
+          ticks: [100, 75, 50, 25, 0],
+          formatter: formatPct,
+          lineClass: "effective-line",
+          pointClass: "effective-point",
+          emptyText: "No effective weight history for this metric."
+        })}
+      </div>`;
+    }
+
+    function historyLineChart(points, config) {
+      const plotted = points
+        .map((point, index) => ({ point, index, value: Number(point[config.valueKey]) }))
+        .filter(item => Number.isFinite(item.value));
+      if (!plotted.length) return `<div class="mini-chart"><h3>${escapeHtml(config.title)}</h3><div class="empty">${escapeHtml(config.emptyText)}</div></div>`;
       const width = 920;
-      const height = 220;
+      const height = 190;
       const left = 44;
       const right = 18;
       const top = 16;
       const bottom = 44;
       const plotWidth = width - left - right;
       const plotHeight = height - top - bottom;
-      const xFor = index => points.length === 1
+      const xFor = index => plotted.length === 1
         ? left + plotWidth / 2
-        : left + (plotWidth * index) / (points.length - 1);
-      const yFor = value => top + plotHeight - (Math.max(0, Math.min(1, Number(value))) * plotHeight);
-      const path = points.map((point, index) => {
+        : left + (plotWidth * index) / (plotted.length - 1);
+      const yFor = value => top + plotHeight - (Math.max(0, Math.min(config.maxValue, Number(value))) / config.maxValue * plotHeight);
+      const path = plotted.map((item, index) => {
         const command = index === 0 ? "M" : "L";
-        return `${command}${xFor(index).toFixed(1)},${yFor(point.score).toFixed(1)}`;
+        return `${command}${xFor(index).toFixed(1)},${yFor(item.value).toFixed(1)}`;
       }).join(" ");
-      const yTicks = [1, 0.75, 0.5, 0.25, 0];
-      const labelEvery = Math.max(1, Math.ceil(points.length / 6));
-      const grid = yTicks.map(value => {
+      const labelEvery = Math.max(1, Math.ceil(plotted.length / 6));
+      const grid = config.ticks.map(value => {
         const y = yFor(value);
         return `
           <line class="grid-line" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}" />
-          <text class="axis-label" x="${left - 8}" y="${y + 4}" text-anchor="end">${formatScore(value)}</text>
+          <text class="axis-label" x="${left - 8}" y="${y + 4}" text-anchor="end">${escapeHtml(config.formatter(value))}</text>
         `;
       }).join("");
-      const labels = points.map((point, index) => {
-        if (index % labelEvery !== 0 && index !== points.length - 1) return "";
+      const labels = plotted.map((item, index) => {
+        if (index % labelEvery !== 0 && index !== plotted.length - 1) return "";
         const x = xFor(index);
-        return `<text class="axis-label" x="${x}" y="${height - 12}" text-anchor="middle">${escapeHtml(formatAxisTime(point.collected_at))}</text>`;
+        return `<text class="axis-label" x="${x}" y="${height - 12}" text-anchor="middle">${escapeHtml(formatAxisTime(item.point.collected_at))}</text>`;
       }).join("");
-      const circles = points.map((point, index) => {
+      const circles = plotted.map((item, index) => {
         const x = xFor(index);
-        const y = yFor(point.score);
-        return `<circle class="score-point" cx="${x}" cy="${y}" r="4" tabindex="0" data-point-index="${index}" aria-label="${escapeHtml(formatDate(point.collected_at))} score ${escapeHtml(formatScore(point.score))}"></circle>`;
+        const y = yFor(item.value);
+        const pointKey = `${config.valueKey}:${item.index}`;
+        return `<circle class="history-point ${config.pointClass}" cx="${x}" cy="${y}" r="4" tabindex="0" data-point-index="${item.index}" data-point-key="${pointKey}" aria-label="${escapeHtml(formatDate(item.point.collected_at))} ${escapeHtml(config.title)} ${escapeHtml(config.formatter(item.value))}"></circle>`;
       }).join("");
-      return `<svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Score over time">
-        ${grid}
-        <line class="grid-line" x1="${left}" y1="${height - bottom}" x2="${width - right}" y2="${height - bottom}" />
-        ${path ? `<path class="score-line" d="${path}" />` : ""}
-        ${circles}
-        ${labels}
-      </svg>`;
+      return `<div class="mini-chart">
+        <h3>${escapeHtml(config.title)}</h3>
+        <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(config.title)}">
+          ${grid}
+          <line class="grid-line" x1="${left}" y1="${height - bottom}" x2="${width - right}" y2="${height - bottom}" />
+          ${path ? `<path class="${config.lineClass}" d="${path}" />` : ""}
+          ${circles}
+          ${labels}
+        </svg>
+      </div>`;
     }
 
     function pointFromTarget(target) {
@@ -784,7 +836,7 @@
 
     function showPointPopup(point, target, pinned = false) {
       if (!point) return;
-      const pointIndex = target?.dataset?.pointIndex || "";
+      const pointIndex = target?.dataset?.pointKey || target?.dataset?.pointIndex || "";
       if (
         pointPopup.classList.contains("is-visible")
         && activePopupIndex === pointIndex
@@ -799,6 +851,7 @@
         <h3>${escapeHtml(point.short_sha || "unknown sha")}</h3>
         <dl>
           <dt>Score</dt><dd>${escapeHtml(formatScore(point.score))}</dd>
+          <dt>Effective</dt><dd>${escapeHtml(formatPct(point.effective_weight_pct))}</dd>
           <dt>Time</dt><dd>${escapeHtml(formatDate(point.collected_at))}</dd>
           <dt>Branch</dt><dd>${escapeHtml(point.branch || "")}</dd>
           <dt>Run</dt><dd>${escapeHtml(point.run_id || "")}</dd>
@@ -922,29 +975,29 @@
     });
 
     historyChart.addEventListener("pointerover", event => {
-      const point = event.target.closest(".score-point");
+      const point = event.target.closest(".history-point");
       if (!point) return;
       showPointPopup(pointFromTarget(point), point, false);
     });
 
     historyChart.addEventListener("pointerout", event => {
-      if (!event.target.closest(".score-point")) return;
+      if (!event.target.closest(".history-point")) return;
       hidePointPopup();
     });
 
     historyChart.addEventListener("focusin", event => {
-      const point = event.target.closest(".score-point");
+      const point = event.target.closest(".history-point");
       if (!point) return;
       showPointPopup(pointFromTarget(point), point, false);
     });
 
     historyChart.addEventListener("focusout", event => {
-      if (!event.target.closest(".score-point")) return;
+      if (!event.target.closest(".history-point")) return;
       hidePointPopup();
     });
 
     historyChart.addEventListener("click", event => {
-      const point = event.target.closest(".score-point");
+      const point = event.target.closest(".history-point");
       if (!point) return;
       event.stopPropagation();
       showPointPopup(pointFromTarget(point), point, true);

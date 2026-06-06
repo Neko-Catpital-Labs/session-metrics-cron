@@ -44,6 +44,7 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("nodes.head_sha", latest_sql)
         self.assertIn("run_id", history_sql)
         self.assertIn("head_sha", history_sql)
+        self.assertIn("effective_weight", history_sql)
         self.assertIn("@metric_path", latest_sql)
         self.assertIn("@variant", latest_sql)
 
@@ -120,6 +121,7 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
                     "branch": "main",
                     "head_sha": "abcdef1234567890",
                     "score": 0.5,
+                    "effective_weight_pct": 15.0,
                 },
                 {
                     "metric_path": "root.a",
@@ -129,6 +131,7 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
                     "branch": "main",
                     "head_sha": "fedcba6543217890",
                     "score": 0.75,
+                    "effective_weight_pct": 30.0,
                 },
             ]
         )
@@ -136,18 +139,26 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertEqual(len(history["root.a"]), 2)
         self.assertEqual(history["root.a"][1]["score"], 0.75)
         self.assertEqual(history["root.a"][1]["short_sha"], "fedcba654321")
+        self.assertEqual(history["root.a"][1]["effective_weight_pct"], 30.0)
 
     def test_static_history_chart_uses_time_axis_and_metadata_popup(self) -> None:
         html = (REPO_ROOT / "docs" / "splitter-metric-tree-mvp.html").read_text()
 
         self.assertIn("function formatAxisTime", html)
-        self.assertIn("formatAxisTime(point.collected_at)", html)
+        self.assertIn("formatAxisTime(item.point.collected_at)", html)
         self.assertIn("className = \"point-popup\"", html)
         self.assertIn("pointer-events: none", html)
         self.assertIn("activePopupIndex === pointIndex", html)
         self.assertIn("data-point-index", html)
+        self.assertIn("data-point-key", html)
         self.assertIn("<dt>SHA</dt>", html)
+        self.assertIn("<dt>Effective</dt>", html)
         self.assertIn("point.head_sha", html)
+        self.assertIn("Effective Weight Over Time", html)
+        self.assertIn("effective_weight_pct", html)
+        self.assertIn("effective-line", html)
+        self.assertIn("effective-point", html)
+        self.assertIn("historyLineChart(points", html)
         self.assertNotIn("text-anchor=\"middle\">${escapeHtml(point.short_sha", html)
 
     def test_static_metric_tree_table_omits_kind_column(self) -> None:
