@@ -17,6 +17,8 @@
       --effective: #169b75;
       --row: #fbfcfe;
       --row-open: #eef5ff;
+      --selected: #b7d7ff;
+      --axis: #98a2b3;
     }
 
     * { box-sizing: border-box; }
@@ -102,6 +104,83 @@
     .legend .local::before { background: var(--local); }
     .legend .effective::before { background: var(--effective); }
 
+    .history-panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      margin-bottom: 12px;
+      overflow: hidden;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+    }
+
+    .history-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfe;
+    }
+
+    .history-title {
+      min-width: 0;
+    }
+
+    .history-title h2 {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.25;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+
+    .history-title .path {
+      margin-top: 4px;
+      max-width: 720px;
+    }
+
+    .history-meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .history-chart {
+      padding: 12px 16px 16px;
+      min-height: 236px;
+    }
+
+    .chart-svg {
+      display: block;
+      width: 100%;
+      height: 220px;
+    }
+
+    .axis-label {
+      fill: var(--muted);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .grid-line {
+      stroke: #eef1f5;
+      stroke-width: 1;
+    }
+
+    .score-line {
+      fill: none;
+      stroke: var(--score);
+      stroke-width: 2.5;
+    }
+
+    .score-point {
+      fill: #fff;
+      stroke: var(--score);
+      stroke-width: 2;
+    }
+
     .table-wrap {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -137,6 +216,10 @@
     tbody tr[data-kind="composite"],
     tbody tr[data-kind="root"] { background: var(--row); }
     tbody tr.is-open { background: var(--row-open); }
+    tbody tr.is-selected {
+      outline: 2px solid var(--selected);
+      outline-offset: -2px;
+    }
 
     .node-col { width: 310px; }
     .desc-col { width: 390px; }
@@ -263,6 +346,8 @@
     @media (max-width: 960px) {
       main { padding: 16px; }
       header { align-items: flex-start; flex-direction: column; }
+      .history-head { flex-direction: column; }
+      .history-meta { justify-content: flex-start; }
       .table-wrap { overflow-x: auto; }
       table { min-width: 1120px; }
     }
@@ -298,6 +383,17 @@
       <span class="effective">Effective weight</span>
     </div>
 
+    <section class="history-panel" aria-label="Selected metric score history">
+      <div class="history-head">
+        <div class="history-title">
+          <h2 id="selected-name">Score Over Time</h2>
+          <div class="path" id="selected-path"></div>
+        </div>
+        <div class="history-meta" id="selected-meta"></div>
+      </div>
+      <div class="history-chart" id="history-chart"></div>
+    </section>
+
     <section class="table-wrap" aria-label="Metric tree">
       <table>
         <thead>
@@ -321,8 +417,13 @@
     let rows = [];
     let history = {};
     let children = new Map();
+    let selectedPath = "";
     const collapsed = new Set();
     const tbody = document.getElementById("tree-body");
+    const selectedName = document.getElementById("selected-name");
+    const selectedPathLabel = document.getElementById("selected-path");
+    const selectedMeta = document.getElementById("selected-meta");
+    const historyChart = document.getElementById("history-chart");
 
     function formatScore(value) {
       return Number(value).toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
@@ -330,6 +431,21 @@
 
     function formatPct(value) {
       return `${Number(value).toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}%`;
+    }
+
+    function formatDate(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toISOString().replace("T", " ").replace(".000Z", "Z");
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
     }
 
     function metricCell(value, pct, cls) {
@@ -361,6 +477,93 @@
       </svg>`;
     }
 
+    function historyPoints(path) {
+      return (history[path] || [])
+        .filter(point => Number.isFinite(Number(point.score)))
+        .sort((a, b) => String(a.collected_at).localeCompare(String(b.collected_at)));
+    }
+
+    function selectedRow() {
+      return rows.find(row => row.metric_path === selectedPath) || rows[0] || null;
+    }
+
+    function renderHistoryPanel() {
+      const row = selectedRow();
+      if (!row) {
+        selectedName.textContent = "Score Over Time";
+        selectedPathLabel.textContent = "";
+        selectedMeta.innerHTML = "";
+        historyChart.innerHTML = `<div class="empty">No metric history loaded.</div>`;
+        return;
+      }
+      selectedPath = row.metric_path;
+      const points = historyPoints(row.metric_path);
+      const latestPoint = points[points.length - 1] || {};
+      selectedName.textContent = row.metric_id;
+      selectedPathLabel.textContent = row.metric_path;
+      selectedPathLabel.title = row.metric_path;
+      selectedMeta.innerHTML = `
+        <span class="pill">Score ${formatScore(row.score)}</span>
+        <span class="pill">Local ${formatPct(row.local_weight_pct)}</span>
+        <span class="pill">Effective ${formatPct(row.effective_weight_pct)}</span>
+        <span class="pill">${escapeHtml(latestPoint.short_sha || row.short_sha || "unknown sha")}</span>
+      `;
+      historyChart.innerHTML = scoreHistoryChart(points);
+    }
+
+    function scoreHistoryChart(points) {
+      if (!points.length) return `<div class="empty">No score history for this metric.</div>`;
+      const width = 920;
+      const height = 220;
+      const left = 44;
+      const right = 18;
+      const top = 16;
+      const bottom = 44;
+      const plotWidth = width - left - right;
+      const plotHeight = height - top - bottom;
+      const xFor = index => points.length === 1
+        ? left + plotWidth / 2
+        : left + (plotWidth * index) / (points.length - 1);
+      const yFor = value => top + plotHeight - (Math.max(0, Math.min(1, Number(value))) * plotHeight);
+      const path = points.map((point, index) => {
+        const command = index === 0 ? "M" : "L";
+        return `${command}${xFor(index).toFixed(1)},${yFor(point.score).toFixed(1)}`;
+      }).join(" ");
+      const yTicks = [1, 0.75, 0.5, 0.25, 0];
+      const labelEvery = Math.max(1, Math.ceil(points.length / 6));
+      const grid = yTicks.map(value => {
+        const y = yFor(value);
+        return `
+          <line class="grid-line" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}" />
+          <text class="axis-label" x="${left - 8}" y="${y + 4}" text-anchor="end">${formatScore(value)}</text>
+        `;
+      }).join("");
+      const labels = points.map((point, index) => {
+        if (index % labelEvery !== 0 && index !== points.length - 1) return "";
+        const x = xFor(index);
+        return `<text class="axis-label" x="${x}" y="${height - 12}" text-anchor="middle">${escapeHtml(point.short_sha || "")}</text>`;
+      }).join("");
+      const circles = points.map((point, index) => {
+        const x = xFor(index);
+        const y = yFor(point.score);
+        const title = [
+          point.short_sha || "unknown sha",
+          formatDate(point.collected_at),
+          `score ${formatScore(point.score)}`,
+          point.branch || "",
+          point.run_id || ""
+        ].filter(Boolean).join(" | ");
+        return `<circle class="score-point" cx="${x}" cy="${y}" r="4"><title>${escapeHtml(title)}</title></circle>`;
+      }).join("");
+      return `<svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Score over time">
+        ${grid}
+        <line class="grid-line" x1="${left}" y1="${height - bottom}" x2="${width - right}" y2="${height - bottom}" />
+        ${path ? `<path class="score-line" d="${path}" />` : ""}
+        ${circles}
+        ${labels}
+      </svg>`;
+    }
+
     function hasChildren(row) {
       return (children.get(row.metric_path) || []).length > 0;
     }
@@ -386,7 +589,11 @@
         const open = !collapsed.has(row.metric_path);
         tr.dataset.depth = String(row.relative_depth);
         tr.dataset.kind = row.kind;
-        tr.className = open && hasChildren(row) ? "is-open" : "";
+        tr.dataset.path = row.metric_path;
+        tr.className = [
+          open && hasChildren(row) ? "is-open" : "",
+          row.metric_path === selectedPath ? "is-selected" : ""
+        ].filter(Boolean).join(" ");
         tr.innerHTML = `
           <td class="node-col">
             <div class="node" style="--indent:${row.relative_depth * 28}px">
@@ -407,6 +614,7 @@
         `;
         tbody.appendChild(tr);
       }
+      renderHistoryPanel();
     }
 
     function indexRows(nextRows) {
@@ -438,15 +646,24 @@
       history = payload.history || {};
       indexRows(rows);
       collapsed.clear();
+      if (!rows.some(row => row.metric_path === selectedPath)) {
+        selectedPath = rows[0]?.metric_path || "";
+      }
       render();
     }
 
     tbody.addEventListener("click", event => {
       const button = event.target.closest(".toggle[data-path]");
-      if (!button) return;
-      const path = button.dataset.path;
-      if (collapsed.has(path)) collapsed.delete(path);
-      else collapsed.add(path);
+      if (button) {
+        const path = button.dataset.path;
+        if (collapsed.has(path)) collapsed.delete(path);
+        else collapsed.add(path);
+        render();
+        return;
+      }
+      const row = event.target.closest("tr[data-path]");
+      if (!row) return;
+      selectedPath = row.dataset.path;
       render();
     });
 

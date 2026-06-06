@@ -118,6 +118,7 @@ WITH latest AS (
   SELECT MAX(collected_at) AS collected_at
   FROM `{table}`
   WHERE dirty = FALSE
+    AND variant = {{variant_param}}
 ), nodes AS (
   SELECT *
   FROM `{table}`
@@ -131,6 +132,10 @@ WITH latest AS (
   LIMIT 1
 )
 SELECT
+  nodes.collected_at,
+  nodes.run_id,
+  nodes.branch,
+  nodes.head_sha,
   nodes.variant,
   nodes.root_metric_id,
   nodes.metric_path,
@@ -158,6 +163,7 @@ WITH run_times AS (
   SELECT DISTINCT collected_at
   FROM `{table}`
   WHERE dirty = FALSE
+    AND variant = {{variant_param}}
   ORDER BY collected_at DESC
   LIMIT {{history_runs_param}}
 ), selected AS (
@@ -165,6 +171,9 @@ WITH run_times AS (
 )
 SELECT
   collected_at,
+  run_id,
+  branch,
+  head_sha,
   variant,
   metric_path,
   ROUND(value, 4) AS score
@@ -303,6 +312,11 @@ def metabase_tree_response(
 def normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
+            "collected_at": serialize_value(row.get("collected_at")),
+            "run_id": row.get("run_id"),
+            "branch": row.get("branch"),
+            "head_sha": row.get("head_sha"),
+            "short_sha": short_sha(row.get("head_sha")),
             "variant": row.get("variant"),
             "root_metric_id": row.get("root_metric_id"),
             "metric_path": row.get("metric_path"),
@@ -329,6 +343,10 @@ def normalize_history(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, An
         history.setdefault(metric_path, []).append(
             {
                 "collected_at": serialize_value(row.get("collected_at")),
+                "run_id": row.get("run_id"),
+                "branch": row.get("branch"),
+                "head_sha": row.get("head_sha"),
+                "short_sha": short_sha(row.get("head_sha")),
                 "variant": row.get("variant"),
                 "score": to_float(row.get("score")),
             }
@@ -340,6 +358,10 @@ def serialize_value(value: Any) -> Any:
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return value
+
+
+def short_sha(value: Any) -> str:
+    return str(value or "")[:12]
 
 
 def to_float(value: Any) -> float | None:

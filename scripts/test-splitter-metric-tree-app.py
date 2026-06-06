@@ -41,6 +41,9 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         app.assert_no_weighted_fields(history_sql)
         self.assertNotIn("weighted_value", latest_sql.lower())
         self.assertNotIn("weighted_contribution", latest_sql.lower())
+        self.assertIn("nodes.head_sha", latest_sql)
+        self.assertIn("run_id", history_sql)
+        self.assertIn("head_sha", history_sql)
         self.assertIn("@metric_path", latest_sql)
         self.assertIn("@variant", latest_sql)
 
@@ -78,6 +81,10 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         rows = app.normalize_rows(
             [
                 {
+                    "collected_at": "2026-06-05T14:35:08Z",
+                    "run_id": "20260605T143508Z-00bc82e8b929",
+                    "branch": "main",
+                    "head_sha": "00bc82e8b929c7abeda87e65e66dfa769d5d3213",
                     "variant": "hinted",
                     "root_metric_id": "planToResponseGraphScore",
                     "metric_path": "planToResponseGraphScore.workflowRealizationScore",
@@ -99,18 +106,36 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertEqual(rows[0]["score"], 0.9522)
         self.assertEqual(rows[0]["local_weight_pct"], 45.0)
         self.assertEqual(rows[0]["effective_weight_pct"], 45.0)
+        self.assertEqual(rows[0]["short_sha"], "00bc82e8b929")
         self.assertNotIn("weighted_value", rows[0])
 
     def test_normalize_history_groups_by_metric_path(self) -> None:
         history = app.normalize_history(
             [
-                {"metric_path": "root.a", "variant": "hinted", "collected_at": "2026-06-01T00:00:00Z", "score": 0.5},
-                {"metric_path": "root.a", "variant": "hinted", "collected_at": "2026-06-02T00:00:00Z", "score": 0.75},
+                {
+                    "metric_path": "root.a",
+                    "variant": "hinted",
+                    "collected_at": "2026-06-01T00:00:00Z",
+                    "run_id": "20260601T000000Z-abcdef123456",
+                    "branch": "main",
+                    "head_sha": "abcdef1234567890",
+                    "score": 0.5,
+                },
+                {
+                    "metric_path": "root.a",
+                    "variant": "hinted",
+                    "collected_at": "2026-06-02T00:00:00Z",
+                    "run_id": "20260602T000000Z-fedcba654321",
+                    "branch": "main",
+                    "head_sha": "fedcba6543217890",
+                    "score": 0.75,
+                },
             ]
         )
 
         self.assertEqual(len(history["root.a"]), 2)
         self.assertEqual(history["root.a"][1]["score"], 0.75)
+        self.assertEqual(history["root.a"][1]["short_sha"], "fedcba654321")
 
 
 if __name__ == "__main__":
