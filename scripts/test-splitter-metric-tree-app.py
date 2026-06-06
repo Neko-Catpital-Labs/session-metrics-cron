@@ -180,6 +180,17 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("min-width: 1560px", html)
         self.assertNotIn("min-width: 1120px", html)
 
+    def test_static_metric_tree_has_mobile_row_layout(self) -> None:
+        html = (REPO_ROOT / "docs" / "splitter-metric-tree-mvp.html").read_text()
+
+        self.assertIn("@media (max-width: 760px)", html)
+        self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr))", html)
+        self.assertIn("td[data-label]::before", html)
+        self.assertIn("data-label=\"Metric Tree\"", html)
+        self.assertIn("data-label=\"Score Trend\"", html)
+        self.assertIn("table,\n      tbody", html)
+        self.assertIn("min-width: 0", html)
+
 
 if __name__ == "__main__":
     unittest.main()

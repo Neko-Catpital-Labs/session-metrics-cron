@@ -414,6 +414,129 @@
       .history-head { flex-direction: column; }
       .history-meta { justify-content: flex-start; }
     }
+
+    @media (max-width: 760px) {
+      main { padding: 12px; }
+      h1 { font-size: 18px; }
+      .subhead { font-size: 13px; }
+
+      .controls {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        width: 100%;
+      }
+
+      input {
+        grid-column: 1 / -1;
+        width: 100%;
+      }
+
+      button,
+      select {
+        width: 100%;
+        padding: 0 8px;
+      }
+
+      .history-title .path {
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+
+      .history-chart {
+        padding: 8px 10px 12px;
+        min-height: 196px;
+      }
+
+      .chart-svg { height: 180px; }
+
+      .table-wrap {
+        background: transparent;
+        border: 0;
+        border-radius: 0;
+        overflow: visible;
+        box-shadow: none;
+      }
+
+      table,
+      tbody {
+        display: block;
+        width: 100%;
+        min-width: 0;
+      }
+
+      thead { display: none; }
+
+      tbody {
+        display: grid;
+        gap: 8px;
+      }
+
+      tbody tr {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--panel);
+      }
+
+      th,
+      td {
+        display: block;
+        width: auto;
+        border-bottom: 0;
+        padding: 8px 10px;
+      }
+
+      td[data-label]::before {
+        content: attr(data-label);
+        display: block;
+        margin-bottom: 4px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 650;
+        text-transform: uppercase;
+        letter-spacing: .04em;
+      }
+
+      .node-col,
+      .desc-col,
+      .spark-col {
+        grid-column: 1 / -1;
+      }
+
+      .node-col {
+        border-bottom: 1px solid var(--line);
+        background: var(--row);
+      }
+
+      .metric-col,
+      .spark-col {
+        width: auto;
+      }
+
+      .metric {
+        grid-template-columns: 48px minmax(0, 1fr);
+      }
+
+      .spark {
+        width: 100%;
+        max-width: 320px;
+      }
+
+      .node {
+        grid-template-columns: minmax(0, calc(var(--indent) * .65)) 24px minmax(0, 1fr);
+      }
+
+      tr[data-depth="0"] .node {
+        grid-template-columns: 24px minmax(0, 1fr);
+      }
+
+      tr[data-depth="0"] .name {
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+    }
   </style>
 </head>
 <body>
@@ -728,7 +851,7 @@
           row.metric_path === selectedPath ? "is-selected" : ""
         ].filter(Boolean).join(" ");
         tr.innerHTML = `
-          <td class="node-col">
+          <td class="node-col" data-label="Metric Tree">
             <div class="node" style="--indent:${row.relative_depth * 28}px">
               <span class="connector"></span>
               ${hasChildren(row)
@@ -737,11 +860,11 @@
               <span class="name" title="${row.metric_path}">${row.metric_id}</span>
             </div>
           </td>
-          <td class="desc-col"><div class="desc" title="${row.description}">${row.description}</div></td>
-          <td class="metric-col">${metricCell(row.score, false, "score")}</td>
-          <td class="metric-col">${metricCell(row.local_weight_pct, true, "local")}</td>
-          <td class="metric-col">${metricCell(row.effective_weight_pct, true, "effective")}</td>
-          <td class="spark-col">${sparkline(history[row.metric_path])}</td>
+          <td class="desc-col" data-label="Description"><div class="desc" title="${row.description}">${row.description}</div></td>
+          <td class="metric-col" data-label="Score">${metricCell(row.score, false, "score")}</td>
+          <td class="metric-col" data-label="Local Weight">${metricCell(row.local_weight_pct, true, "local")}</td>
+          <td class="metric-col" data-label="Effective Weight">${metricCell(row.effective_weight_pct, true, "effective")}</td>
+          <td class="spark-col" data-label="Score Trend">${sparkline(history[row.metric_path])}</td>
         `;
         tbody.appendChild(tr);
       }
