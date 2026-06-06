@@ -156,7 +156,9 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertNotIn("<th class=\"kind-col\">Kind</th>", html)
         self.assertNotIn("<td class=\"kind-col\">", html)
         self.assertNotIn(".kind-col", html)
-        self.assertIn(".node-col { width: 390px; }", html)
+        self.assertIn(".node-col { width: 360px; }", html)
+        self.assertIn(".desc-col { width: 320px; }", html)
+        self.assertIn(".metric-col { width: 150px; }", html)
         self.assertIn("tr[data-depth=\"0\"] .name", html)
         self.assertIn("white-space: nowrap", html)
         self.assertIn("tr[data-depth=\"0\"] .node", html)
@@ -168,7 +170,7 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("<th class=\"spark-col\">Score Trend</th>", html)
         self.assertNotIn("<th>Metric Path</th>", html)
         self.assertNotIn("<td><div class=\"path\" title=\"${row.metric_path}\">", html)
-        self.assertIn(".spark-col { width: 210px; }", html)
+        self.assertIn(".spark-col { width: 190px; }", html)
         self.assertIn("const width = 170;", html)
         self.assertIn("colspan=\"6\"", html)
 
@@ -177,7 +179,8 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
 
         self.assertIn("overflow-x: auto", html)
         self.assertIn("overflow-y: hidden", html)
-        self.assertIn("min-width: 1560px", html)
+        self.assertIn("min-width: 1320px", html)
+        self.assertNotIn("min-width: 1560px", html)
         self.assertNotIn("min-width: 1120px", html)
 
     def test_static_metric_tree_has_mobile_row_layout(self) -> None:
