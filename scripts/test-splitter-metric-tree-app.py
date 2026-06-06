@@ -160,6 +160,16 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("tr[data-depth=\"0\"] .name", html)
         self.assertIn("white-space: nowrap", html)
 
+    def test_static_metric_tree_table_ends_at_score_trend(self) -> None:
+        html = (REPO_ROOT / "docs" / "splitter-metric-tree-mvp.html").read_text()
+
+        self.assertIn("<th class=\"spark-col\">Score Trend</th>", html)
+        self.assertNotIn("<th>Metric Path</th>", html)
+        self.assertNotIn("<td><div class=\"path\" title=\"${row.metric_path}\">", html)
+        self.assertIn(".spark-col { width: 210px; }", html)
+        self.assertIn("const width = 170;", html)
+        self.assertIn("colspan=\"6\"", html)
+
 
 if __name__ == "__main__":
     unittest.main()
