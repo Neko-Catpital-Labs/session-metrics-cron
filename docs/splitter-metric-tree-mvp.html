@@ -148,6 +148,7 @@
     }
 
     .history-chart {
+      position: relative;
       padding: 12px 16px 16px;
       min-height: 236px;
     }
@@ -179,6 +180,56 @@
       fill: #fff;
       stroke: var(--score);
       stroke-width: 2;
+      cursor: pointer;
+      outline: none;
+    }
+
+    .score-point:hover,
+    .score-point:focus {
+      fill: #e8f2ff;
+      stroke-width: 3;
+    }
+
+    .point-popup {
+      position: absolute;
+      z-index: 3;
+      display: none;
+      min-width: 260px;
+      max-width: min(360px, calc(100vw - 48px));
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      box-shadow: 0 8px 24px rgba(16, 24, 40, 0.18);
+      color: var(--text);
+      font-size: 12px;
+    }
+
+    .point-popup.is-visible { display: block; }
+
+    .point-popup h3 {
+      margin: 0 0 6px;
+      font-size: 13px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+
+    .point-popup dl {
+      display: grid;
+      grid-template-columns: 72px minmax(0, 1fr);
+      gap: 4px 8px;
+      margin: 0;
+    }
+
+    .point-popup dt {
+      color: var(--muted);
+    }
+
+    .point-popup dd {
+      margin: 0;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      font-variant-numeric: tabular-nums;
     }
 
     .table-wrap {
@@ -418,12 +469,23 @@
     let history = {};
     let children = new Map();
     let selectedPath = "";
+    let activeHistoryPoints = [];
+    let popupPinned = false;
     const collapsed = new Set();
     const tbody = document.getElementById("tree-body");
     const selectedName = document.getElementById("selected-name");
     const selectedPathLabel = document.getElementById("selected-path");
     const selectedMeta = document.getElementById("selected-meta");
     const historyChart = document.getElementById("history-chart");
+    const pointPopup = document.createElement("div");
+    pointPopup.className = "point-popup";
+    pointPopup.setAttribute("role", "dialog");
+    historyChart.appendChild(pointPopup);
+
+    function setHistoryChart(html) {
+      historyChart.innerHTML = html;
+      historyChart.appendChild(pointPopup);
+    }
 
     function formatScore(value) {
       return Number(value).toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
@@ -438,6 +500,17 @@
       const date = new Date(value);
       if (Number.isNaN(date.getTime())) return value;
       return date.toISOString().replace("T", " ").replace(".000Z", "Z");
+    }
+
+    function formatAxisTime(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+      const day = String(date.getUTCDate()).padStart(2, "0");
+      const hour = String(date.getUTCHours()).padStart(2, "0");
+      const minute = String(date.getUTCMinutes()).padStart(2, "0");
+      return `${month}-${day} ${hour}:${minute}`;
     }
 
     function escapeHtml(value) {
@@ -493,11 +566,14 @@
         selectedName.textContent = "Score Over Time";
         selectedPathLabel.textContent = "";
         selectedMeta.innerHTML = "";
-        historyChart.innerHTML = `<div class="empty">No metric history loaded.</div>`;
+        activeHistoryPoints = [];
+        setHistoryChart(`<div class="empty">No metric history loaded.</div>`);
         return;
       }
       selectedPath = row.metric_path;
       const points = historyPoints(row.metric_path);
+      activeHistoryPoints = points;
+      hidePointPopup(true);
       const latestPoint = points[points.length - 1] || {};
       selectedName.textContent = row.metric_id;
       selectedPathLabel.textContent = row.metric_path;
@@ -508,7 +584,7 @@
         <span class="pill">Effective ${formatPct(row.effective_weight_pct)}</span>
         <span class="pill">${escapeHtml(latestPoint.short_sha || row.short_sha || "unknown sha")}</span>
       `;
-      historyChart.innerHTML = scoreHistoryChart(points);
+      setHistoryChart(scoreHistoryChart(points));
     }
 
     function scoreHistoryChart(points) {
@@ -541,19 +617,12 @@
       const labels = points.map((point, index) => {
         if (index % labelEvery !== 0 && index !== points.length - 1) return "";
         const x = xFor(index);
-        return `<text class="axis-label" x="${x}" y="${height - 12}" text-anchor="middle">${escapeHtml(point.short_sha || "")}</text>`;
+        return `<text class="axis-label" x="${x}" y="${height - 12}" text-anchor="middle">${escapeHtml(formatAxisTime(point.collected_at))}</text>`;
       }).join("");
       const circles = points.map((point, index) => {
         const x = xFor(index);
         const y = yFor(point.score);
-        const title = [
-          point.short_sha || "unknown sha",
-          formatDate(point.collected_at),
-          `score ${formatScore(point.score)}`,
-          point.branch || "",
-          point.run_id || ""
-        ].filter(Boolean).join(" | ");
-        return `<circle class="score-point" cx="${x}" cy="${y}" r="4"><title>${escapeHtml(title)}</title></circle>`;
+        return `<circle class="score-point" cx="${x}" cy="${y}" r="4" tabindex="0" data-point-index="${index}" aria-label="${escapeHtml(formatDate(point.collected_at))} score ${escapeHtml(formatScore(point.score))}"></circle>`;
       }).join("");
       return `<svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Score over time">
         ${grid}
@@ -562,6 +631,49 @@
         ${circles}
         ${labels}
       </svg>`;
+    }
+
+    function pointFromTarget(target) {
+      const index = Number(target?.dataset?.pointIndex);
+      if (!Number.isInteger(index)) return null;
+      return activeHistoryPoints[index] || null;
+    }
+
+    function pointPosition(target) {
+      const chartRect = historyChart.getBoundingClientRect();
+      const pointRect = target.getBoundingClientRect();
+      return {
+        x: pointRect.left - chartRect.left + pointRect.width / 2,
+        y: pointRect.top - chartRect.top
+      };
+    }
+
+    function showPointPopup(point, target, pinned = false) {
+      if (!point) return;
+      popupPinned = pinned;
+      const position = pointPosition(target);
+      pointPopup.innerHTML = `
+        <h3>${escapeHtml(point.short_sha || "unknown sha")}</h3>
+        <dl>
+          <dt>Score</dt><dd>${escapeHtml(formatScore(point.score))}</dd>
+          <dt>Time</dt><dd>${escapeHtml(formatDate(point.collected_at))}</dd>
+          <dt>Branch</dt><dd>${escapeHtml(point.branch || "")}</dd>
+          <dt>Run</dt><dd>${escapeHtml(point.run_id || "")}</dd>
+          <dt>SHA</dt><dd>${escapeHtml(point.head_sha || "")}</dd>
+        </dl>
+      `;
+      pointPopup.classList.add("is-visible");
+      const popupWidth = Math.min(360, pointPopup.offsetWidth || 260);
+      const left = Math.max(8, Math.min(position.x - popupWidth / 2, historyChart.clientWidth - popupWidth - 8));
+      const top = Math.max(8, position.y - pointPopup.offsetHeight - 12);
+      pointPopup.style.left = `${left}px`;
+      pointPopup.style.top = `${top}px`;
+    }
+
+    function hidePointPopup(force = false) {
+      if (popupPinned && !force) return;
+      popupPinned = false;
+      pointPopup.classList.remove("is-visible");
     }
 
     function hasChildren(row) {
@@ -665,6 +777,44 @@
       if (!row) return;
       selectedPath = row.dataset.path;
       render();
+    });
+
+    historyChart.addEventListener("pointerover", event => {
+      const point = event.target.closest(".score-point");
+      if (!point) return;
+      showPointPopup(pointFromTarget(point), point, false);
+    });
+
+    historyChart.addEventListener("pointerout", event => {
+      if (!event.target.closest(".score-point")) return;
+      hidePointPopup();
+    });
+
+    historyChart.addEventListener("focusin", event => {
+      const point = event.target.closest(".score-point");
+      if (!point) return;
+      showPointPopup(pointFromTarget(point), point, false);
+    });
+
+    historyChart.addEventListener("focusout", event => {
+      if (!event.target.closest(".score-point")) return;
+      hidePointPopup();
+    });
+
+    historyChart.addEventListener("click", event => {
+      const point = event.target.closest(".score-point");
+      if (!point) return;
+      event.stopPropagation();
+      showPointPopup(pointFromTarget(point), point, true);
+    });
+
+    document.addEventListener("click", event => {
+      if (historyChart.contains(event.target)) return;
+      hidePointPopup(true);
+    });
+
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape") hidePointPopup(true);
     });
 
     document.getElementById("expand").addEventListener("click", () => {

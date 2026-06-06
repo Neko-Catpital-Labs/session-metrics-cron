@@ -137,6 +137,17 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertEqual(history["root.a"][1]["score"], 0.75)
         self.assertEqual(history["root.a"][1]["short_sha"], "fedcba654321")
 
+    def test_static_history_chart_uses_time_axis_and_metadata_popup(self) -> None:
+        html = (REPO_ROOT / "docs" / "splitter-metric-tree-mvp.html").read_text()
+
+        self.assertIn("function formatAxisTime", html)
+        self.assertIn("formatAxisTime(point.collected_at)", html)
+        self.assertIn("className = \"point-popup\"", html)
+        self.assertIn("data-point-index", html)
+        self.assertIn("<dt>SHA</dt>", html)
+        self.assertIn("point.head_sha", html)
+        self.assertNotIn("text-anchor=\"middle\">${escapeHtml(point.short_sha", html)
+
 
 if __name__ == "__main__":
     unittest.main()
