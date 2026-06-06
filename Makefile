@@ -26,6 +26,7 @@ test:
 	$(PYTHON) scripts/test-request-pattern-categorization.py
 	$(PYTHON) scripts/test-command-attribution.py
 	$(PYTHON) scripts/test-warehouse-cost-demo.py
+	$(PYTHON) scripts/test-splitter-metric-tree-app.py
 	bash scripts/test-nightly-usage-pipeline.sh
 	bash scripts/test-invoker-benchmark-dry-run.sh
 
@@ -33,5 +34,5 @@ benchmark-dry-run:
 	bash scripts/test-invoker-benchmark-dry-run.sh
 
 lint:
-	$(PYTHON) -m py_compile scripts/cache_hit_audit.py scripts/planning_vs_execution_report.py scripts/mixpanel_export_usage.py scripts/usage_costing.py scripts/test-usage-costing.py scripts/test-task-categorization.py scripts/test-request-pattern-categorization.py scripts/test-command-attribution.py scripts/request_pattern_quality_report.py scripts/mixpanel_dashboard_migration.py scripts/warehouse_cost_demo.py scripts/test-warehouse-cost-demo.py
+	$(PYTHON) -m py_compile scripts/cache_hit_audit.py scripts/planning_vs_execution_report.py scripts/mixpanel_export_usage.py scripts/usage_costing.py scripts/test-usage-costing.py scripts/test-task-categorization.py scripts/test-request-pattern-categorization.py scripts/test-command-attribution.py scripts/request_pattern_quality_report.py scripts/mixpanel_dashboard_migration.py scripts/warehouse_cost_demo.py scripts/test-warehouse-cost-demo.py scripts/splitter_metric_tree_app.py scripts/test-splitter-metric-tree-app.py
 	bash -n scripts/nightly_usage_pipeline.sh scripts/run-warehouse-analytics.sh scripts/install-nightly-usage-launchd.sh scripts/uninstall-nightly-usage-launchd.sh scripts/test-nightly-usage-pipeline.sh scripts/test-invoker-benchmark-dry-run.sh invoker-benchmarks/bin/run-nightly-benchmark.sh invoker-benchmarks/bin/run-worker-job.sh invoker-benchmarks/bin/emit-mixpanel-events.sh invoker-benchmarks/bin/sync-worker-credentials.sh

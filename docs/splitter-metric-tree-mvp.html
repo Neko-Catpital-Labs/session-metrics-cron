@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Splitter Metric Tree MVP</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #667085;
+      --line: #d8dee8;
+      --score: #2878bd;
+      --local: #8a5cf6;
+      --effective: #169b75;
+      --row: #fbfcfe;
+      --row-open: #eef5ff;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+
+    .subhead {
+      margin: 4px 0 0;
+      color: var(--muted);
+    }
+
+    .controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    button, input, select {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--text);
+      height: 34px;
+      padding: 0 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    input {
+      width: 360px;
+      cursor: text;
+    }
+
+    select { cursor: pointer; }
+
+    button:hover { background: #f2f4f7; }
+
+    .legend {
+      display: flex;
+      gap: 14px;
+      color: var(--muted);
+      margin: 0 0 12px;
+      flex-wrap: wrap;
+    }
+
+    .legend span::before {
+      content: "";
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      margin-right: 6px;
+    }
+
+    .legend .score::before { background: var(--score); }
+    .legend .local::before { background: var(--local); }
+    .legend .effective::before { background: var(--effective); }
+
+    .table-wrap {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 12px;
+      vertical-align: middle;
+    }
+
+    th {
+      background: #f9fafb;
+      color: #344054;
+      font-size: 12px;
+      font-weight: 650;
+      text-align: left;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+    tbody tr { background: var(--panel); }
+    tbody tr[data-kind="composite"],
+    tbody tr[data-kind="root"] { background: var(--row); }
+    tbody tr.is-open { background: var(--row-open); }
+
+    .node-col { width: 310px; }
+    .desc-col { width: 390px; }
+    .kind-col { width: 100px; }
+    .metric-col { width: 190px; }
+    .spark-col { width: 170px; }
+
+    .node {
+      display: grid;
+      grid-template-columns: var(--indent) 24px minmax(0, 1fr);
+      align-items: center;
+      min-width: 0;
+    }
+
+    .connector {
+      height: 28px;
+      border-left: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      margin-left: calc(var(--indent) - 14px);
+      display: none;
+    }
+
+    tr[data-depth]:not([data-depth="0"]) .connector { display: block; }
+
+    .toggle {
+      width: 22px;
+      height: 22px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: #fff;
+      color: #475467;
+      font-size: 12px;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    .toggle.placeholder {
+      border-color: transparent;
+      background: transparent;
+      cursor: default;
+    }
+
+    .name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 600;
+    }
+
+    .desc {
+      color: #475467;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+
+    .pill {
+      display: inline-flex;
+      height: 22px;
+      align-items: center;
+      border-radius: 999px;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      color: #344054;
+      background: #fff;
+      font-size: 12px;
+    }
+
+    .metric {
+      display: grid;
+      grid-template-columns: 56px 1fr;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .value {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      color: #344054;
+    }
+
+    .track {
+      height: 10px;
+      background: #eef1f5;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .fill {
+      height: 100%;
+      width: calc(var(--value) * 1%);
+      border-radius: inherit;
+    }
+
+    .fill.score { background: var(--score); }
+    .fill.local { background: var(--local); }
+    .fill.effective { background: var(--effective); }
+
+    .path {
+      color: var(--muted);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .spark {
+      width: 140px;
+      height: 32px;
+      display: block;
+    }
+
+    .empty {
+      padding: 26px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    @media (max-width: 960px) {
+      main { padding: 16px; }
+      header { align-items: flex-start; flex-direction: column; }
+      .table-wrap { overflow-x: auto; }
+      table { min-width: 1120px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Splitter Metric Tree MVP</h1>
+        <p class="subhead">One visual: hierarchy, description, holistic score, local weight, and effective root weight.</p>
+      </div>
+      <div class="controls">
+        <input id="metric-path" value="planToResponseGraphScore" aria-label="Metric path">
+        <select id="variant" aria-label="Variant">
+          <option value="hinted">hinted</option>
+          <option value="baseline">baseline</option>
+        </select>
+        <select id="history-runs" aria-label="History runs">
+          <option value="10">10 runs</option>
+          <option value="20" selected>20 runs</option>
+          <option value="50">50 runs</option>
+        </select>
+        <button type="button" id="refresh">Refresh</button>
+        <button type="button" id="expand">Expand All</button>
+        <button type="button" id="collapse">Collapse Composites</button>
+      </div>
+    </header>
+
+    <div class="legend" aria-label="Legend">
+      <span class="score">Score</span>
+      <span class="local">Local weight</span>
+      <span class="effective">Effective weight</span>
+    </div>
+
+    <section class="table-wrap" aria-label="Metric tree">
+      <table>
+        <thead>
+          <tr>
+            <th class="node-col">Metric Tree</th>
+            <th class="desc-col">Description</th>
+            <th class="kind-col">Kind</th>
+            <th class="metric-col">Score</th>
+            <th class="metric-col">Local Weight</th>
+            <th class="metric-col">Effective Weight</th>
+            <th class="spark-col">Score Trend</th>
+            <th>Metric Path</th>
+          </tr>
+        </thead>
+        <tbody id="tree-body"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script>
+    let rows = [];
+    let history = {};
+    let children = new Map();
+    const collapsed = new Set();
+    const tbody = document.getElementById("tree-body");
+
+    function formatScore(value) {
+      return Number(value).toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+    }
+
+    function formatPct(value) {
+      return `${Number(value).toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}%`;
+    }
+
+    function metricCell(value, pct, cls) {
+      if (value == null) return "";
+      return `
+        <div class="metric">
+          <div class="value">${pct ? formatPct(value) : formatScore(value)}</div>
+          <div class="track"><div class="fill ${cls}" style="--value:${pct ? value : value * 100}"></div></div>
+        </div>
+      `;
+    }
+
+    function sparkline(points) {
+      const values = (points || []).map(point => Number(point.score)).filter(value => Number.isFinite(value));
+      if (values.length < 2) return "";
+      const width = 140;
+      const height = 32;
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      const spread = max - min || 1;
+      const step = width / (values.length - 1);
+      const polyline = values.map((value, index) => {
+        const x = index * step;
+        const y = height - ((value - min) / spread) * (height - 4) - 2;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(" ");
+      return `<svg class="spark" viewBox="0 0 ${width} ${height}" aria-hidden="true">
+        <polyline points="${polyline}" fill="none" stroke="var(--score)" stroke-width="2" />
+      </svg>`;
+    }
+
+    function hasChildren(row) {
+      return (children.get(row.metric_path) || []).length > 0;
+    }
+
+    function isHidden(row) {
+      const parts = row.metric_path.split(".");
+      for (let i = 1; i < parts.length; i++) {
+        const ancestor = parts.slice(0, i).join(".");
+        if (collapsed.has(ancestor)) return true;
+      }
+      return false;
+    }
+
+    function render() {
+      tbody.innerHTML = "";
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="8"><div class="empty">No metric rows loaded.</div></td></tr>`;
+        return;
+      }
+      for (const row of rows) {
+        if (isHidden(row)) continue;
+        const tr = document.createElement("tr");
+        const open = !collapsed.has(row.metric_path);
+        tr.dataset.depth = String(row.relative_depth);
+        tr.dataset.kind = row.kind;
+        tr.className = open && hasChildren(row) ? "is-open" : "";
+        tr.innerHTML = `
+          <td class="node-col">
+            <div class="node" style="--indent:${row.relative_depth * 28}px">
+              <span class="connector"></span>
+              ${hasChildren(row)
+                ? `<button class="toggle" type="button" data-path="${row.metric_path}" aria-label="${open ? "Collapse" : "Expand"} ${row.metric_id}">${open ? "−" : "+"}</button>`
+                : `<span class="toggle placeholder"></span>`}
+              <span class="name" title="${row.metric_path}">${row.metric_id}</span>
+            </div>
+          </td>
+          <td class="desc-col"><div class="desc" title="${row.description}">${row.description}</div></td>
+          <td class="kind-col"><span class="pill">${row.kind}</span></td>
+          <td class="metric-col">${metricCell(row.score, false, "score")}</td>
+          <td class="metric-col">${metricCell(row.local_weight_pct, true, "local")}</td>
+          <td class="metric-col">${metricCell(row.effective_weight_pct, true, "effective")}</td>
+          <td class="spark-col">${sparkline(history[row.metric_path])}</td>
+          <td><div class="path" title="${row.metric_path}">${row.metric_path}</div></td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    function indexRows(nextRows) {
+      const nextChildren = new Map();
+      for (const row of nextRows) {
+        const parentPath = row.parent_metric_path || (row.metric_path.includes(".")
+          ? row.metric_path.replace(/\.[^.]+$/, "")
+          : "");
+        if (!nextChildren.has(parentPath)) nextChildren.set(parentPath, []);
+        nextChildren.get(parentPath).push(row);
+      }
+      children = nextChildren;
+    }
+
+    async function loadTree() {
+      tbody.innerHTML = `<tr><td colspan="8"><div class="empty">Loading metric tree...</div></td></tr>`;
+      const params = new URLSearchParams({
+        metric_path: document.getElementById("metric-path").value,
+        variant: document.getElementById("variant").value,
+        history_runs: document.getElementById("history-runs").value
+      });
+      const response = await fetch(`/api/splitter-metric-tree?${params.toString()}`);
+      const payload = await response.json();
+      if (!response.ok || payload.error) {
+        tbody.innerHTML = `<tr><td colspan="8"><div class="empty">${payload.error || "Failed to load metric tree."}</div></td></tr>`;
+        return;
+      }
+      rows = payload.rows || [];
+      history = payload.history || {};
+      indexRows(rows);
+      collapsed.clear();
+      render();
+    }
+
+    tbody.addEventListener("click", event => {
+      const button = event.target.closest(".toggle[data-path]");
+      if (!button) return;
+      const path = button.dataset.path;
+      if (collapsed.has(path)) collapsed.delete(path);
+      else collapsed.add(path);
+      render();
+    });
+
+    document.getElementById("expand").addEventListener("click", () => {
+      collapsed.clear();
+      render();
+    });
+
+    document.getElementById("collapse").addEventListener("click", () => {
+      collapsed.clear();
+      for (const row of rows) {
+        if (row.relative_depth > 0 && hasChildren(row)) collapsed.add(row.metric_path);
+      }
+      render();
+    });
+
+    document.getElementById("refresh").addEventListener("click", loadTree);
+    document.getElementById("metric-path").addEventListener("keydown", event => {
+      if (event.key === "Enter") loadTree();
+    });
+    document.getElementById("variant").addEventListener("change", loadTree);
+    document.getElementById("history-runs").addEventListener("change", loadTree);
+
+    loadTree();
+  </script>
+</body>
+</html>
