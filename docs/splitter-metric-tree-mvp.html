@@ -273,16 +273,16 @@
       outline-offset: -2px;
     }
 
-    .node-col { width: 310px; }
+    .node-col { width: 390px; }
     .desc-col { width: 390px; }
-    .kind-col { width: 100px; }
     .metric-col { width: 190px; }
     .spark-col { width: 170px; }
 
     .node {
       display: grid;
-      grid-template-columns: var(--indent) 24px minmax(0, 1fr);
+      grid-template-columns: max(var(--indent), 0px) 24px minmax(0, 1fr);
       align-items: center;
+      gap: 6px;
       min-width: 0;
     }
 
@@ -323,6 +323,13 @@
       text-overflow: ellipsis;
       white-space: nowrap;
       font-weight: 600;
+    }
+
+    tr[data-depth="0"] .name {
+      font-size: 13px;
+      line-height: 1.2;
+      overflow-wrap: anywhere;
+      white-space: normal;
     }
 
     .desc {
@@ -452,7 +459,6 @@
           <tr>
             <th class="node-col">Metric Tree</th>
             <th class="desc-col">Description</th>
-            <th class="kind-col">Kind</th>
             <th class="metric-col">Score</th>
             <th class="metric-col">Local Weight</th>
             <th class="metric-col">Effective Weight</th>
@@ -704,7 +710,7 @@
     function render() {
       tbody.innerHTML = "";
       if (!rows.length) {
-        tbody.innerHTML = `<tr><td colspan="8"><div class="empty">No metric rows loaded.</div></td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7"><div class="empty">No metric rows loaded.</div></td></tr>`;
         return;
       }
       for (const row of rows) {
@@ -729,7 +735,6 @@
             </div>
           </td>
           <td class="desc-col"><div class="desc" title="${row.description}">${row.description}</div></td>
-          <td class="kind-col"><span class="pill">${row.kind}</span></td>
           <td class="metric-col">${metricCell(row.score, false, "score")}</td>
           <td class="metric-col">${metricCell(row.local_weight_pct, true, "local")}</td>
           <td class="metric-col">${metricCell(row.effective_weight_pct, true, "effective")}</td>
@@ -754,7 +759,7 @@
     }
 
     async function loadTree() {
-      tbody.innerHTML = `<tr><td colspan="8"><div class="empty">Loading metric tree...</div></td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7"><div class="empty">Loading metric tree...</div></td></tr>`;
       const params = new URLSearchParams({
         metric_path: document.getElementById("metric-path").value,
         variant: document.getElementById("variant").value,
@@ -763,7 +768,7 @@
       const response = await fetch(`/api/splitter-metric-tree?${params.toString()}`);
       const payload = await response.json();
       if (!response.ok || payload.error) {
-        tbody.innerHTML = `<tr><td colspan="8"><div class="empty">${payload.error || "Failed to load metric tree."}</div></td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7"><div class="empty">${payload.error || "Failed to load metric tree."}</div></td></tr>`;
         return;
       }
       rows = payload.rows || [];

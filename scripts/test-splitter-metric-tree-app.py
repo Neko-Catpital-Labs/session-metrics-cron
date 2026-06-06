@@ -150,6 +150,16 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("point.head_sha", html)
         self.assertNotIn("text-anchor=\"middle\">${escapeHtml(point.short_sha", html)
 
+    def test_static_metric_tree_table_omits_kind_column(self) -> None:
+        html = (REPO_ROOT / "docs" / "splitter-metric-tree-mvp.html").read_text()
+
+        self.assertNotIn("<th class=\"kind-col\">Kind</th>", html)
+        self.assertNotIn("<td class=\"kind-col\">", html)
+        self.assertNotIn(".kind-col", html)
+        self.assertIn(".node-col { width: 390px; }", html)
+        self.assertIn("tr[data-depth=\"0\"] .name", html)
+        self.assertIn("white-space: normal", html)
+
 
 if __name__ == "__main__":
     unittest.main()
