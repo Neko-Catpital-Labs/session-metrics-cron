@@ -159,6 +159,8 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn(".node-col { width: 390px; }", html)
         self.assertIn("tr[data-depth=\"0\"] .name", html)
         self.assertIn("white-space: nowrap", html)
+        self.assertIn("tr[data-depth=\"0\"] .node", html)
+        self.assertIn("grid-template-columns: 24px minmax(0, 1fr)", html)
 
     def test_static_metric_tree_table_ends_at_score_trend(self) -> None:
         html = (REPO_ROOT / "docs" / "splitter-metric-tree-mvp.html").read_text()
@@ -169,6 +171,14 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn(".spark-col { width: 210px; }", html)
         self.assertIn("const width = 170;", html)
         self.assertIn("colspan=\"6\"", html)
+
+    def test_static_metric_tree_table_has_stable_min_width(self) -> None:
+        html = (REPO_ROOT / "docs" / "splitter-metric-tree-mvp.html").read_text()
+
+        self.assertIn("overflow-x: auto", html)
+        self.assertIn("overflow-y: hidden", html)
+        self.assertIn("min-width: 1560px", html)
+        self.assertNotIn("min-width: 1120px", html)
 
 
 if __name__ == "__main__":

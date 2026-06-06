@@ -237,12 +237,14 @@
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
-      overflow: hidden;
+      overflow-x: auto;
+      overflow-y: hidden;
       box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
     }
 
     table {
       width: 100%;
+      min-width: 1560px;
       border-collapse: collapse;
       table-layout: fixed;
     }
@@ -284,6 +286,10 @@
       align-items: center;
       gap: 6px;
       min-width: 0;
+    }
+
+    tr[data-depth="0"] .node {
+      grid-template-columns: 24px minmax(0, 1fr);
     }
 
     .connector {
@@ -407,8 +413,6 @@
       header { align-items: flex-start; flex-direction: column; }
       .history-head { flex-direction: column; }
       .history-meta { justify-content: flex-start; }
-      .table-wrap { overflow-x: auto; }
-      table { min-width: 1120px; }
     }
   </style>
 </head>
