@@ -194,6 +194,7 @@
       position: absolute;
       z-index: 3;
       display: none;
+      pointer-events: none;
       min-width: 260px;
       max-width: min(360px, calc(100vw - 48px));
       padding: 10px 12px;
@@ -471,6 +472,7 @@
     let selectedPath = "";
     let activeHistoryPoints = [];
     let popupPinned = false;
+    let activePopupIndex = null;
     const collapsed = new Set();
     const tbody = document.getElementById("tree-body");
     const selectedName = document.getElementById("selected-name");
@@ -650,7 +652,16 @@
 
     function showPointPopup(point, target, pinned = false) {
       if (!point) return;
+      const pointIndex = target?.dataset?.pointIndex || "";
+      if (
+        pointPopup.classList.contains("is-visible")
+        && activePopupIndex === pointIndex
+        && popupPinned === pinned
+      ) {
+        return;
+      }
       popupPinned = pinned;
+      activePopupIndex = pointIndex;
       const position = pointPosition(target);
       pointPopup.innerHTML = `
         <h3>${escapeHtml(point.short_sha || "unknown sha")}</h3>
@@ -673,6 +684,7 @@
     function hidePointPopup(force = false) {
       if (popupPinned && !force) return;
       popupPinned = false;
+      activePopupIndex = null;
       pointPopup.classList.remove("is-visible");
     }
 

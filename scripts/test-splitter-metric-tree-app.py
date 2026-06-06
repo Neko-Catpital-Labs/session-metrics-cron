@@ -143,6 +143,8 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("function formatAxisTime", html)
         self.assertIn("formatAxisTime(point.collected_at)", html)
         self.assertIn("className = \"point-popup\"", html)
+        self.assertIn("pointer-events: none", html)
+        self.assertIn("activePopupIndex === pointIndex", html)
         self.assertIn("data-point-index", html)
         self.assertIn("<dt>SHA</dt>", html)
         self.assertIn("point.head_sha", html)
