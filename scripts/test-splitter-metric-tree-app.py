@@ -45,6 +45,10 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("run_id", history_sql)
         self.assertIn("head_sha", history_sql)
         self.assertIn("effective_weight", history_sql)
+        self.assertIn("display_value", latest_sql)
+        self.assertIn("diagnostic_value", latest_sql)
+        self.assertIn("is_score", latest_sql)
+        self.assertIn("display_unit", history_sql)
         self.assertIn("@metric_path", latest_sql)
         self.assertIn("@variant", latest_sql)
 
@@ -96,6 +100,9 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
                     "depth": 1,
                     "relative_depth": 1,
                     "score": 0.9522,
+                    "display_value": 0.9522,
+                    "display_unit": "score",
+                    "is_score": True,
                     "local_weight_pct": 45.0,
                     "effective_weight_pct": 45.0,
                     "description": "Measures whether intended plan nodes became response workflows.",
@@ -105,10 +112,66 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         )
 
         self.assertEqual(rows[0]["score"], 0.9522)
+        self.assertEqual(rows[0]["display_value"], 0.9522)
+        self.assertTrue(rows[0]["is_score"])
+        self.assertEqual(rows[0]["tree_path"], rows[0]["metric_path"])
         self.assertEqual(rows[0]["local_weight_pct"], 45.0)
         self.assertEqual(rows[0]["effective_weight_pct"], 45.0)
         self.assertEqual(rows[0]["short_sha"], "00bc82e8b929")
         self.assertNotIn("weighted_value", rows[0])
+
+    def test_normalize_rows_nests_diagnostics_under_explained_score(self) -> None:
+        rows = app.normalize_rows(
+            [
+                {
+                    "metric_path": "root.responseStackLinkCorrectnessScore",
+                    "parent_metric_path": "root",
+                    "metric_id": "responseStackLinkCorrectnessScore",
+                    "kind": "composite",
+                    "relative_depth": 0,
+                    "is_score": True,
+                    "score": 0.63,
+                    "display_value": 0.63,
+                    "display_unit": "score",
+                },
+                {
+                    "metric_path": "root.responseStackLinkCorrectnessScore.responseCorrectStackLinksScore",
+                    "parent_metric_path": "root.responseStackLinkCorrectnessScore",
+                    "metric_id": "responseCorrectStackLinksScore",
+                    "kind": "leaf",
+                    "relative_depth": 1,
+                    "is_score": True,
+                    "score": 0.63,
+                    "display_value": 0.63,
+                    "display_unit": "score",
+                },
+                {
+                    "metric_path": "root.responseStackLinkCorrectnessScore.responseCorrectStackLinkCount",
+                    "parent_metric_path": "root.responseStackLinkCorrectnessScore",
+                    "metric_id": "responseCorrectStackLinkCount",
+                    "kind": "diagnostic",
+                    "relative_depth": 1,
+                    "is_score": False,
+                    "score": None,
+                    "diagnostic_value": 2.55,
+                    "display_value": 2.55,
+                    "display_unit": "avg_count",
+                },
+            ]
+        )
+
+        count = next(row for row in rows if row["metric_id"] == "responseCorrectStackLinkCount")
+        self.assertEqual(
+            count["tree_parent_path"],
+            "root.responseStackLinkCorrectnessScore.responseCorrectStackLinksScore",
+        )
+        self.assertEqual(
+            count["tree_path"],
+            "root.responseStackLinkCorrectnessScore.responseCorrectStackLinksScore.responseCorrectStackLinkCount",
+        )
+        self.assertEqual(count["tree_relative_depth"], 2)
+        self.assertEqual(count["display_value"], 2.55)
+        self.assertEqual(count["display_unit"], "avg_count")
 
     def test_normalize_history_groups_by_metric_path(self) -> None:
         history = app.normalize_history(
@@ -121,6 +184,9 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
                     "branch": "main",
                     "head_sha": "abcdef1234567890",
                     "score": 0.5,
+                    "display_value": 0.5,
+                    "display_unit": "score",
+                    "is_score": True,
                     "effective_weight_pct": 15.0,
                 },
                 {
@@ -131,6 +197,9 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
                     "branch": "main",
                     "head_sha": "fedcba6543217890",
                     "score": 0.75,
+                    "display_value": 0.75,
+                    "display_unit": "score",
+                    "is_score": True,
                     "effective_weight_pct": 30.0,
                 },
             ]
@@ -138,6 +207,8 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
 
         self.assertEqual(len(history["root.a"]), 2)
         self.assertEqual(history["root.a"][1]["score"], 0.75)
+        self.assertEqual(history["root.a"][1]["display_value"], 0.75)
+        self.assertTrue(history["root.a"][1]["is_score"])
         self.assertEqual(history["root.a"][1]["short_sha"], "fedcba654321")
         self.assertEqual(history["root.a"][1]["effective_weight_pct"], 30.0)
 
@@ -155,6 +226,8 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("<dt>Effective</dt>", html)
         self.assertIn("point.head_sha", html)
         self.assertIn("Effective Weight Over Time", html)
+        self.assertIn("Avg Count Over Time", html)
+        self.assertIn("display_value", html)
         self.assertIn("effective_weight_pct", html)
         self.assertIn("effective-line", html)
         self.assertIn("effective-point", html)
@@ -179,6 +252,13 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         html = (REPO_ROOT / "docs" / "splitter-metric-tree-mvp.html").read_text()
 
         self.assertIn("<th class=\"spark-col\">Score Trend</th>", html)
+        self.assertIn("<th class=\"metric-col\">Score / Diagnostic</th>", html)
+        self.assertIn("data-label=\"Score / Diagnostic\"", html)
+        self.assertIn("diagnostic-value", html)
+        self.assertIn("Avg Count", html)
+        self.assertIn("Formula:", html)
+        self.assertIn("row.tree_path", html)
+        self.assertIn("row.tree_parent_path", html)
         self.assertNotIn("<th>Metric Path</th>", html)
         self.assertNotIn("<td><div class=\"path\" title=\"${row.metric_path}\">", html)
         self.assertIn(".spark-col { width: 190px; }", html)

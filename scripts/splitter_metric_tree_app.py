@@ -29,6 +29,31 @@ MAX_HISTORY_RUNS = 100
 MAX_METRIC_PATH_LENGTH = 512
 DEFAULT_CACHE_TTL_SECONDS = 60
 DEFAULT_METABASE_DATABASE_ID = 2
+DIAGNOSTIC_SCORE_PARENTS = {
+    "correctStackLinkCount": "correctStackLinksScore",
+    "extraStackLinkCount": "noExtraStackLinksScore",
+    "missingStackLinkCount": "noMissingStackLinksScore",
+    "plannedCorrectStackLinkCount": "plannedCorrectStackLinksScore",
+    "plannedExtraStackLinkCount": "plannedNoExtraStackLinksScore",
+    "plannedMissingStackLinkCount": "plannedNoMissingStackLinksScore",
+    "responseCorrectStackLinkCount": "responseCorrectStackLinksScore",
+    "responseExtraStackLinkCount": "responseNoExtraStackLinksScore",
+    "responseMissingStackLinkCount": "responseNoMissingStackLinksScore",
+}
+FORMULAS = {
+    "correctStackLinksScore": "correct links / max(expected links, actual links, 1), per case then averaged",
+    "plannedCorrectStackLinksScore": "correct links / max(expected links, actual links, 1), per case then averaged",
+    "responseCorrectStackLinksScore": "correct links / max(expected links, actual links, 1), per case then averaged",
+    "noExtraStackLinksScore": "1 - extra links / max(actual links, 1), per case then averaged",
+    "plannedNoExtraStackLinksScore": "1 - extra links / max(actual links, 1), per case then averaged",
+    "responseNoExtraStackLinksScore": "1 - extra links / max(actual links, 1), per case then averaged",
+    "noMissingStackLinksScore": "1 - missing links / max(expected links, 1), per case then averaged",
+    "plannedNoMissingStackLinksScore": "1 - missing links / max(expected links, 1), per case then averaged",
+    "responseNoMissingStackLinksScore": "1 - missing links / max(expected links, 1), per case then averaged",
+    "stackLinkCorrectnessScore": "0.34 * Correct + 0.33 * No Extra + 0.33 * No Missing",
+    "plannedStackLinkCorrectnessScore": "0.34 * Correct + 0.33 * No Extra + 0.33 * No Missing",
+    "responseStackLinkCorrectnessScore": "0.34 * Correct + 0.33 * No Extra + 0.33 * No Missing",
+}
 
 
 @dataclass
@@ -145,7 +170,28 @@ SELECT
   nodes.kind,
   nodes.depth,
   nodes.depth - selected.selected_depth AS relative_depth,
-  ROUND(nodes.value, 4) AS score,
+  COALESCE(nodes.is_score, nodes.kind != 'diagnostic') AS is_score,
+  ROUND(IF(COALESCE(nodes.is_score, nodes.kind != 'diagnostic'), nodes.value, NULL), 4) AS score,
+  ROUND(
+    IF(
+      COALESCE(nodes.is_score, nodes.kind != 'diagnostic'),
+      COALESCE(nodes.display_value, nodes.value),
+      COALESCE(nodes.display_value, nodes.diagnostic_value, nodes.value)
+    ),
+    4
+  ) AS display_value,
+  ROUND(
+    IF(
+      COALESCE(nodes.is_score, nodes.kind != 'diagnostic'),
+      NULL,
+      COALESCE(nodes.diagnostic_value, nodes.display_value, nodes.value)
+    ),
+    4
+  ) AS diagnostic_value,
+  COALESCE(
+    nodes.display_unit,
+    IF(COALESCE(nodes.is_score, nodes.kind != 'diagnostic'), 'score', 'avg_count')
+  ) AS display_unit,
   ROUND(nodes.local_weight * 100, 2) AS local_weight_pct,
   ROUND(nodes.effective_weight * 100, 2) AS effective_weight_pct,
   nodes.description,
@@ -176,7 +222,17 @@ SELECT
   head_sha,
   variant,
   metric_path,
-  ROUND(value, 4) AS score,
+  COALESCE(is_score, kind != 'diagnostic') AS is_score,
+  ROUND(IF(COALESCE(is_score, kind != 'diagnostic'), value, NULL), 4) AS score,
+  ROUND(
+    IF(
+      COALESCE(is_score, kind != 'diagnostic'),
+      COALESCE(display_value, value),
+      COALESCE(display_value, diagnostic_value, value)
+    ),
+    4
+  ) AS display_value,
+  COALESCE(display_unit, IF(COALESCE(is_score, kind != 'diagnostic'), 'score', 'avg_count')) AS display_unit,
   ROUND(effective_weight * 100, 2) AS effective_weight_pct
 FROM `{table}`, selected
 WHERE dirty = FALSE
@@ -311,7 +367,7 @@ def metabase_tree_response(
 
 
 def normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
+    normalized = [
         {
             "collected_at": serialize_value(row.get("collected_at")),
             "run_id": row.get("run_id"),
@@ -327,14 +383,42 @@ def normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "kind": row.get("kind"),
             "depth": to_int(row.get("depth")),
             "relative_depth": to_int(row.get("relative_depth")),
+            "is_score": to_bool(row.get("is_score"), default=row.get("kind") != "diagnostic"),
             "score": to_float(row.get("score")),
+            "diagnostic_value": to_float(row.get("diagnostic_value")),
+            "display_value": to_float(row.get("display_value")),
+            "display_unit": row.get("display_unit") or "score",
             "local_weight_pct": to_float(row.get("local_weight_pct")),
             "effective_weight_pct": to_float(row.get("effective_weight_pct")),
             "description": row.get("description") or "",
             "why": row.get("why") or "",
+            "formula": FORMULAS.get(str(row.get("metric_id") or ""), ""),
         }
         for row in rows
     ]
+    apply_explanation_tree(normalized)
+    return sorted(normalized, key=lambda row: row.get("tree_path") or row.get("metric_path") or "")
+
+
+def apply_explanation_tree(rows: list[dict[str, Any]]) -> None:
+    paths = {str(row.get("metric_path") or "") for row in rows}
+    for row in rows:
+        metric_path = str(row.get("metric_path") or "")
+        parent_path = str(row.get("parent_metric_path") or "")
+        metric_id = str(row.get("metric_id") or "")
+        score_metric_id = DIAGNOSTIC_SCORE_PARENTS.get(metric_id)
+        row["tree_path"] = metric_path
+        row["tree_parent_path"] = parent_path
+        row["tree_relative_depth"] = row.get("relative_depth")
+        if not score_metric_id or not parent_path:
+            continue
+        score_path = f"{parent_path}.{score_metric_id}"
+        if score_path not in paths:
+            continue
+        row["tree_parent_path"] = score_path
+        row["tree_path"] = f"{score_path}.{metric_id}"
+        if isinstance(row.get("relative_depth"), int):
+            row["tree_relative_depth"] = int(row["relative_depth"]) + 1
 
 
 def normalize_history(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -350,6 +434,9 @@ def normalize_history(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, An
                 "short_sha": short_sha(row.get("head_sha")),
                 "variant": row.get("variant"),
                 "score": to_float(row.get("score")),
+                "display_value": to_float(row.get("display_value")),
+                "display_unit": row.get("display_unit") or "score",
+                "is_score": to_bool(row.get("is_score")),
                 "effective_weight_pct": to_float(row.get("effective_weight_pct")),
             }
         )
@@ -370,6 +457,14 @@ def to_float(value: Any) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+def to_bool(value: Any, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "t", "yes"}
 
 
 def to_int(value: Any) -> int | None:

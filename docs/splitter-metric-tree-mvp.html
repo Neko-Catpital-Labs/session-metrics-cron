@@ -15,6 +15,8 @@
       --score: #2878bd;
       --local: #8a5cf6;
       --effective: #169b75;
+      --diagnostic: #b45309;
+      --diagnostic-soft: #fff7ed;
       --row: #fbfcfe;
       --row-open: #eef5ff;
       --selected: #b7d7ff;
@@ -289,6 +291,7 @@
     tbody tr { background: var(--panel); }
     tbody tr[data-kind="composite"],
     tbody tr[data-kind="root"] { background: var(--row); }
+    tbody tr[data-kind="diagnostic"] { background: var(--diagnostic-soft); }
     tbody tr.is-open { background: var(--row-open); }
     tbody tr.is-selected {
       outline: 2px solid var(--selected);
@@ -366,6 +369,13 @@
       -webkit-box-orient: vertical;
     }
 
+    .formula {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
     .pill {
       display: inline-flex;
       height: 22px;
@@ -407,6 +417,24 @@
     .fill.score { background: var(--score); }
     .fill.local { background: var(--local); }
     .fill.effective { background: var(--effective); }
+
+    .diagnostic-value {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #7c2d12;
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+    }
+
+    .diagnostic-value::before {
+      content: "Avg Count";
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 650;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
 
     .path {
       color: var(--muted);
@@ -606,7 +634,7 @@
           <tr>
             <th class="node-col">Metric Tree</th>
             <th class="desc-col">Description</th>
-            <th class="metric-col">Score</th>
+            <th class="metric-col">Score / Diagnostic</th>
             <th class="metric-col">Local Weight</th>
             <th class="metric-col">Effective Weight</th>
             <th class="spark-col">Score Trend</th>
@@ -685,8 +713,37 @@
       `;
     }
 
+    function valueLabel(row) {
+      return row.is_score ? "Score" : "Avg Count";
+    }
+
+    function rowValue(row) {
+      return row.is_score ? row.score : row.display_value;
+    }
+
+    function formatDisplayValue(row, value) {
+      return row.is_score ? formatScore(value) : formatScore(value);
+    }
+
+    function formatPointValue(point) {
+      return formatScore(point.display_value);
+    }
+
+    function formatMaybeScore(value) {
+      return value == null ? "" : formatScore(value);
+    }
+
+    function valueCell(row) {
+      const value = rowValue(row);
+      if (value == null) return "";
+      if (!row.is_score) {
+        return `<div class="diagnostic-value">${escapeHtml(formatDisplayValue(row, value))}</div>`;
+      }
+      return metricCell(value, false, "score");
+    }
+
     function sparkline(points) {
-      const values = (points || []).map(point => Number(point.score)).filter(value => Number.isFinite(value));
+      const values = (points || []).map(point => Number(point.display_value)).filter(value => Number.isFinite(value));
       if (values.length < 2) return "";
       const width = 170;
       const height = 32;
@@ -706,7 +763,7 @@
 
     function historyPoints(path) {
       return (history[path] || [])
-        .filter(point => Number.isFinite(Number(point.score)))
+        .filter(point => Number.isFinite(Number(point.display_value)))
         .sort((a, b) => String(a.collected_at).localeCompare(String(b.collected_at)));
     }
 
@@ -733,26 +790,30 @@
       selectedPathLabel.textContent = row.metric_path;
       selectedPathLabel.title = row.metric_path;
       selectedMeta.innerHTML = `
-        <span class="pill">Score ${formatScore(row.score)}</span>
+        <span class="pill">${escapeHtml(valueLabel(row))} ${rowValue(row) == null ? "" : escapeHtml(formatDisplayValue(row, rowValue(row)))}</span>
         <span class="pill">Local ${formatPct(row.local_weight_pct)}</span>
         <span class="pill">Effective ${formatPct(row.effective_weight_pct)}</span>
         <span class="pill">${escapeHtml(latestPoint.short_sha || row.short_sha || "unknown sha")}</span>
       `;
-      setHistoryChart(historyCharts(points));
+      setHistoryChart(historyCharts(points, row));
     }
 
-    function historyCharts(points) {
+    function historyCharts(points, row) {
       if (!points.length) return `<div class="empty">No metric history for this metric.</div>`;
+      const valueTitle = row.is_score ? "Score Over Time" : "Avg Count Over Time";
+      const maxDisplayValue = row.is_score
+        ? 1
+        : Math.max(1, ...points.map(point => Number(point.display_value)).filter(value => Number.isFinite(value)));
       return `<div class="chart-stack">
         ${historyLineChart(points, {
-          title: "Score Over Time",
-          valueKey: "score",
-          maxValue: 1,
-          ticks: [1, 0.75, 0.5, 0.25, 0],
-          formatter: formatScore,
+          title: valueTitle,
+          valueKey: "display_value",
+          maxValue: maxDisplayValue,
+          ticks: row.is_score ? [1, 0.75, 0.5, 0.25, 0] : [maxDisplayValue, maxDisplayValue * 0.75, maxDisplayValue * 0.5, maxDisplayValue * 0.25, 0],
+          formatter: value => formatDisplayValue(row, value),
           lineClass: "score-line",
           pointClass: "score-point",
-          emptyText: "No score history for this metric."
+          emptyText: `No ${row.is_score ? "score" : "diagnostic"} history for this metric.`
         })}
         ${historyLineChart(points, {
           title: "Effective Weight Over Time",
@@ -850,7 +911,8 @@
       pointPopup.innerHTML = `
         <h3>${escapeHtml(point.short_sha || "unknown sha")}</h3>
         <dl>
-          <dt>Score</dt><dd>${escapeHtml(formatScore(point.score))}</dd>
+          <dt>Value</dt><dd>${escapeHtml(formatPointValue(point))}</dd>
+          <dt>Score</dt><dd>${escapeHtml(formatMaybeScore(point.score))}</dd>
           <dt>Effective</dt><dd>${escapeHtml(formatPct(point.effective_weight_pct))}</dd>
           <dt>Time</dt><dd>${escapeHtml(formatDate(point.collected_at))}</dd>
           <dt>Branch</dt><dd>${escapeHtml(point.branch || "")}</dd>
@@ -874,11 +936,11 @@
     }
 
     function hasChildren(row) {
-      return (children.get(row.metric_path) || []).length > 0;
+      return (children.get(row.tree_path) || []).length > 0;
     }
 
     function isHidden(row) {
-      const parts = row.metric_path.split(".");
+      const parts = row.tree_path.split(".");
       for (let i = 1; i < parts.length; i++) {
         const ancestor = parts.slice(0, i).join(".");
         if (collapsed.has(ancestor)) return true;
@@ -895,26 +957,30 @@
       for (const row of rows) {
         if (isHidden(row)) continue;
         const tr = document.createElement("tr");
-        const open = !collapsed.has(row.metric_path);
-        tr.dataset.depth = String(row.relative_depth);
+        const open = !collapsed.has(row.tree_path);
+        tr.dataset.depth = String(row.tree_relative_depth);
         tr.dataset.kind = row.kind;
         tr.dataset.path = row.metric_path;
+        tr.dataset.treePath = row.tree_path;
         tr.className = [
           open && hasChildren(row) ? "is-open" : "",
           row.metric_path === selectedPath ? "is-selected" : ""
         ].filter(Boolean).join(" ");
         tr.innerHTML = `
           <td class="node-col" data-label="Metric Tree">
-            <div class="node" style="--indent:${row.relative_depth * 28}px">
+            <div class="node" style="--indent:${row.tree_relative_depth * 28}px">
               <span class="connector"></span>
               ${hasChildren(row)
-                ? `<button class="toggle" type="button" data-path="${row.metric_path}" aria-label="${open ? "Collapse" : "Expand"} ${row.metric_id}">${open ? "−" : "+"}</button>`
+                ? `<button class="toggle" type="button" data-path="${row.tree_path}" aria-label="${open ? "Collapse" : "Expand"} ${row.metric_id}">${open ? "−" : "+"}</button>`
                 : `<span class="toggle placeholder"></span>`}
               <span class="name" title="${row.metric_path}">${row.metric_id}</span>
             </div>
           </td>
-          <td class="desc-col" data-label="Description"><div class="desc" title="${row.description}">${row.description}</div></td>
-          <td class="metric-col" data-label="Score">${metricCell(row.score, false, "score")}</td>
+          <td class="desc-col" data-label="Description">
+            <div class="desc" title="${row.description}">${row.description}</div>
+            ${row.formula ? `<div class="formula">Formula: ${escapeHtml(row.formula)}</div>` : ""}
+          </td>
+          <td class="metric-col" data-label="Score / Diagnostic">${valueCell(row)}</td>
           <td class="metric-col" data-label="Local Weight">${metricCell(row.local_weight_pct, true, "local")}</td>
           <td class="metric-col" data-label="Effective Weight">${metricCell(row.effective_weight_pct, true, "effective")}</td>
           <td class="spark-col" data-label="Score Trend">${sparkline(history[row.metric_path])}</td>
@@ -927,8 +993,8 @@
     function indexRows(nextRows) {
       const nextChildren = new Map();
       for (const row of nextRows) {
-        const parentPath = row.parent_metric_path || (row.metric_path.includes(".")
-          ? row.metric_path.replace(/\.[^.]+$/, "")
+        const parentPath = row.tree_parent_path || (row.tree_path.includes(".")
+          ? row.tree_path.replace(/\.[^.]+$/, "")
           : "");
         if (!nextChildren.has(parentPath)) nextChildren.set(parentPath, []);
         nextChildren.get(parentPath).push(row);
@@ -1020,7 +1086,7 @@
     document.getElementById("collapse").addEventListener("click", () => {
       collapsed.clear();
       for (const row of rows) {
-        if (row.relative_depth > 0 && hasChildren(row)) collapsed.add(row.metric_path);
+        if (row.tree_relative_depth > 0 && hasChildren(row)) collapsed.add(row.tree_path);
       }
       render();
     });
