@@ -432,18 +432,18 @@
 
     .name {
       min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      white-space: normal;
+      overflow-wrap: anywhere;
       font-weight: 600;
     }
 
     .name-wrap {
-      display: inline-grid;
-      grid-template-columns: minmax(0, auto) 20px;
-      align-items: center;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 20px;
+      align-items: start;
       gap: 5px;
       min-width: 0;
+      width: 100%;
     }
 
     .info-button {
@@ -470,8 +470,8 @@
     tr[data-depth="0"] .name {
       font-size: 13px;
       line-height: 1.2;
-      overflow-wrap: normal;
-      white-space: nowrap;
+      overflow-wrap: anywhere;
+      white-space: normal;
     }
 
     .desc {
