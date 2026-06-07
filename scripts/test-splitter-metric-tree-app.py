@@ -173,6 +173,74 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertEqual(count["display_value"], 2.55)
         self.assertEqual(count["display_unit"], "avg_count")
 
+    def test_normalize_rows_adds_stack_link_formula_explanations(self) -> None:
+        rows = app.normalize_rows(
+            [
+                {
+                    "metric_path": "root.responseStackLinkCorrectnessScore.responseCorrectStackLinksScore",
+                    "parent_metric_path": "root.responseStackLinkCorrectnessScore",
+                    "metric_id": "responseCorrectStackLinksScore",
+                    "kind": "leaf",
+                    "relative_depth": 1,
+                    "is_score": True,
+                    "score": 0.63,
+                    "display_value": 0.63,
+                    "display_unit": "score",
+                },
+                {
+                    "metric_path": "root.responseStackLinkCorrectnessScore.responseCorrectStackLinkCount",
+                    "parent_metric_path": "root.responseStackLinkCorrectnessScore",
+                    "metric_id": "responseCorrectStackLinkCount",
+                    "kind": "diagnostic",
+                    "relative_depth": 1,
+                    "is_score": False,
+                    "score": None,
+                    "diagnostic_value": 2.55,
+                    "display_value": 2.55,
+                    "display_unit": "avg_count",
+                },
+                {
+                    "metric_path": "root.responseStackLinkCorrectnessScore.responseExtraStackLinkCount",
+                    "parent_metric_path": "root.responseStackLinkCorrectnessScore",
+                    "metric_id": "responseExtraStackLinkCount",
+                    "kind": "diagnostic",
+                    "relative_depth": 1,
+                    "is_score": False,
+                    "diagnostic_value": 1.95,
+                    "display_value": 1.95,
+                    "display_unit": "avg_count",
+                },
+                {
+                    "metric_path": "root.responseStackLinkCorrectnessScore.responseMissingStackLinkCount",
+                    "parent_metric_path": "root.responseStackLinkCorrectnessScore",
+                    "metric_id": "responseMissingStackLinkCount",
+                    "kind": "diagnostic",
+                    "relative_depth": 1,
+                    "is_score": False,
+                    "diagnostic_value": 1.95,
+                    "display_value": 1.95,
+                    "display_unit": "avg_count",
+                },
+            ]
+        )
+
+        score = next(row for row in rows if row["metric_id"] == "responseCorrectStackLinksScore")
+        inputs = {item["label"]: item["value"] for item in score["explanation"]["inputs"]}
+        self.assertEqual(score["explanation"]["formula"]["numerator"], "correct links")
+        self.assertEqual(
+            score["explanation"]["formula"]["denominator"],
+            "max(expected links, actual links, 1)",
+        )
+        self.assertEqual(inputs["correct links"], 2.55)
+        self.assertEqual(inputs["expected links"], 4.5)
+        self.assertEqual(inputs["actual links"], 4.5)
+        self.assertIn("per replay case", score["explanation"]["note"])
+
+        count = next(row for row in rows if row["metric_id"] == "responseCorrectStackLinkCount")
+        self.assertEqual(count["explanation"]["kind"], "diagnostic")
+        self.assertEqual(count["explanation"]["result"]["value"], 2.55)
+        self.assertIn("not normalized", count["explanation"]["note"])
+
     def test_normalize_history_groups_by_metric_path(self) -> None:
         history = app.normalize_history(
             [
@@ -256,7 +324,12 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("data-label=\"Score / Diagnostic\"", html)
         self.assertIn("diagnostic-value", html)
         self.assertIn("Avg Count", html)
-        self.assertIn("Formula:", html)
+        self.assertIn("info-button", html)
+        self.assertIn("metric-info-popup", html)
+        self.assertIn("formula-fraction", html)
+        self.assertIn("formula.numerator", html)
+        self.assertIn("formula.denominator", html)
+        self.assertIn("renderMetricInfo", html)
         self.assertIn("row.tree_path", html)
         self.assertIn("row.tree_parent_path", html)
         self.assertNotIn("<th>Metric Path</th>", html)

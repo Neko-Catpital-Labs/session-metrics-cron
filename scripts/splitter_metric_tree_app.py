@@ -41,18 +41,58 @@ DIAGNOSTIC_SCORE_PARENTS = {
     "responseMissingStackLinkCount": "responseNoMissingStackLinksScore",
 }
 FORMULAS = {
-    "correctStackLinksScore": "correct links / max(expected links, actual links, 1), per case then averaged",
-    "plannedCorrectStackLinksScore": "correct links / max(expected links, actual links, 1), per case then averaged",
-    "responseCorrectStackLinksScore": "correct links / max(expected links, actual links, 1), per case then averaged",
-    "noExtraStackLinksScore": "1 - extra links / max(actual links, 1), per case then averaged",
-    "plannedNoExtraStackLinksScore": "1 - extra links / max(actual links, 1), per case then averaged",
-    "responseNoExtraStackLinksScore": "1 - extra links / max(actual links, 1), per case then averaged",
-    "noMissingStackLinksScore": "1 - missing links / max(expected links, 1), per case then averaged",
-    "plannedNoMissingStackLinksScore": "1 - missing links / max(expected links, 1), per case then averaged",
-    "responseNoMissingStackLinksScore": "1 - missing links / max(expected links, 1), per case then averaged",
+    "correctStackLinksScore": "correct links / max(expected links, actual links, 1)",
+    "plannedCorrectStackLinksScore": "correct links / max(expected links, actual links, 1)",
+    "responseCorrectStackLinksScore": "correct links / max(expected links, actual links, 1)",
+    "noExtraStackLinksScore": "1 - extra links / max(actual links, 1)",
+    "plannedNoExtraStackLinksScore": "1 - extra links / max(actual links, 1)",
+    "responseNoExtraStackLinksScore": "1 - extra links / max(actual links, 1)",
+    "noMissingStackLinksScore": "1 - missing links / max(expected links, 1)",
+    "plannedNoMissingStackLinksScore": "1 - missing links / max(expected links, 1)",
+    "responseNoMissingStackLinksScore": "1 - missing links / max(expected links, 1)",
     "stackLinkCorrectnessScore": "0.34 * Correct + 0.33 * No Extra + 0.33 * No Missing",
     "plannedStackLinkCorrectnessScore": "0.34 * Correct + 0.33 * No Extra + 0.33 * No Missing",
     "responseStackLinkCorrectnessScore": "0.34 * Correct + 0.33 * No Extra + 0.33 * No Missing",
+}
+STACK_LINK_SPECS = {
+    "correctStackLinksScore": ("correctStackLinkCount", "extraStackLinkCount", "missingStackLinkCount"),
+    "plannedCorrectStackLinksScore": (
+        "plannedCorrectStackLinkCount",
+        "plannedExtraStackLinkCount",
+        "plannedMissingStackLinkCount",
+    ),
+    "responseCorrectStackLinksScore": (
+        "responseCorrectStackLinkCount",
+        "responseExtraStackLinkCount",
+        "responseMissingStackLinkCount",
+    ),
+}
+NO_EXTRA_SPECS = {
+    "noExtraStackLinksScore": ("extraStackLinkCount", "correctStackLinkCount"),
+    "plannedNoExtraStackLinksScore": ("plannedExtraStackLinkCount", "plannedCorrectStackLinkCount"),
+    "responseNoExtraStackLinksScore": ("responseExtraStackLinkCount", "responseCorrectStackLinkCount"),
+}
+NO_MISSING_SPECS = {
+    "noMissingStackLinksScore": ("missingStackLinkCount", "correctStackLinkCount"),
+    "plannedNoMissingStackLinksScore": ("plannedMissingStackLinkCount", "plannedCorrectStackLinkCount"),
+    "responseNoMissingStackLinksScore": ("responseMissingStackLinkCount", "responseCorrectStackLinkCount"),
+}
+STACK_LINK_AGGREGATES = {
+    "stackLinkCorrectnessScore": [
+        ("Correct links score", "correctStackLinksScore", 0.34),
+        ("No extra links score", "noExtraStackLinksScore", 0.33),
+        ("No missing links score", "noMissingStackLinksScore", 0.33),
+    ],
+    "plannedStackLinkCorrectnessScore": [
+        ("Correct links score", "plannedCorrectStackLinksScore", 0.34),
+        ("No extra links score", "plannedNoExtraStackLinksScore", 0.33),
+        ("No missing links score", "plannedNoMissingStackLinksScore", 0.33),
+    ],
+    "responseStackLinkCorrectnessScore": [
+        ("Correct links score", "responseCorrectStackLinksScore", 0.34),
+        ("No extra links score", "responseNoExtraStackLinksScore", 0.33),
+        ("No missing links score", "responseNoMissingStackLinksScore", 0.33),
+    ],
 }
 
 
@@ -397,6 +437,7 @@ def normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for row in rows
     ]
     apply_explanation_tree(normalized)
+    attach_explanations(normalized)
     return sorted(normalized, key=lambda row: row.get("tree_path") or row.get("metric_path") or "")
 
 
@@ -419,6 +460,131 @@ def apply_explanation_tree(rows: list[dict[str, Any]]) -> None:
         row["tree_path"] = f"{score_path}.{metric_id}"
         if isinstance(row.get("relative_depth"), int):
             row["tree_relative_depth"] = int(row["relative_depth"]) + 1
+
+
+def attach_explanations(rows: list[dict[str, Any]]) -> None:
+    by_metric_id = {str(row.get("metric_id") or ""): row for row in rows}
+    for row in rows:
+        row["explanation"] = explanation_for_row(row, by_metric_id)
+
+
+def explanation_for_row(row: dict[str, Any], by_metric_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    metric_id = str(row.get("metric_id") or "")
+    if metric_id in STACK_LINK_SPECS:
+        correct_id, extra_id, missing_id = STACK_LINK_SPECS[metric_id]
+        correct = display_value(by_metric_id.get(correct_id))
+        extra = display_value(by_metric_id.get(extra_id))
+        missing = display_value(by_metric_id.get(missing_id))
+        expected = sum_values(correct, missing)
+        actual = sum_values(correct, extra)
+        return {
+            "kind": "fraction",
+            "title": "Correct stack links score",
+            "formula": {
+                "numerator": "correct links",
+                "denominator": "max(expected links, actual links, 1)",
+            },
+            "inputs": [
+                input_item("correct links", correct, correct_id),
+                input_item("expected links", expected, "correct + missing"),
+                input_item("actual links", actual, "correct + extra"),
+            ],
+            "result": input_item("score", row.get("score"), metric_id),
+            "note": "Calculated per replay case, then averaged. Average inputs explain the score but may not recompute it exactly.",
+        }
+    if metric_id in NO_EXTRA_SPECS:
+        extra_id, correct_id = NO_EXTRA_SPECS[metric_id]
+        extra = display_value(by_metric_id.get(extra_id))
+        correct = display_value(by_metric_id.get(correct_id))
+        actual = sum_values(correct, extra)
+        return {
+            "kind": "expression",
+            "title": "No extra stack links score",
+            "formula": {"expression": "1 - extra links / max(actual links, 1)"},
+            "inputs": [
+                input_item("extra links", extra, extra_id),
+                input_item("actual links", actual, "correct + extra"),
+            ],
+            "result": input_item("score", row.get("score"), metric_id),
+            "note": "Calculated per replay case, then averaged. Average inputs explain the score but may not recompute it exactly.",
+        }
+    if metric_id in NO_MISSING_SPECS:
+        missing_id, correct_id = NO_MISSING_SPECS[metric_id]
+        missing = display_value(by_metric_id.get(missing_id))
+        correct = display_value(by_metric_id.get(correct_id))
+        expected = sum_values(correct, missing)
+        return {
+            "kind": "expression",
+            "title": "No missing stack links score",
+            "formula": {"expression": "1 - missing links / max(expected links, 1)"},
+            "inputs": [
+                input_item("missing links", missing, missing_id),
+                input_item("expected links", expected, "correct + missing"),
+            ],
+            "result": input_item("score", row.get("score"), metric_id),
+            "note": "Calculated per replay case, then averaged. Average inputs explain the score but may not recompute it exactly.",
+        }
+    if metric_id in STACK_LINK_AGGREGATES:
+        inputs = [
+            input_item(label, display_value(by_metric_id.get(child_id)), f"{weight:g} * {child_id}")
+            for label, child_id, weight in STACK_LINK_AGGREGATES[metric_id]
+        ]
+        return {
+            "kind": "weighted_sum",
+            "title": "Stack link correctness score",
+            "formula": {"expression": FORMULAS[metric_id]},
+            "inputs": inputs,
+            "result": input_item("score", row.get("score"), metric_id),
+            "note": "Diagnostic count rows explain the child scores; only normalized score rows contribute to this aggregate.",
+        }
+    if row.get("kind") == "diagnostic":
+        return {
+            "kind": "diagnostic",
+            "title": "Diagnostic count",
+            "formula": {"expression": "average raw count per replay case"},
+            "inputs": [input_item("avg count", display_value(row), metric_id)],
+            "result": input_item("avg count", display_value(row), metric_id),
+            "note": "This value is not normalized and does not contribute directly to aggregate scoring.",
+        }
+    if metric_id in FORMULAS:
+        return {
+            "kind": "expression",
+            "title": "Score formula",
+            "formula": {"expression": FORMULAS[metric_id]},
+            "inputs": [],
+            "result": input_item("score", row.get("score"), metric_id),
+            "note": "Score values are normalized from 0 to 1.",
+        }
+    return {
+        "kind": "score",
+        "title": "Metric value",
+        "formula": {"expression": str(row.get("description") or "Catalog-defined score")},
+        "inputs": [],
+        "result": input_item("value", display_value(row), metric_id),
+        "note": "",
+    }
+
+
+def display_value(row: dict[str, Any] | None) -> float | None:
+    if not row:
+        return None
+    value = row.get("display_value")
+    if isinstance(value, (int, float)):
+        return float(value)
+    value = row.get("score")
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def sum_values(left: float | None, right: float | None) -> float | None:
+    if left is None or right is None:
+        return None
+    return round(left + right, 4)
+
+
+def input_item(label: str, value: Any, source: str) -> dict[str, Any]:
+    return {"label": label, "value": value, "source": source}
 
 
 def normalize_history(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:

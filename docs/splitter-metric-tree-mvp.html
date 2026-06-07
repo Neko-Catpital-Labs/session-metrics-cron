@@ -255,6 +255,90 @@
       font-variant-numeric: tabular-nums;
     }
 
+    .metric-info-popup {
+      position: fixed;
+      z-index: 20;
+      display: none;
+      width: min(420px, calc(100vw - 24px));
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: 0 12px 32px rgba(16, 24, 40, 0.22);
+      color: var(--text);
+      font-size: 12px;
+    }
+
+    .metric-info-popup.is-visible { display: block; }
+
+    .metric-info-popup h3 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+
+    .metric-info-popup .formula-block {
+      margin: 8px 0;
+      padding: 10px;
+      border-radius: 6px;
+      background: #f8fafc;
+      border: 1px solid #e5e7eb;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .formula-fraction {
+      display: inline-grid;
+      gap: 4px;
+      text-align: center;
+      max-width: 100%;
+    }
+
+    .formula-fraction .bar {
+      border-top: 1px solid #344054;
+      height: 0;
+    }
+
+    .formula-expression {
+      overflow-wrap: anywhere;
+      font-weight: 600;
+    }
+
+    .input-grid {
+      display: grid;
+      gap: 6px;
+      margin: 8px 0;
+    }
+
+    .input-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: baseline;
+    }
+
+    .input-label {
+      min-width: 0;
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+
+    .input-value {
+      font-variant-numeric: tabular-nums;
+      font-weight: 650;
+    }
+
+    .input-source {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .popup-note {
+      margin-top: 8px;
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+
     .table-wrap {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -354,6 +438,35 @@
       font-weight: 600;
     }
 
+    .name-wrap {
+      display: inline-grid;
+      grid-template-columns: minmax(0, auto) 20px;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+    }
+
+    .info-button {
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      border-radius: 50%;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      background: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 16px;
+      cursor: help;
+    }
+
+    .info-button:hover,
+    .info-button:focus {
+      color: var(--score);
+      border-color: var(--score);
+      outline: none;
+    }
+
     tr[data-depth="0"] .name {
       font-size: 13px;
       line-height: 1.2;
@@ -367,13 +480,6 @@
       display: -webkit-box;
       -webkit-line-clamp: 2;
       -webkit-box-orient: vertical;
-    }
-
-    .formula {
-      margin-top: 4px;
-      color: var(--muted);
-      font-size: 12px;
-      overflow-wrap: anywhere;
     }
 
     .pill {
@@ -663,6 +769,12 @@
     pointPopup.className = "point-popup";
     pointPopup.setAttribute("role", "dialog");
     historyChart.appendChild(pointPopup);
+    const metricInfoPopup = document.createElement("div");
+    metricInfoPopup.className = "metric-info-popup";
+    metricInfoPopup.setAttribute("role", "dialog");
+    document.body.appendChild(metricInfoPopup);
+    let metricInfoPinned = false;
+    let activeMetricInfoPath = null;
 
     function setHistoryChart(html) {
       historyChart.innerHTML = html;
@@ -740,6 +852,91 @@
         return `<div class="diagnostic-value">${escapeHtml(formatDisplayValue(row, value))}</div>`;
       }
       return metricCell(value, false, "score");
+    }
+
+    function infoButton(row) {
+      if (!row.explanation) return "";
+      return `<button class="info-button" type="button" data-info-path="${escapeHtml(row.metric_path)}" aria-label="Show calculation for ${escapeHtml(row.metric_id)}">?</button>`;
+    }
+
+    function renderFormula(explanation) {
+      const formula = explanation?.formula || {};
+      if (formula.numerator && formula.denominator) {
+        return `
+          <div class="formula-block">
+            <div class="formula-fraction">
+              <div>${escapeHtml(formula.numerator)}</div>
+              <div class="bar"></div>
+              <div>${escapeHtml(formula.denominator)}</div>
+            </div>
+          </div>
+        `;
+      }
+      return `<div class="formula-block"><div class="formula-expression">${escapeHtml(formula.expression || "")}</div></div>`;
+    }
+
+    function renderInputs(explanation) {
+      const inputs = explanation?.inputs || [];
+      if (!inputs.length) return "";
+      return `<div class="input-grid">
+        ${inputs.map(input => `
+          <div class="input-row">
+            <div class="input-label">
+              ${escapeHtml(input.label)}
+              ${input.source ? `<div class="input-source">${escapeHtml(input.source)}</div>` : ""}
+            </div>
+            <div class="input-value">${input.value == null ? "" : escapeHtml(formatScore(input.value))}</div>
+          </div>
+        `).join("")}
+      </div>`;
+    }
+
+    function renderMetricInfo(row) {
+      const explanation = row.explanation || {};
+      return `
+        <h3>${escapeHtml(row.metric_id)}</h3>
+        <div>${escapeHtml(explanation.title || row.description || "")}</div>
+        ${renderFormula(explanation)}
+        ${renderInputs(explanation)}
+        ${explanation.result ? `
+          <div class="input-row">
+            <div class="input-label">${escapeHtml(explanation.result.label || "value")}</div>
+            <div class="input-value">${explanation.result.value == null ? "" : escapeHtml(formatScore(explanation.result.value))}</div>
+          </div>
+        ` : ""}
+        ${explanation.note ? `<div class="popup-note">${escapeHtml(explanation.note)}</div>` : ""}
+      `;
+    }
+
+    function showMetricInfo(row, target, pinned = false) {
+      if (!row || !target) return;
+      if (
+        metricInfoPopup.classList.contains("is-visible")
+        && activeMetricInfoPath === row.metric_path
+        && metricInfoPinned === pinned
+      ) {
+        return;
+      }
+      metricInfoPinned = pinned;
+      activeMetricInfoPath = row.metric_path;
+      metricInfoPopup.innerHTML = renderMetricInfo(row);
+      metricInfoPopup.classList.add("is-visible");
+      const rect = target.getBoundingClientRect();
+      const width = metricInfoPopup.offsetWidth || 360;
+      const height = metricInfoPopup.offsetHeight || 220;
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+      const below = rect.bottom + 8;
+      const above = rect.top - height - 8;
+      const top = below + height < window.innerHeight ? below : Math.max(8, above);
+      metricInfoPopup.style.left = `${left}px`;
+      metricInfoPopup.style.top = `${top}px`;
+    }
+
+    function hideMetricInfo(force = false) {
+      if (metricInfoPinned && !force) return;
+      metricInfoPinned = false;
+      activeMetricInfoPath = null;
+      metricInfoPopup.classList.remove("is-visible");
     }
 
     function sparkline(points) {
@@ -973,12 +1170,14 @@
               ${hasChildren(row)
                 ? `<button class="toggle" type="button" data-path="${row.tree_path}" aria-label="${open ? "Collapse" : "Expand"} ${row.metric_id}">${open ? "−" : "+"}</button>`
                 : `<span class="toggle placeholder"></span>`}
-              <span class="name" title="${row.metric_path}">${row.metric_id}</span>
+              <span class="name-wrap">
+                <span class="name" title="${row.metric_path}">${row.metric_id}</span>
+                ${infoButton(row)}
+              </span>
             </div>
           </td>
           <td class="desc-col" data-label="Description">
             <div class="desc" title="${row.description}">${row.description}</div>
-            ${row.formula ? `<div class="formula">Formula: ${escapeHtml(row.formula)}</div>` : ""}
           </td>
           <td class="metric-col" data-label="Score / Diagnostic">${valueCell(row)}</td>
           <td class="metric-col" data-label="Local Weight">${metricCell(row.local_weight_pct, true, "local")}</td>
@@ -1026,6 +1225,7 @@
     }
 
     tbody.addEventListener("click", event => {
+      if (event.target.closest(".info-button[data-info-path]")) return;
       const button = event.target.closest(".toggle[data-path]");
       if (button) {
         const path = button.dataset.path;
@@ -1038,6 +1238,39 @@
       if (!row) return;
       selectedPath = row.dataset.path;
       render();
+    });
+
+    tbody.addEventListener("pointerover", event => {
+      const button = event.target.closest(".info-button[data-info-path]");
+      if (!button) return;
+      const row = rows.find(candidate => candidate.metric_path === button.dataset.infoPath);
+      showMetricInfo(row, button, false);
+    });
+
+    tbody.addEventListener("pointerout", event => {
+      if (!event.target.closest(".info-button[data-info-path]")) return;
+      hideMetricInfo();
+    });
+
+    tbody.addEventListener("focusin", event => {
+      const button = event.target.closest(".info-button[data-info-path]");
+      if (!button) return;
+      const row = rows.find(candidate => candidate.metric_path === button.dataset.infoPath);
+      showMetricInfo(row, button, false);
+    });
+
+    tbody.addEventListener("focusout", event => {
+      if (!event.target.closest(".info-button[data-info-path]")) return;
+      hideMetricInfo();
+    });
+
+    tbody.addEventListener("click", event => {
+      const button = event.target.closest(".info-button[data-info-path]");
+      if (!button) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const row = rows.find(candidate => candidate.metric_path === button.dataset.infoPath);
+      showMetricInfo(row, button, true);
     });
 
     historyChart.addEventListener("pointerover", event => {
@@ -1071,11 +1304,16 @@
 
     document.addEventListener("click", event => {
       if (historyChart.contains(event.target)) return;
+      if (event.target.closest(".info-button")) return;
+      hideMetricInfo(true);
       hidePointPopup(true);
     });
 
     document.addEventListener("keydown", event => {
-      if (event.key === "Escape") hidePointPopup(true);
+      if (event.key === "Escape") {
+        hideMetricInfo(true);
+        hidePointPopup(true);
+      }
     });
 
     document.getElementById("expand").addEventListener("click", () => {
