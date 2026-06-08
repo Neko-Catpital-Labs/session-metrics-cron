@@ -172,9 +172,77 @@
       gap: 0;
     }
 
+    .comparison {
+      display: grid;
+      gap: 14px;
+    }
+
+    .summary-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    .comparison-row {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .comparison-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfe;
+    }
+
+    .comparison-title h2 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 650;
+      letter-spacing: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .comparison-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+
+    .comparison-col + .comparison-col {
+      border-left: 1px solid var(--line);
+    }
+
+    .comparison-col-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 42px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+
+    .comparison-col-head h3 {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+
     .rule {
       padding: 14px 16px;
       border-bottom: 1px solid var(--line);
+    }
+
+    .comparison-col .rule {
+      border-bottom: 0;
     }
 
     .rule:last-child {
@@ -331,6 +399,13 @@
       .arrow {
         min-height: 24px;
       }
+      .comparison-grid {
+        grid-template-columns: 1fr;
+      }
+      .comparison-col + .comparison-col {
+        border-left: 0;
+        border-top: 1px solid var(--line);
+      }
     }
   </style>
 </head>
@@ -339,14 +414,15 @@
     <header>
       <div>
         <h1>Splitter Rules</h1>
-        <p class="subhead">Generated rule catalogs from the latest stack learning run.</p>
+        <p class="subhead">Generated candidates beside the effective post-gate rule catalog.</p>
       </div>
       <div class="controls">
         <input id="search" placeholder="Filter rules" aria-label="Filter rules">
         <select id="catalog-filter" aria-label="Catalog">
-          <option value="all">All catalogs</option>
-          <option value="generated">Generated</option>
-          <option value="effective">Effective</option>
+          <option value="all">All rules</option>
+          <option value="changed">Changed only</option>
+          <option value="generated">Generated only</option>
+          <option value="effective">Effective only</option>
         </select>
         <button id="refresh" type="button">Refresh</button>
         <a class="nav-link" href="/">Metrics</a>
@@ -431,7 +507,44 @@
       `).join("")}</div>`;
     }
 
+    function ruleSignature(rule) {
+      return JSON.stringify(rule?.raw || rule || {});
+    }
+
+    function rulesById(catalog) {
+      const map = new Map();
+      for (const rule of catalog?.rules || []) {
+        if (rule.id) map.set(rule.id, rule);
+      }
+      return map;
+    }
+
+    function catalogByKind(kind) {
+      return (payload?.catalogs || []).find(catalog => catalog.kind === kind) || null;
+    }
+
+    function uniqueRuleIds(generated, effective) {
+      const generatedRules = rulesById(generated);
+      const effectiveRules = rulesById(effective);
+      return [...new Set([...generatedRules.keys(), ...effectiveRules.keys()])]
+        .sort((left, right) => {
+          const leftRule = generatedRules.get(left) || effectiveRules.get(left) || {};
+          const rightRule = generatedRules.get(right) || effectiveRules.get(right) || {};
+          return (rightRule.priority || 0) - (leftRule.priority || 0) || left.localeCompare(right);
+        });
+    }
+
+    function comparisonStatus(generatedRule, effectiveRule) {
+      if (generatedRule && effectiveRule && ruleSignature(generatedRule) === ruleSignature(effectiveRule)) return "same";
+      if (generatedRule && effectiveRule) return "changed";
+      if (generatedRule) return "generated only";
+      return "effective only";
+    }
+
     function renderRule(rule) {
+      if (!rule) {
+        return `<article class="rule"><div class="empty">No matching rule in this catalog.</div></article>`;
+      }
       return `<article class="rule">
         <div class="rule-head">
           <div>
@@ -464,35 +577,76 @@
       </article>`;
     }
 
-    function renderCatalog(catalog, query) {
-      const filteredRules = (catalog.rules || []).filter(rule => !query || ruleText(rule).includes(query));
-      return `<section class="catalog-panel" data-kind="${escapeHtml(catalog.kind)}">
-        <div class="catalog-head">
-          <div>
-            <h2>${escapeHtml(catalog.title || catalog.kind)}</h2>
-            <div class="catalog-path">${escapeHtml(catalog.path || "")}</div>
-          </div>
-          <div class="stats">
-            <span class="pill">${escapeHtml(catalog.counts?.rules ?? 0)} rules</span>
-            <span class="pill">${escapeHtml(catalog.counts?.actions ?? 0)} actions</span>
-            <span class="pill">${escapeHtml(catalog.counts?.reasons ?? 0)} reasons</span>
-            <span class="pill">v${escapeHtml(catalog.version ?? "")}</span>
-          </div>
+    function renderComparisonRow(id, generatedRule, effectiveRule) {
+      const status = comparisonStatus(generatedRule, effectiveRule);
+      return `<section class="comparison-row">
+        <div class="comparison-title">
+          <h2>${escapeHtml(id)}</h2>
+          <span class="pill">${escapeHtml(status)}</span>
         </div>
-        <div class="rules">
-          ${filteredRules.length ? filteredRules.map(renderRule).join("") : `<div class="empty">No rules match this filter.</div>`}
+        <div class="comparison-grid">
+          <div class="comparison-col">
+            <div class="comparison-col-head">
+              <h3>Generated candidate</h3>
+              <span class="pill">${generatedRule ? "present" : "missing"}</span>
+            </div>
+            ${renderRule(generatedRule)}
+          </div>
+          <div class="comparison-col">
+            <div class="comparison-col-head">
+              <h3>Effective after gate</h3>
+              <span class="pill">${effectiveRule ? "present" : "missing"}</span>
+            </div>
+            ${renderRule(effectiveRule)}
+          </div>
         </div>
       </section>`;
+    }
+
+    function renderComparison(query, mode) {
+      const generated = catalogByKind("generated");
+      const effective = catalogByKind("effective");
+      const generatedRules = rulesById(generated);
+      const effectiveRules = rulesById(effective);
+      const allIds = uniqueRuleIds(generated, effective);
+      const rows = allIds
+        .map(id => ({
+          id,
+          generatedRule: generatedRules.get(id) || null,
+          effectiveRule: effectiveRules.get(id) || null,
+        }))
+        .filter(row => {
+          if (query && !ruleText(row.generatedRule || {}).includes(query) && !ruleText(row.effectiveRule || {}).includes(query)) {
+            return false;
+          }
+          if (mode === "changed") return comparisonStatus(row.generatedRule, row.effectiveRule) !== "same";
+          if (mode === "generated") return Boolean(row.generatedRule);
+          if (mode === "effective") return Boolean(row.effectiveRule);
+          return true;
+        });
+      const changedCount = allIds.filter(id => comparisonStatus(generatedRules.get(id), effectiveRules.get(id)) !== "same").length;
+      const sameCount = allIds.length - changedCount;
+      return `<div class="summary-row">
+          <span class="pill">${escapeHtml(allIds.length)} unique rules</span>
+          <span class="pill">${escapeHtml(generated?.counts?.rules ?? 0)} generated</span>
+          <span class="pill">${escapeHtml(effective?.counts?.rules ?? 0)} effective</span>
+          <span class="pill">${escapeHtml(sameCount)} same</span>
+          <span class="pill">${escapeHtml(changedCount)} changed/missing</span>
+          <span class="pill">generated: ${escapeHtml(generated?.path || "")}</span>
+          <span class="pill">effective: ${escapeHtml(effective?.path || "")}</span>
+        </div>
+        <div class="comparison">
+          ${rows.length ? rows.map(row => renderComparisonRow(row.id, row.generatedRule, row.effectiveRule)).join("") : `<div class="empty">No rules match this filter.</div>`}
+        </div>`;
     }
 
     function render() {
       if (!payload) return;
       const query = searchEl.value.trim().toLowerCase();
-      const catalogKind = catalogFilterEl.value;
+      const mode = catalogFilterEl.value;
       renderRun(payload.run || {}, payload.workflowAnalysisRoot, payload.pipelineRunPath);
-      const catalogs = (payload.catalogs || []).filter(catalog => catalogKind === "all" || catalog.kind === catalogKind);
-      contentEl.innerHTML = catalogs.length
-        ? catalogs.map(catalog => renderCatalog(catalog, query)).join("")
+      contentEl.innerHTML = (payload.catalogs || []).length
+        ? renderComparison(query, mode)
         : `<div class="empty">No rule catalogs found.</div>`;
     }
 
