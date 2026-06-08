@@ -20,6 +20,13 @@ from urllib.parse import parse_qs, urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_STATIC_PATH = REPO_ROOT / "docs" / "splitter-metric-tree-mvp.html"
+DEFAULT_RULES_STATIC_PATH = REPO_ROOT / "docs" / "splitter-rules.html"
+DEFAULT_WORKFLOW_ANALYSIS_ROOT = Path(
+    os.environ.get(
+        "WORKFLOW_ANALYSIS_SERVICE_ROOT",
+        str(REPO_ROOT.parent / "workflow-analysis-service"),
+    )
+)
 DEFAULT_TABLE = "summer-nexus-137922.splitter_metrics.splitter_replay_metric_scores_over_time"
 DEFAULT_PROJECT = "summer-nexus-137922"
 DEFAULT_METRIC_PATH = "planToResponseGraphScore"
@@ -133,6 +140,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--metabase-api-key", default=os.environ.get("METABASE_API_KEY", ""))
     parser.add_argument("--metabase-database-id", type=int, default=int(os.environ.get("METABASE_BIGQUERY_DATABASE_ID", str(DEFAULT_METABASE_DATABASE_ID))))
     parser.add_argument("--static-path", type=Path, default=DEFAULT_STATIC_PATH)
+    parser.add_argument("--rules-static-path", type=Path, default=DEFAULT_RULES_STATIC_PATH)
+    parser.add_argument("--workflow-analysis-root", type=Path, default=DEFAULT_WORKFLOW_ANALYSIS_ROOT)
     parser.add_argument("--cache-ttl-seconds", type=int, default=int(os.environ.get("SPLITTER_TREE_CACHE_TTL_SECONDS", str(DEFAULT_CACHE_TTL_SECONDS))))
     return parser.parse_args()
 
@@ -639,8 +648,146 @@ def to_int(value: Any) -> int | None:
     return int(value)
 
 
+def read_json_file(path: Path) -> dict[str, Any]:
+    with path.open(encoding="utf-8") as handle:
+        value = json.load(handle)
+    return value if isinstance(value, dict) else {}
+
+
+def latest_learning_run_path(workflow_analysis_root: Path) -> Path:
+    runs_dir = workflow_analysis_root / "target" / "stack-learning" / "runs"
+    paths = sorted(runs_dir.glob("*/pipeline-run.json"))
+    if not paths:
+        raise FileNotFoundError(f"no learning runs found under {runs_dir}")
+    return paths[-1]
+
+
+def artifact_path(workflow_analysis_root: Path, pipeline_run: dict[str, Any], key: str) -> Path | None:
+    path_value = str(((pipeline_run.get("artifacts") or {}).get(key) or "")).strip()
+    if not path_value:
+        return None
+    path = Path(path_value)
+    return path if path.is_absolute() else workflow_analysis_root / path
+
+
+def rule_item_label(item: dict[str, Any]) -> str:
+    item_type = item.get("type") or "item"
+    item_id = item.get("id") or ""
+    return f"{item_type}:{item_id}" if item_id else str(item_type)
+
+
+def normalize_rule_catalog(catalog: dict[str, Any], *, kind: str, title: str, path: Path | None) -> dict[str, Any]:
+    rules = catalog.get("rules") if isinstance(catalog.get("rules"), list) else []
+    actions = catalog.get("actions") if isinstance(catalog.get("actions"), list) else []
+    reasons = catalog.get("reasons") if isinstance(catalog.get("reasons"), list) else []
+    reason_messages = {
+        str(reason.get("id")): reason.get("message") or ""
+        for reason in reasons
+        if isinstance(reason, dict)
+    }
+    normalized_rules: list[dict[str, Any]] = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        reason_id = str(rule.get("reasonId") or "")
+        normalized_rules.append(
+            {
+                "id": rule.get("id"),
+                "priority": rule.get("priority"),
+                "relation": rule.get("relation"),
+                "reasonId": reason_id,
+                "reason": reason_messages.get(reason_id, ""),
+                "triggerThreshold": rule.get("triggerThreshold"),
+                "before": [
+                    rule_item_label(item)
+                    for item in rule.get("before") or []
+                    if isinstance(item, dict)
+                ],
+                "after": [
+                    rule_item_label(item)
+                    for item in rule.get("after") or []
+                    if isinstance(item, dict)
+                ],
+                "triggerTerms": [
+                    {
+                        "text": term.get("text"),
+                        "category": term.get("category"),
+                        "weight": term.get("weight"),
+                    }
+                    for term in rule.get("triggerTerms") or []
+                    if isinstance(term, dict)
+                ],
+                "raw": rule,
+            }
+        )
+    normalized_rules.sort(
+        key=lambda rule: (
+            -(rule.get("priority") or 0),
+            str(rule.get("id") or ""),
+        )
+    )
+    return {
+        "kind": kind,
+        "title": title,
+        "path": str(path) if path else "",
+        "version": catalog.get("version"),
+        "counts": {
+            "rules": len(normalized_rules),
+            "actions": len(actions),
+            "reasons": len(reasons),
+        },
+        "rules": normalized_rules,
+        "actions": actions,
+        "reasons": reasons,
+    }
+
+
+def rules_response(workflow_analysis_root: Path) -> dict[str, Any]:
+    pipeline_path = latest_learning_run_path(workflow_analysis_root)
+    pipeline_run = read_json_file(pipeline_path)
+    catalogs = []
+    generated_path = artifact_path(workflow_analysis_root, pipeline_run, "generatedRuleCatalog")
+    if generated_path and generated_path.exists():
+        catalogs.append(
+            normalize_rule_catalog(
+                read_json_file(generated_path),
+                kind="generated",
+                title="Generated candidate rules",
+                path=generated_path,
+            )
+        )
+    effective_path = artifact_path(workflow_analysis_root, pipeline_run, "effectiveRuleCatalog")
+    if effective_path and effective_path.exists():
+        catalogs.append(
+            normalize_rule_catalog(
+                read_json_file(effective_path),
+                kind="effective",
+                title="Effective rules after promotion gate",
+                path=effective_path,
+            )
+        )
+    return {
+        "workflowAnalysisRoot": str(workflow_analysis_root),
+        "pipelineRunPath": str(pipeline_path),
+        "run": {
+            "runId": pipeline_run.get("runId"),
+            "collectedAt": pipeline_run.get("collectedAt"),
+            "branch": pipeline_run.get("branch"),
+            "headSha": pipeline_run.get("headSha"),
+            "shortSha": short_sha(pipeline_run.get("headSha")),
+            "pipelineStatus": pipeline_run.get("pipelineStatus"),
+            "prUrl": (pipeline_run.get("prResult") or {}).get("url"),
+            "repos": pipeline_run.get("repos") or [],
+            "rulePromotion": (pipeline_run.get("replaySummary") or {}).get("rulePromotion") or {},
+        },
+        "catalogs": catalogs,
+    }
+
+
 def make_handler(
     static_path: Path,
+    rules_static_path: Path,
+    workflow_analysis_root: Path,
     table: str,
     project_id: str,
     backend: str,
@@ -652,7 +799,7 @@ def make_handler(
     class Handler(BaseHTTPRequestHandler):
         def do_HEAD(self) -> None:
             parsed = urlparse(self.path)
-            if parsed.path in {"/", "/index.html", "/healthz"}:
+            if parsed.path in {"/", "/index.html", "/rules.html", "/healthz"}:
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
@@ -662,18 +809,24 @@ def make_handler(
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path in {"/", "/index.html"}:
-                self.send_static()
+                self.send_static(static_path)
+                return
+            if parsed.path == "/rules.html":
+                self.send_static(rules_static_path)
                 return
             if parsed.path == "/api/splitter-metric-tree":
                 self.send_metric_tree(parse_qs(parsed.query))
+                return
+            if parsed.path == "/api/splitter-rules":
+                self.send_rules()
                 return
             if parsed.path == "/healthz":
                 self.send_json({"ok": True})
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
-        def send_static(self) -> None:
-            body = static_path.read_bytes()
+        def send_static(self, path: Path) -> None:
+            body = path.read_bytes()
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -707,6 +860,18 @@ def make_handler(
             except Exception as exc:
                 self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
+        def send_rules(self) -> None:
+            try:
+                payload = cache.get("splitter-rules")
+                if payload is None:
+                    payload = rules_response(workflow_analysis_root)
+                    cache.set("splitter-rules", payload)
+                self.send_json(payload)
+            except FileNotFoundError as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
         def send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
             body = json.dumps(payload, separators=(",", ":"), default=serialize_value).encode("utf-8")
             self.send_response(status)
@@ -727,6 +892,8 @@ def main() -> int:
     cache = TTLCache(args.cache_ttl_seconds)
     handler = make_handler(
         args.static_path,
+        args.rules_static_path,
+        args.workflow_analysis_root,
         args.table,
         args.project_id,
         args.backend,

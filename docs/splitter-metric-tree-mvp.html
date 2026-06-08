@@ -65,7 +65,7 @@
       flex-wrap: wrap;
     }
 
-    button, input, select {
+    button, input, select, .nav-link {
       border: 1px solid var(--line);
       background: #fff;
       color: var(--text);
@@ -74,6 +74,12 @@
       border-radius: 6px;
       cursor: pointer;
       font: inherit;
+    }
+
+    .nav-link {
+      display: inline-flex;
+      align-items: center;
+      text-decoration: none;
     }
 
     input {
@@ -714,6 +720,7 @@
         <button type="button" id="refresh">Refresh</button>
         <button type="button" id="expand">Expand All</button>
         <button type="button" id="collapse">Collapse Composites</button>
+        <a class="nav-link" href="/rules.html">Rules</a>
       </div>
     </header>
 
