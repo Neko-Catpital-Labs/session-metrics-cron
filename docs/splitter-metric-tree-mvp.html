@@ -944,13 +944,13 @@
       if (values.length < 2) return "";
       const width = 170;
       const height = 32;
-      const min = Math.min(...values);
-      const max = Math.max(...values);
-      const spread = max - min || 1;
+      const domain = paddedDomain(values, 0.1);
+      const spread = domain.max - domain.min || 1;
       const step = width / (values.length - 1);
       const polyline = values.map((value, index) => {
         const x = index * step;
-        const y = height - ((value - min) / spread) * (height - 4) - 2;
+        const clamped = Math.max(domain.min, Math.min(domain.max, value));
+        const y = height - ((clamped - domain.min) / spread) * (height - 4) - 2;
         return `${x.toFixed(1)},${y.toFixed(1)}`;
       }).join(" ");
       return `<svg class="spark" viewBox="0 0 ${width} ${height}" aria-hidden="true">
@@ -998,15 +998,12 @@
     function historyCharts(points, row) {
       if (!points.length) return `<div class="empty">No metric history for this metric.</div>`;
       const valueTitle = row.is_score ? "Score Over Time" : "Avg Count Over Time";
-      const maxDisplayValue = row.is_score
-        ? 1
-        : Math.max(1, ...points.map(point => Number(point.display_value)).filter(value => Number.isFinite(value)));
+      const valuePadding = row.is_score ? 0.1 : 10;
       return `<div class="chart-stack">
         ${historyLineChart(points, {
           title: valueTitle,
           valueKey: "display_value",
-          maxValue: maxDisplayValue,
-          ticks: row.is_score ? [1, 0.75, 0.5, 0.25, 0] : [maxDisplayValue, maxDisplayValue * 0.75, maxDisplayValue * 0.5, maxDisplayValue * 0.25, 0],
+          domainPadding: valuePadding,
           formatter: value => formatDisplayValue(row, value),
           lineClass: "score-line",
           pointClass: "score-point",
@@ -1015,14 +1012,32 @@
         ${historyLineChart(points, {
           title: "Effective Weight Over Time",
           valueKey: "effective_weight_pct",
-          maxValue: 100,
-          ticks: [100, 75, 50, 25, 0],
+          domainPadding: 10,
           formatter: formatPct,
           lineClass: "effective-line",
           pointClass: "effective-point",
           emptyText: "No effective weight history for this metric."
         })}
       </div>`;
+    }
+
+    function paddedDomain(values, padding) {
+      const finite = values.map(Number).filter(value => Number.isFinite(value));
+      if (!finite.length) return { min: 0, max: Math.max(1, padding) };
+      const minValue = Math.min(...finite);
+      const maxValue = Math.max(...finite);
+      const min = Math.max(0, minValue - padding);
+      let max = maxValue + padding;
+      if (max <= min) max = min + Math.max(1, padding);
+      return { min, max };
+    }
+
+    function domainTicks(domain, count = 5) {
+      if (!Number.isFinite(domain.min) || !Number.isFinite(domain.max) || domain.max <= domain.min) {
+        return [1, 0.75, 0.5, 0.25, 0];
+      }
+      const step = (domain.max - domain.min) / (count - 1);
+      return Array.from({ length: count }, (_, index) => domain.max - step * index);
     }
 
     function historyLineChart(points, config) {
@@ -1038,16 +1053,21 @@
       const bottom = 44;
       const plotWidth = width - left - right;
       const plotHeight = height - top - bottom;
+      const domain = paddedDomain(plotted.map(item => item.value), config.domainPadding || 0);
+      const ticks = domainTicks(domain);
       const xFor = index => plotted.length === 1
         ? left + plotWidth / 2
         : left + (plotWidth * index) / (plotted.length - 1);
-      const yFor = value => top + plotHeight - (Math.max(0, Math.min(config.maxValue, Number(value))) / config.maxValue * plotHeight);
+      const yFor = value => {
+        const clamped = Math.max(domain.min, Math.min(domain.max, Number(value)));
+        return top + plotHeight - ((clamped - domain.min) / (domain.max - domain.min) * plotHeight);
+      };
       const path = plotted.map((item, index) => {
         const command = index === 0 ? "M" : "L";
         return `${command}${xFor(index).toFixed(1)},${yFor(item.value).toFixed(1)}`;
       }).join(" ");
       const labelEvery = Math.max(1, Math.ceil(plotted.length / 6));
-      const grid = config.ticks.map(value => {
+      const grid = ticks.map(value => {
         const y = yFor(value);
         return `
           <line class="grid-line" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}" />
