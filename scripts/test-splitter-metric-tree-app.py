@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -357,6 +359,111 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("data-label=\"Score Trend\"", html)
         self.assertIn("table,\n      tbody", html)
         self.assertIn("min-width: 0", html)
+
+    def test_rules_response_attaches_parent_scoped_subrules(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_dir = root / "target" / "stack-learning" / "runs" / "20260608T000000Z"
+            guidance_dir = run_dir / "guidance"
+            reports_dir = run_dir / "reports"
+            guidance_dir.mkdir(parents=True)
+            reports_dir.mkdir(parents=True)
+            (run_dir / "pipeline-run.json").write_text(
+                json.dumps(
+                    {
+                        "runId": "20260608T000000Z",
+                        "artifacts": {
+                            "generatedRuleCatalog": "target/stack-learning/runs/20260608T000000Z/guidance/rule-catalog.json",
+                            "effectiveRuleCatalog": "rules/rule-catalog.json",
+                            "subrulesModel": "target/stack-learning/runs/20260608T000000Z/guidance/subrules.json",
+                            "subruleCandidates": "target/stack-learning/runs/20260608T000000Z/guidance/subrule-candidates.json",
+                            "subruleInvestigationReport": "target/stack-learning/runs/20260608T000000Z/reports/subrule-investigation.md",
+                        },
+                    }
+                )
+            )
+            catalog = {
+                "version": 1,
+                "reasons": [{"id": "foundation-before-behavior", "message": "Foundation before behavior."}],
+                "rules": [
+                    {
+                        "id": "foundation-before-behavior",
+                        "priority": 100,
+                        "relation": "precedes",
+                        "reasonId": "foundation-before-behavior",
+                        "before": [{"type": "tag", "id": "foundation"}],
+                        "after": [{"type": "tag", "id": "behavior"}],
+                    }
+                ],
+            }
+            (guidance_dir / "rule-catalog.json").write_text(json.dumps(catalog))
+            rules_dir = root / "rules"
+            rules_dir.mkdir()
+            (rules_dir / "rule-catalog.json").write_text(json.dumps(catalog))
+            (guidance_dir / "subrules.json").write_text(
+                json.dumps(
+                    {
+                        "subrules": [
+                            {
+                                "ruleId": "learned-subrule-foundation-config-reader-before-behavior-config-behavior",
+                                "parentRuleId": "foundation-before-behavior",
+                                "before": "foundation/config-reader",
+                                "after": "behavior/config-behavior",
+                                "support": 4,
+                                "repoSupport": 2,
+                                "repos": ["bazelbuild/bazel"],
+                                "confidence": 0.7,
+                                "promoted": False,
+                            }
+                        ]
+                    }
+                )
+            )
+            (guidance_dir / "subrule-candidates.json").write_text(
+                json.dumps(
+                    {
+                        "subrules": [
+                            {
+                                "candidateId": "foundation-before-behavior__foundation-config-reader__before__behavior-config-behavior",
+                                "ruleId": "learned-subrule-foundation-config-reader-before-behavior-config-behavior",
+                                "parentRuleId": "foundation-before-behavior",
+                                "before": "foundation/config-reader",
+                                "after": "behavior/config-behavior",
+                                "decision": "promoted",
+                                "failureBucket": "",
+                                "validationSummary": {
+                                    "subruleProof": {
+                                        "hintsRulesVsHints": {
+                                            "pairedCount": 3,
+                                            "averagePlannedStackLinkCorrectnessDelta": 0.12,
+                                            "regressionCount": 0,
+                                        }
+                                    }
+                                },
+                            }
+                        ]
+                    }
+                )
+            )
+            (reports_dir / "subrule-investigation.json").write_text(json.dumps({"status": "ok"}))
+
+            response = app.rules_response(root)
+
+        self.assertEqual(response["subrules"]["count"], 1)
+        generated = next(catalog for catalog in response["catalogs"] if catalog["kind"] == "generated")
+        rule = generated["rules"][0]
+        self.assertEqual(rule["subrules"][0]["parentRuleId"], "foundation-before-behavior")
+        self.assertEqual(rule["subrules"][0]["decision"], "promoted")
+        self.assertEqual(rule["subrules"][0]["validation"]["stackLinkDelta"], 0.12)
+
+    def test_static_rules_page_renders_collapsible_subrules(self) -> None:
+        html = (REPO_ROOT / "docs" / "splitter-rules.html").read_text()
+
+        self.assertIn("function renderSubrules", html)
+        self.assertIn("class=\"subrules\"", html)
+        self.assertIn("Subrules:", html)
+        self.assertIn("Validation stack-link delta", html)
+        self.assertIn("payload?.subrules?.count", html)
 
 
 if __name__ == "__main__":

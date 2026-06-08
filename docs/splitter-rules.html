@@ -337,6 +337,66 @@
       font-weight: 650;
     }
 
+    .subrules {
+      margin-top: 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfe;
+      overflow: hidden;
+    }
+
+    .subrules summary {
+      padding: 10px 12px;
+    }
+
+    .subrule-list {
+      display: grid;
+      gap: 10px;
+      padding: 0 12px 12px;
+    }
+
+    .subrule {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      padding: 10px;
+    }
+
+    .subrule-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .subrule-title {
+      font-weight: 650;
+      overflow-wrap: anywhere;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .metric-cell {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px;
+      background: #fff;
+      min-width: 0;
+    }
+
+    .metric-cell .value {
+      font-size: 13px;
+    }
+
+    .examples {
+      margin-top: 10px;
+    }
+
     details {
       margin-top: 12px;
     }
@@ -395,6 +455,9 @@
       }
       .flow {
         grid-template-columns: 1fr;
+      }
+      .metric-grid {
+        grid-template-columns: 1fr 1fr;
       }
       .arrow {
         min-height: 24px;
@@ -491,7 +554,15 @@
         rule.reason,
         ...(rule.before || []),
         ...(rule.after || []),
-        ...(rule.triggerTerms || []).map(term => `${term.text} ${term.category} ${term.weight}`)
+        ...(rule.triggerTerms || []).map(term => `${term.text} ${term.category} ${term.weight}`),
+        ...(rule.subrules || []).map(subrule => [
+          subrule.id,
+          subrule.before,
+          subrule.after,
+          subrule.decision,
+          subrule.failureBucket,
+          subrule.rejectedReason
+        ].join(" "))
       ].join(" ").toLowerCase();
     }
 
@@ -505,6 +576,85 @@
       return `<div class="terms">${values.map(term => `
         <span class="term"><strong>${escapeHtml(term.text)}</strong> ${escapeHtml(term.category || "")} ${escapeHtml(term.weight == null ? "" : `w${term.weight}`)}</span>
       `).join("")}</div>`;
+    }
+
+    function formatNumber(value, digits = 3) {
+      if (value == null || value === "") return "";
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return String(value);
+      return numeric.toFixed(digits).replace(/\.?0+$/, "");
+    }
+
+    function formatDelta(value) {
+      if (value == null || value === "") return "";
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return String(value);
+      const sign = numeric > 0 ? "+" : "";
+      return `${sign}${formatNumber(numeric, 4)}`;
+    }
+
+    function metricCell(label, value) {
+      return `<div class="metric-cell"><div class="label">${escapeHtml(label)}</div><div class="value">${escapeHtml(value)}</div></div>`;
+    }
+
+    function renderExamples(examples) {
+      if (!examples || !examples.length) return "";
+      return `<details class="examples">
+        <summary>Examples</summary>
+        <div class="terms">
+          ${examples.slice(0, 6).map(example => `
+            <span class="term">
+              <strong>${escapeHtml(example.repo || "")}</strong>
+              #${escapeHtml(example.fromPr ?? "")} &rarr; #${escapeHtml(example.toPr ?? "")}
+            </span>
+          `).join("")}
+        </div>
+      </details>`;
+    }
+
+    function renderSubrule(subrule) {
+      const validation = subrule.validation || {};
+      const test = subrule.test || {};
+      const decision = subrule.decision || (subrule.promoted ? "promoted" : "candidate");
+      const reason = subrule.failureBucket || subrule.rejectedReason || "";
+      return `<article class="subrule">
+        <div class="subrule-head">
+          <div>
+            <div class="subrule-title">${escapeHtml(subrule.before || "")} &rarr; ${escapeHtml(subrule.after || "")}</div>
+            <div class="reason">${escapeHtml(subrule.id || "")}</div>
+          </div>
+          <span class="pill">${escapeHtml(reason ? `${decision}: ${reason}` : decision)}</span>
+        </div>
+        <div class="metric-grid">
+          ${metricCell("Training support", `${formatNumber(subrule.support, 0)} / ${formatNumber(subrule.repoSupport, 0)} repos`)}
+          ${metricCell("Confidence", formatNumber(subrule.confidence, 3))}
+          ${metricCell("Validation stack-link delta", formatDelta(validation.stackLinkDelta))}
+          ${metricCell("Test stack-link delta", formatDelta(test.stackLinkDelta))}
+          ${metricCell("Validation paired", formatNumber(validation.pairedCount, 0))}
+          ${metricCell("Test paired", formatNumber(test.pairedCount, 0))}
+          ${metricCell("Validation regressions", formatNumber(validation.regressionCount, 0))}
+          ${metricCell("Test regressions", formatNumber(test.regressionCount, 0))}
+        </div>
+        <div class="repo-list">
+          ${(subrule.repos || []).map(repo => `<span class="pill">${escapeHtml(repo)}</span>`).join("")}
+        </div>
+        ${renderExamples(subrule.examples)}
+        <details>
+          <summary>Raw JSON</summary>
+          <pre>${escapeHtml(JSON.stringify(subrule.raw || subrule, null, 2))}</pre>
+        </details>
+      </article>`;
+    }
+
+    function renderSubrules(subrules) {
+      if (!subrules || !subrules.length) return "";
+      const promoted = subrules.filter(subrule => subrule.promoted).length;
+      return `<details class="subrules">
+        <summary>Subrules: ${escapeHtml(subrules.length)} candidates, ${escapeHtml(promoted)} promoted</summary>
+        <div class="subrule-list">
+          ${subrules.map(renderSubrule).join("")}
+        </div>
+      </details>`;
     }
 
     function ruleSignature(rule) {
@@ -570,6 +720,7 @@
           <span class="pill">${escapeHtml(rule.reasonId || "")}</span>
         </div>
         ${terms(rule.triggerTerms)}
+        ${renderSubrules(rule.subrules)}
         <details>
           <summary>Raw JSON</summary>
           <pre>${escapeHtml(JSON.stringify(rule.raw || rule, null, 2))}</pre>
@@ -632,8 +783,11 @@
           <span class="pill">${escapeHtml(effective?.counts?.rules ?? 0)} effective</span>
           <span class="pill">${escapeHtml(sameCount)} same</span>
           <span class="pill">${escapeHtml(changedCount)} changed/missing</span>
+          <span class="pill">${escapeHtml(payload?.subrules?.count ?? 0)} subrules</span>
+          <span class="pill">${escapeHtml(payload?.subrules?.promotedCount ?? 0)} subrules promoted</span>
           <span class="pill">generated: ${escapeHtml(generated?.path || "")}</span>
           <span class="pill">effective: ${escapeHtml(effective?.path || "")}</span>
+          <span class="pill">subrules: ${escapeHtml(payload?.subrules?.candidatePath || payload?.subrules?.path || "")}</span>
         </div>
         <div class="comparison">
           ${rows.length ? rows.map(row => renderComparisonRow(row.id, row.generatedRule, row.effectiveRule)).join("") : `<div class="empty">No rules match this filter.</div>`}

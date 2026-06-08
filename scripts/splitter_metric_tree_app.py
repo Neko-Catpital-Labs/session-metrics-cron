@@ -676,7 +676,148 @@ def rule_item_label(item: dict[str, Any]) -> str:
     return f"{item_type}:{item_id}" if item_id else str(item_type)
 
 
-def normalize_rule_catalog(catalog: dict[str, Any], *, kind: str, title: str, path: Path | None) -> dict[str, Any]:
+def subrule_identity(item: dict[str, Any]) -> str:
+    explicit = str(item.get("candidateId") or item.get("ruleId") or "").strip()
+    if explicit:
+        return explicit
+    return "|".join(
+        [
+            str(item.get("parentRuleId") or ""),
+            str(item.get("before") or ""),
+            str(item.get("after") or ""),
+        ]
+    )
+
+
+def subrule_delta(summary: dict[str, Any]) -> dict[str, Any]:
+    return ((summary.get("subruleProof") or {}).get("hintsRulesVsHints") or {})
+
+
+def normalize_subrule(item: dict[str, Any]) -> dict[str, Any]:
+    validation_delta = subrule_delta(item.get("validationSummary") or {})
+    test_delta = subrule_delta(item.get("testSummary") or {})
+    return {
+        "id": subrule_identity(item),
+        "candidateId": item.get("candidateId"),
+        "ruleId": item.get("ruleId"),
+        "parentRuleId": item.get("parentRuleId"),
+        "before": item.get("before"),
+        "after": item.get("after"),
+        "support": item.get("support"),
+        "repoSupport": item.get("repoSupport"),
+        "repos": item.get("repos") or [],
+        "confidence": item.get("confidence"),
+        "promoted": item.get("promoted") or item.get("decision") == "promoted",
+        "decision": item.get("decision") or ("promoted" if item.get("promoted") else "candidate"),
+        "rejectedReason": item.get("rejectedReason"),
+        "failureBucket": item.get("failureBucket"),
+        "validation": {
+            "support": (item.get("validationSupport") or {}).get("support"),
+            "repoSupport": (item.get("validationSupport") or {}).get("repoSupport"),
+            "pairedCount": validation_delta.get("pairedCount"),
+            "stackLinkDelta": validation_delta.get("averagePlannedStackLinkCorrectnessDelta"),
+            "collapseDelta": validation_delta.get("averageWorkItemCollapseRateDelta"),
+            "noExtraDelta": validation_delta.get("averageNoExtraStackLinksDelta"),
+            "noMissingDelta": validation_delta.get("averageNoMissingStackLinksDelta"),
+            "regressionCount": validation_delta.get("regressionCount"),
+        },
+        "test": {
+            "support": (item.get("testSupport") or {}).get("support"),
+            "repoSupport": (item.get("testSupport") or {}).get("repoSupport"),
+            "pairedCount": test_delta.get("pairedCount"),
+            "stackLinkDelta": test_delta.get("averagePlannedStackLinkCorrectnessDelta"),
+            "collapseDelta": test_delta.get("averageWorkItemCollapseRateDelta"),
+            "noExtraDelta": test_delta.get("averageNoExtraStackLinksDelta"),
+            "noMissingDelta": test_delta.get("averageNoMissingStackLinksDelta"),
+            "regressionCount": test_delta.get("regressionCount"),
+        },
+        "examples": item.get("examples") or [],
+        "raw": item,
+    }
+
+
+def merge_subrules(primary: list[dict[str, Any]], secondary: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    by_rule_id: dict[str, str] = {}
+    for item in primary:
+        if isinstance(item, dict):
+            key = subrule_identity(item)
+            by_id[key] = dict(item)
+            rule_id = str(item.get("ruleId") or "").strip()
+            if rule_id:
+                by_rule_id[rule_id] = key
+    for item in secondary:
+        if not isinstance(item, dict):
+            continue
+        key = subrule_identity(item)
+        rule_id = str(item.get("ruleId") or "").strip()
+        if rule_id and rule_id in by_rule_id:
+            key = by_rule_id[rule_id]
+        by_id[key] = {**by_id.get(key, {}), **item}
+    return list(by_id.values())
+
+
+def subrules_by_parent(subrules: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in subrules:
+        normalized = normalize_subrule(item)
+        parent = str(normalized.get("parentRuleId") or "unmapped")
+        grouped.setdefault(parent, []).append(normalized)
+    for items in grouped.values():
+        items.sort(
+            key=lambda item: (
+                0 if item.get("promoted") else 1,
+                str(item.get("decision") or ""),
+                -float(item.get("confidence") or 0),
+                -int(item.get("support") or 0),
+                str(item.get("id") or ""),
+            )
+        )
+    return grouped
+
+
+def load_subrule_artifacts(workflow_analysis_root: Path, pipeline_run: dict[str, Any], pipeline_path: Path) -> dict[str, Any]:
+    generated_path = artifact_path(workflow_analysis_root, pipeline_run, "subrulesModel")
+    candidate_path = artifact_path(workflow_analysis_root, pipeline_run, "subruleCandidates")
+    report_md_path = artifact_path(workflow_analysis_root, pipeline_run, "subruleInvestigationReport")
+    report_json_path = report_md_path.with_suffix(".json") if report_md_path else pipeline_path.parent / "reports" / "subrule-investigation.json"
+
+    generated = read_json_file(generated_path) if generated_path and generated_path.exists() else {}
+    candidates = read_json_file(candidate_path) if candidate_path and candidate_path.exists() else {}
+    report = read_json_file(report_json_path) if report_json_path and report_json_path.exists() else {}
+    merged = merge_subrules(
+        generated.get("subrules") if isinstance(generated.get("subrules"), list) else [],
+        candidates.get("subrules") if isinstance(candidates.get("subrules"), list) else report.get("candidates") or [],
+    )
+    grouped = subrules_by_parent(merged)
+    return {
+        "path": str(generated_path) if generated_path else "",
+        "candidatePath": str(candidate_path) if candidate_path else "",
+        "reportPath": str(report_json_path) if report_json_path else "",
+        "status": report.get("status") or "",
+        "count": len(merged),
+        "promotedCount": sum(1 for item in grouped.values() for subrule in item if subrule.get("promoted")),
+        "parents": [
+            {
+                "parentRuleId": parent,
+                "candidateCount": len(items),
+                "promotedCount": sum(1 for item in items if item.get("promoted")),
+                "subrules": items,
+            }
+            for parent, items in sorted(grouped.items())
+        ],
+        "byParent": grouped,
+    }
+
+
+def normalize_rule_catalog(
+    catalog: dict[str, Any],
+    *,
+    kind: str,
+    title: str,
+    path: Path | None,
+    subrules: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
     rules = catalog.get("rules") if isinstance(catalog.get("rules"), list) else []
     actions = catalog.get("actions") if isinstance(catalog.get("actions"), list) else []
     reasons = catalog.get("reasons") if isinstance(catalog.get("reasons"), list) else []
@@ -717,6 +858,7 @@ def normalize_rule_catalog(catalog: dict[str, Any], *, kind: str, title: str, pa
                     for term in rule.get("triggerTerms") or []
                     if isinstance(term, dict)
                 ],
+                "subrules": (subrules or {}).get(str(rule.get("id") or ""), []),
                 "raw": rule,
             }
         )
@@ -746,6 +888,8 @@ def rules_response(workflow_analysis_root: Path) -> dict[str, Any]:
     pipeline_path = latest_learning_run_path(workflow_analysis_root)
     pipeline_run = read_json_file(pipeline_path)
     catalogs = []
+    subrule_artifacts = load_subrule_artifacts(workflow_analysis_root, pipeline_run, pipeline_path)
+    grouped_subrules = subrule_artifacts.get("byParent") or {}
     generated_path = artifact_path(workflow_analysis_root, pipeline_run, "generatedRuleCatalog")
     if generated_path and generated_path.exists():
         catalogs.append(
@@ -754,6 +898,7 @@ def rules_response(workflow_analysis_root: Path) -> dict[str, Any]:
                 kind="generated",
                 title="Generated candidate rules",
                 path=generated_path,
+                subrules=grouped_subrules,
             )
         )
     effective_path = artifact_path(workflow_analysis_root, pipeline_run, "effectiveRuleCatalog")
@@ -764,6 +909,7 @@ def rules_response(workflow_analysis_root: Path) -> dict[str, Any]:
                 kind="effective",
                 title="Effective rules after promotion gate",
                 path=effective_path,
+                subrules=grouped_subrules,
             )
         )
     return {
@@ -781,6 +927,7 @@ def rules_response(workflow_analysis_root: Path) -> dict[str, Any]:
             "rulePromotion": (pipeline_run.get("replaySummary") or {}).get("rulePromotion") or {},
         },
         "catalogs": catalogs,
+        "subrules": {key: value for key, value in subrule_artifacts.items() if key != "byParent"},
     }
 
 
