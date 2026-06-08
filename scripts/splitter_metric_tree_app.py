@@ -785,10 +785,12 @@ def load_subrule_artifacts(workflow_analysis_root: Path, pipeline_run: dict[str,
     generated = read_json_file(generated_path) if generated_path and generated_path.exists() else {}
     candidates = read_json_file(candidate_path) if candidate_path and candidate_path.exists() else {}
     report = read_json_file(report_json_path) if report_json_path and report_json_path.exists() else {}
-    merged = merge_subrules(
-        generated.get("subrules") if isinstance(generated.get("subrules"), list) else [],
-        candidates.get("subrules") if isinstance(candidates.get("subrules"), list) else report.get("candidates") or [],
-    )
+    if isinstance(candidates.get("subrules"), list):
+        merged = candidates["subrules"]
+    elif isinstance(report.get("candidates"), list):
+        merged = report["candidates"]
+    else:
+        merged = generated.get("subrules") if isinstance(generated.get("subrules"), list) else []
     grouped = subrules_by_parent(merged)
     return {
         "path": str(generated_path) if generated_path else "",
