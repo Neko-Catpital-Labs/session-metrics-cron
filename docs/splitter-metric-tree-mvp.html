@@ -939,12 +939,12 @@
       metricInfoPopup.classList.remove("is-visible");
     }
 
-    function sparkline(points) {
+    function sparkline(points, row) {
       const values = (points || []).map(point => Number(point.display_value)).filter(value => Number.isFinite(value));
       if (values.length < 2) return "";
       const width = 170;
       const height = 32;
-      const domain = paddedDomain(values, 0.1);
+      const domain = paddedDomain(values, row?.is_score ? 0.1 : 10, row?.is_score ? 1 : null);
       const spread = domain.max - domain.min || 1;
       const step = width / (values.length - 1);
       const polyline = values.map((value, index) => {
@@ -1004,6 +1004,7 @@
           title: valueTitle,
           valueKey: "display_value",
           domainPadding: valuePadding,
+          domainMax: row.is_score ? 1 : null,
           formatter: value => formatDisplayValue(row, value),
           lineClass: "score-line",
           pointClass: "score-point",
@@ -1013,6 +1014,7 @@
           title: "Effective Weight Over Time",
           valueKey: "effective_weight_pct",
           domainPadding: 10,
+          domainMax: 100,
           formatter: formatPct,
           lineClass: "effective-line",
           pointClass: "effective-point",
@@ -1021,14 +1023,19 @@
       </div>`;
     }
 
-    function paddedDomain(values, padding) {
+    function paddedDomain(values, padding, maxCap = null) {
       const finite = values.map(Number).filter(value => Number.isFinite(value));
-      if (!finite.length) return { min: 0, max: Math.max(1, padding) };
+      const hasMaxCap = Number.isFinite(Number(maxCap));
+      const cap = hasMaxCap ? Number(maxCap) : null;
+      if (!finite.length) return { min: 0, max: cap ?? Math.max(1, padding) };
       const minValue = Math.min(...finite);
       const maxValue = Math.max(...finite);
-      const min = Math.max(0, minValue - padding);
+      let min = Math.max(0, minValue - padding);
+      if (cap != null) min = Math.min(min, Math.max(0, cap - Math.max(1, padding)));
       let max = maxValue + padding;
+      if (cap != null) max = Math.min(cap, max);
       if (max <= min) max = min + Math.max(1, padding);
+      if (cap != null) max = Math.min(cap, max);
       return { min, max };
     }
 
@@ -1053,7 +1060,7 @@
       const bottom = 44;
       const plotWidth = width - left - right;
       const plotHeight = height - top - bottom;
-      const domain = paddedDomain(plotted.map(item => item.value), config.domainPadding || 0);
+      const domain = paddedDomain(plotted.map(item => item.value), config.domainPadding || 0, config.domainMax);
       const ticks = domainTicks(domain);
       const xFor = index => plotted.length === 1
         ? left + plotWidth / 2
@@ -1202,7 +1209,7 @@
           <td class="metric-col" data-label="Score / Diagnostic">${valueCell(row)}</td>
           <td class="metric-col" data-label="Local Weight">${metricCell(row.local_weight_pct, true, "local")}</td>
           <td class="metric-col" data-label="Effective Weight">${metricCell(row.effective_weight_pct, true, "effective")}</td>
-          <td class="spark-col" data-label="Score Trend">${sparkline(history[row.metric_path])}</td>
+          <td class="spark-col" data-label="Score Trend">${sparkline(history[row.metric_path], row)}</td>
         `;
         tbody.appendChild(tr);
       }
