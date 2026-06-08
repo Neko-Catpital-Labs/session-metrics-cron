@@ -464,6 +464,11 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("Subrules:", html)
         self.assertIn("Validation stack-link delta", html)
         self.assertIn("payload?.subrules?.count", html)
+        self.assertIn("activate-one-surface-at-a-time", html)
+        self.assertIn("function labelDescription", html)
+        self.assertIn("function exampleLink", html)
+        self.assertIn("fromCommitUrl", html)
+        self.assertIn("target=\"_blank\"", html)
 
 
 if __name__ == "__main__":

@@ -374,6 +374,12 @@
       overflow-wrap: anywhere;
     }
 
+    .subrule-description {
+      margin-top: 4px;
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+
     .metric-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -597,6 +603,24 @@
       return `<div class="metric-cell"><div class="label">${escapeHtml(label)}</div><div class="value">${escapeHtml(value)}</div></div>`;
     }
 
+    function fallbackPrUrl(example, key) {
+      const repo = example.repo || "";
+      const number = example[key];
+      if (!repo || number == null || number === "") return "";
+      return `https://github.com/${encodeURIComponent(repo).replace("%2F", "/")}/pull/${encodeURIComponent(number)}`;
+    }
+
+    function exampleLink(example, side) {
+      const prefix = side === "from" ? "from" : "to";
+      const number = example[`${prefix}Pr`];
+      const commitUrl = side === "from" ? example.fromCommitUrl : example.toCommitUrl;
+      const prUrl = side === "from" ? example.fromUrl : example.toUrl;
+      const url = commitUrl || prUrl || fallbackPrUrl(example, `${prefix}Pr`);
+      const label = `#${number ?? ""}`;
+      if (!url) return escapeHtml(label);
+      return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
+    }
+
     function renderExamples(examples) {
       if (!examples || !examples.length) return "";
       return `<details class="examples">
@@ -605,11 +629,38 @@
           ${examples.slice(0, 6).map(example => `
             <span class="term">
               <strong>${escapeHtml(example.repo || "")}</strong>
-              #${escapeHtml(example.fromPr ?? "")} &rarr; #${escapeHtml(example.toPr ?? "")}
+              ${exampleLink(example, "from")} &rarr; ${exampleLink(example, "to")}
             </span>
           `).join("")}
         </div>
       </details>`;
+    }
+
+    const labelDescriptions = {
+      "activate-one-surface-at-a-time": "Enable one user-facing, API, CLI, or integration surface per PR so each activation is reviewable, measurable, and easy to roll back.",
+      "foundation/config-reader": "Add the configuration reader or lookup layer before behavior depends on it.",
+      "foundation/schema-types": "Introduce schemas, types, or data models before wiring behavior through them.",
+      "foundation/adapter-wrapper": "Add adapter or wrapper structure before using it for feature behavior.",
+      "compatibility/api-contract": "Preserve or introduce the API compatibility contract before exposing behavior changes.",
+      "behavior/config-behavior": "Implement behavior controlled by configuration or repository settings.",
+      "behavior/feature-behavior": "Implement the main product or workflow behavior.",
+      "behavior/test-fixture": "Add fixtures or harness support needed to verify behavior.",
+      "verification/terminal-tests": "Run or add terminal-level verification after implementation is present.",
+      "cleanup/legacy-cleanup": "Remove legacy code after the replacement behavior is in place."
+    };
+
+    function labelTitle(label) {
+      return String(label || "")
+        .split("/")
+        .map(part => part.split("-").filter(Boolean).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" "))
+        .join(" / ");
+    }
+
+    function labelDescription(label) {
+      const value = String(label || "");
+      if (labelDescriptions[value]) return labelDescriptions[value];
+      if (!value) return "";
+      return `${labelTitle(value)} is a learned role label mined from PR stack examples. It describes a recurring step that appeared before or after another step in stacked changes.`;
     }
 
     function renderSubrule(subrule) {
@@ -622,6 +673,11 @@
           <div>
             <div class="subrule-title">${escapeHtml(subrule.before || "")} &rarr; ${escapeHtml(subrule.after || "")}</div>
             <div class="reason">${escapeHtml(subrule.id || "")}</div>
+            <div class="subrule-description">
+              <strong>${escapeHtml(labelTitle(subrule.before))}</strong>: ${escapeHtml(labelDescription(subrule.before))}
+              <br>
+              <strong>${escapeHtml(labelTitle(subrule.after))}</strong>: ${escapeHtml(labelDescription(subrule.after))}
+            </div>
           </div>
           <span class="pill">${escapeHtml(reason ? `${decision}: ${reason}` : decision)}</span>
         </div>
