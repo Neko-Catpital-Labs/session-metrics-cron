@@ -588,6 +588,7 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("function zoomNestedNode", html)
         self.assertIn("Zoom Node Detail", html)
         self.assertIn("nestedGraph", html)
+        self.assertIn("demoParams.get(\"demo\") === \"nested\"", html)
         self.assertIn("rule node with nested subrules", html)
         self.assertIn(".on(\"dblclick\"", html)
         self.assertIn("node.fx = event.x", html)

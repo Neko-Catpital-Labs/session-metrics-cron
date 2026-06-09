@@ -884,6 +884,11 @@
 
     render();
     fitGraph();
+
+    const demoParams = new URLSearchParams(window.location.search);
+    if (demoParams.get("demo") === "nested") {
+      window.setTimeout(zoomNestedNode, 700);
+    }
   </script>
 </body>
 </html>
