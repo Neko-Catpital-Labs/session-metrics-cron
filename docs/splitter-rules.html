@@ -397,7 +397,7 @@
 
     .graph-canvas {
       width: 100%;
-      min-height: 560px;
+      min-height: 640px;
       overflow: auto;
       background: #fff;
     }
@@ -448,19 +448,20 @@
     .graph-edge {
       fill: none;
       stroke: #475467;
-      stroke-width: 2.25;
-      opacity: 0.9;
+      stroke-width: 2.75;
+      opacity: 0.95;
     }
 
     .graph-edge-hit {
       fill: none;
       stroke: transparent;
-      stroke-width: 14;
+      stroke-width: 20;
       cursor: pointer;
+      pointer-events: stroke;
     }
 
     .graph-edge.is-selected {
-      stroke-width: 3.5;
+      stroke-width: 4.5;
       opacity: 1;
     }
 
@@ -481,12 +482,36 @@
     .graph-node:hover rect {
       stroke: var(--accent);
       stroke-width: 2.5;
+      cursor: pointer;
     }
 
     .graph-edge-hit:focus + .graph-edge,
     .graph-edge-hit:hover + .graph-edge {
-      stroke-width: 3.5;
+      stroke-width: 4.5;
       opacity: 1;
+    }
+
+    .direction-ruler {
+      display: grid;
+      grid-template-columns: repeat(7, 220px);
+      gap: 120px;
+      min-width: 2260px;
+      padding: 10px 32px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+      text-transform: uppercase;
+    }
+
+    .direction-ruler span::after {
+      content: " ->";
+      color: var(--accent);
+    }
+
+    .direction-ruler span:last-child::after {
+      content: "";
     }
 
     .graph-detail {
@@ -896,27 +921,26 @@
       return { nodes, edges };
     }
 
-    function nodeRanks(nodes, edges) {
-      const ranks = new Map(nodes.map(node => [node.id, 0]));
-      for (let index = 0; index < nodes.length; index += 1) {
-        let changed = false;
-        for (const edge of edges) {
-          const nextRank = Math.min(4, (ranks.get(edge.from) || 0) + 1);
-          if (nextRank > (ranks.get(edge.to) || 0)) {
-            ranks.set(edge.to, nextRank);
-            changed = true;
-          }
-        }
-        if (!changed) break;
-      }
-      return ranks;
+    function semanticRank(label) {
+      const value = String(label || "").toLowerCase();
+      if (value.includes("evidence") || value.includes("capture")) return 0;
+      if (value.includes("foundation") || value.includes("schema") || value.includes("adapter")) return 1;
+      if (value.includes("compatibility") || value.includes("contract")) return 2;
+      if (value.includes("behavior") || value.includes("feature") || value.includes("fixture")) return 3;
+      if (value.includes("implementation")) return 4;
+      if (value.includes("verification") || value.includes("terminal") || value.includes("test")) return 5;
+      if (value.includes("cleanup") || value.includes("remove") || value.includes("legacy")) return 6;
+      return 3;
+    }
+
+    function graphStageLabels() {
+      return ["Evidence", "Foundation", "Compatibility", "Behavior", "Implementation", "Verification", "Cleanup"];
     }
 
     function layoutGraph(data) {
-      const ranks = nodeRanks(data.nodes, data.edges);
       const columns = new Map();
       for (const node of data.nodes) {
-        const rank = ranks.get(node.id) || 0;
+        const rank = semanticRank(node.label);
         if (!columns.has(rank)) columns.set(rank, []);
         columns.get(rank).push(node);
       }
@@ -925,8 +949,8 @@
       }
       const nodeWidth = 220;
       const nodeHeight = 64;
-      const columnGap = 210;
-      const rowGap = 104;
+      const columnGap = 340;
+      const rowGap = 112;
       const margin = 32;
       const positions = new Map();
       let maxRows = 1;
@@ -941,11 +965,14 @@
           });
         });
       }
-      const maxRank = Math.max(0, ...columns.keys());
+      const maxRank = Math.max(6, ...columns.keys());
       return {
         positions,
         width: margin * 2 + nodeWidth + maxRank * columnGap,
         height: margin * 2 + nodeHeight + (maxRows - 1) * rowGap,
+        nodeWidth,
+        columnGap,
+        margin,
       };
     }
 
@@ -953,9 +980,9 @@
       const from = positions.get(edge.from);
       const to = positions.get(edge.to);
       if (!from || !to) return "";
-      const startX = from.x + from.width;
+      const startX = from.x + from.width + 10;
       const startY = from.y + from.height / 2;
-      const endX = to.x;
+      const endX = to.x - 14;
       const endY = to.y + to.height / 2;
       const curve = Math.max(60, Math.abs(endX - startX) / 2);
       return `M ${startX} ${startY} C ${startX + curve} ${startY}, ${endX - curve} ${endY}, ${endX} ${endY}`;
@@ -1001,8 +1028,8 @@
       const markers = buckets.map(bucket => {
         const id = classToken(bucket);
         const color = edgeColor(bucket);
-        return `<marker id="arrow-${escapeHtml(id)}" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
-          <path d="M0,0 L0,6 L9,3 z" fill="${escapeHtml(color)}"></path>
+        return `<marker id="arrow-${escapeHtml(id)}" markerWidth="14" markerHeight="14" refX="12" refY="5" orient="auto" markerUnits="strokeWidth">
+          <path d="M0,0 L0,10 L13,5 z" fill="${escapeHtml(color)}"></path>
         </marker>`;
       }).join("");
       return `<svg class="graph-svg" width="${layout.width}" height="${layout.height}" viewBox="0 0 ${layout.width} ${layout.height}" role="img" aria-label="Model rule graph">
@@ -1010,6 +1037,12 @@
         ${edgeMarkup}
         ${nodeMarkup}
       </svg>`;
+    }
+
+    function renderDirectionRuler() {
+      return `<div class="direction-ruler" aria-label="Graph flows left to right">
+        ${graphStageLabels().map(label => `<span>${escapeHtml(label)}</span>`).join("")}
+      </div>`;
     }
 
     function edgeColor(bucket) {
@@ -1041,7 +1074,7 @@
         return `<aside id="graph-detail" class="graph-detail">
           <div class="detail-title">${escapeHtml(node.label)}</div>
           <div class="description">${escapeHtml(labelDescription(node.label))}</div>
-          <div class="pill-row debug-block">
+          <div class="pill-row">
             <span class="pill">${escapeHtml(node.type)}</span>
             <span class="pill">${escapeHtml(node.incoming.length)} incoming</span>
             <span class="pill">${escapeHtml(node.outgoing.length)} outgoing</span>
@@ -1059,7 +1092,7 @@
       return `<aside id="graph-detail" class="graph-detail">
         <div class="detail-title">${escapeHtml(edge.from)} &rarr; ${escapeHtml(edge.to)}</div>
         <div class="description">${escapeHtml(edge.kind === "subrule" ? labelDescription(edge.to) : edge.reason)}</div>
-        <div class="pill-row debug-block">
+        <div class="pill-row">
           <span class="pill">${escapeHtml(edge.kind)}</span>
           <span class="pill">${escapeHtml(edge.parentRuleId)}</span>
           ${edge.status ? `<span class="pill status-${edge.status.replaceAll(" ", "-")}">${escapeHtml(edge.status)}</span>` : ""}
@@ -1299,7 +1332,7 @@
             <div class="topline">
               <div>
                 <h2>Rule Graph</h2>
-                <div class="section-note">Tasks are nodes. Rules and subrules are directed edges between tasks.</div>
+                <div class="section-note">Tasks are nodes. Rules and subrules are directed edges. Flow direction is left to right; arrowheads point at the later task.</div>
               </div>
               <div class="pill-row">
                 <span class="pill">${escapeHtml(data.nodes.length)} nodes</span>
@@ -1309,7 +1342,7 @@
             </div>
             ${renderGraphLegend(data.edges)}
           </div>
-          <div class="graph-canvas">${renderGraphSvg(data, layout)}</div>
+          <div class="graph-canvas">${renderDirectionRuler()}${renderGraphSvg(data, layout)}</div>
         </section>
         ${renderGraphDetail(data)}
       </div>`;
