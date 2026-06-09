@@ -892,16 +892,23 @@
     function updateNestedSimulation(parent) {
       const sim = ensureNestedSimulation(parent);
       if (!sim) return;
+      const expansion = nestedExpansion(parent);
+      const visible = nestedIsVisible(parent);
       sim.force("link")
-        .distance(() => 92 * nestedExpansion(parent));
+        .distance(() => 92 * expansion);
       sim.force("x")
         .x(item => nestedTargetX(parent, item));
       sim.force("y")
         .y(item => nestedTargetY(parent, item));
-      if (nestedIsVisible(parent)) {
-        sim.alphaTarget(nestedIsFocused(parent) ? 0.035 : 0.01).restart();
-      } else {
-        sim.alphaTarget(0);
+      sim.alphaTarget(0);
+      const shouldReheat = visible && (
+        sim._lastVisible !== visible ||
+        Math.abs((sim._lastExpansion || 0) - expansion) > 0.08
+      );
+      sim._lastVisible = visible;
+      sim._lastExpansion = expansion;
+      if (shouldReheat) {
+        sim.alpha(0.22).restart();
       }
     }
 
@@ -1176,7 +1183,7 @@
     function nestedDragEnded(event, item, parent) {
       event.sourceEvent.stopPropagation();
       const sim = ensureNestedSimulation(parent);
-      if (!event.active) sim.alphaTarget(nestedIsFocused(parent) ? 0.035 : 0);
+      if (!event.active) sim.alphaTarget(0);
       item.fx = item.x;
       item.fy = item.y;
       render();
