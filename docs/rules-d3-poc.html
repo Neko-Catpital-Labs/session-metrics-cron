@@ -209,13 +209,6 @@
       pointer-events: auto;
     }
 
-    .nested-title {
-      fill: var(--muted);
-      font-size: 9px;
-      font-weight: 700;
-      text-transform: uppercase;
-    }
-
     .nested-node-hit {
       fill: transparent;
       stroke: transparent;
@@ -1470,13 +1463,6 @@
         .join("g")
         .attr("class", "nested-content");
 
-      nestedContent.selectAll("text.nested-title")
-        .data([nested])
-        .join("text")
-        .attr("class", "nested-title")
-        .attr("x", 0)
-        .attr("y", 5)
-        .text(() => `${nested.title} - force layout ${expansion.toFixed(1)}x`);
       const edgePath = edge => {
         const source = nestedNodes.get(nestedId(edge.source));
         const target = nestedNodes.get(nestedId(edge.target));
