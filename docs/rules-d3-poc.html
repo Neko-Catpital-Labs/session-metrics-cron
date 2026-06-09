@@ -817,8 +817,12 @@
       return `M${sx},${sy} C${sx + bend},${sy} ${tx - bend},${ty} ${tx},${ty}`;
     }
 
-    function nestedIsVisible(node) {
+    function nestedIsRequested(node) {
       return Boolean(node.nestedGraph) && (currentZoom >= 1.22 || selected?.id === node.id || selected?.parentId === node.id);
+    }
+
+    function nestedIsVisible(node) {
+      return nestedIsRequested(node) && nestedCanFit(node);
     }
 
     function nestedIsFocused(node) {
@@ -826,7 +830,7 @@
     }
 
     function nestedExpansion(node) {
-      if (!nestedIsVisible(node)) return 1;
+      if (!nestedIsRequested(node)) return 1;
       if (!nestedIsFocused(node)) return 1.12;
       return Math.min(2.35, 1 + Math.max(0, currentZoom - 1.18) * 1.05);
     }
@@ -927,6 +931,44 @@
         width: Math.max(170, nodeBoxWidth(parent) - 38),
         height: Math.max(94, nodeBoxHeight(parent) - 116)
       };
+    }
+
+    function nestedCanFit(parent) {
+      if (!parent.nestedGraph) return false;
+      const layout = nestedLayout(parent);
+      const nodeCount = parent.nestedGraph.nodes.length;
+      const minWidth = Math.max(180, nestedNodeWidth * Math.min(3, nodeCount) + 42);
+      const minHeight = Math.max(86, nestedNodeHeight * Math.ceil(nodeCount / 3) + 62);
+      return layout.width >= minWidth && layout.height >= minHeight;
+    }
+
+    function nestedClipId(parent) {
+      return `nested-clip-${parent.id}`;
+    }
+
+    function nestedGraphOrigin(parent) {
+      return {
+        x: -nodeBoxWidth(parent) / 2 + 13,
+        y: -nodeBoxHeight(parent) / 2 + 78
+      };
+    }
+
+    function updateNestedClip(parent) {
+      const layout = nestedLayout(parent);
+      const clipId = nestedClipId(parent);
+      const clip = defs.selectAll(`clipPath#${clipId}`)
+        .data([parent])
+        .join("clipPath")
+        .attr("id", clipId)
+        .attr("clipPathUnits", "userSpaceOnUse");
+      clip.selectAll("rect")
+        .data([layout])
+        .join("rect")
+        .attr("x", layout.left)
+        .attr("y", -14)
+        .attr("width", layout.width)
+        .attr("height", layout.top + layout.height + 16);
+      return clipId;
     }
 
     function nodeTitleY(node) {
@@ -1196,8 +1238,18 @@
       updateNestedSimulation(node);
       const nestedNodes = new Map(nested.nodes.map(item => [item.id, item]));
       const expansion = nestedExpansion(node);
-      group.attr("transform", `translate(${-nodeBoxWidth(node) / 2 + 13}, ${-nodeBoxHeight(node) / 2 + 78})`);
-      group.selectAll("text.nested-title")
+      const origin = nestedGraphOrigin(node);
+      const clipId = updateNestedClip(node);
+      group
+        .attr("transform", `translate(${origin.x}, ${origin.y})`)
+        .attr("clip-path", `url(#${clipId})`);
+
+      const nestedContent = group.selectAll("g.nested-content")
+        .data([nested])
+        .join("g")
+        .attr("class", "nested-content");
+
+      nestedContent.selectAll("text.nested-title")
         .data([nested])
         .join("text")
         .attr("class", "nested-title")
@@ -1214,7 +1266,7 @@
         const bend = Math.max(22, Math.abs(tx - sx) * 0.45);
         return `M${sx},${sy} C${sx + bend},${sy} ${tx - bend},${ty} ${tx},${ty}`;
       };
-      group.selectAll("path.nested-edge-hit")
+      nestedContent.selectAll("path.nested-edge-hit")
         .data(nested.edges, edge => edge.id)
         .join("path")
         .attr("class", "nested-edge-hit")
@@ -1224,7 +1276,7 @@
           event.stopPropagation();
           selectNestedEdge(node, edge);
         });
-      group.selectAll("path.nested-edge")
+      nestedContent.selectAll("path.nested-edge")
         .data(nested.edges, edge => edge.id)
         .join("path")
         .attr("class", "nested-edge")
@@ -1234,7 +1286,7 @@
           event.stopPropagation();
           selectNestedEdge(node, edge);
         });
-      const mini = group.selectAll("g.nested-node")
+      const mini = nestedContent.selectAll("g.nested-node")
         .data(nested.nodes, item => item.id)
         .join(
           enter => {
