@@ -1157,7 +1157,7 @@
       const layout = nestedLayout(parent);
       const nodeCount = parent.nestedGraph.nodes.length;
       const widestNode = Math.max(nestedNodeWidth, d3.max(parent.nestedGraph.nodes, item => nestedNodeBoxWidth(item)) || nestedNodeWidth);
-      const minWidth = Math.max(180, widestNode * Math.min(3, nodeCount) + 42);
+      const minWidth = Math.max(180, widestNode + Math.min(2, nodeCount - 1) * 92 + 36);
       const minHeight = Math.max(86, nestedNodeHeight * Math.ceil(nodeCount / 3) + 62);
       return layout.width >= minWidth && layout.height >= minHeight;
     }
