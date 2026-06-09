@@ -38,6 +38,7 @@ MAX_METRIC_PATH_LENGTH = 512
 DEFAULT_CACHE_TTL_SECONDS = 60
 DEFAULT_METABASE_DATABASE_ID = 2
 DEFAULT_BIGQUERY_LOCATION = "US"
+UNCATEGORIZED_SUBRULES_ID = "uncategorized-subrules"
 DIAGNOSTIC_SCORE_PARENTS = {
     "correctStackLinkCount": "correctStackLinksScore",
     "extraStackLinkCount": "noExtraStackLinksScore",
@@ -889,6 +890,61 @@ def normalize_rule_catalog(
     }
 
 
+def uncategorized_subrule_bucket(catalogs: list[dict[str, Any]], grouped_subrules: dict[str, list[dict[str, Any]]]) -> dict[str, Any] | None:
+    visible_rule_ids = {
+        str(rule.get("id") or "")
+        for catalog in catalogs
+        for rule in catalog.get("rules") or []
+    }
+    uncategorized = []
+    for parent_id, items in sorted(grouped_subrules.items()):
+        if parent_id in visible_rule_ids:
+            continue
+        for item in items:
+            uncategorized.append(
+                {
+                    **item,
+                    "displayParentRuleId": UNCATEGORIZED_SUBRULES_ID,
+                    "sourceParentRuleId": parent_id,
+                }
+            )
+    if not uncategorized:
+        return None
+    return {
+        "id": UNCATEGORIZED_SUBRULES_ID,
+        "priority": 0,
+        "relation": "candidate_bucket",
+        "reasonId": UNCATEGORIZED_SUBRULES_ID,
+        "reason": "Subrule candidates whose mined parent rule is not present in the generated or effective rule catalog.",
+        "triggerThreshold": "",
+        "before": ["unmapped mined parent rules"],
+        "after": ["candidate subrules"],
+        "triggerTerms": [],
+        "subrules": uncategorized,
+        "raw": {
+            "id": UNCATEGORIZED_SUBRULES_ID,
+            "relation": "candidate_bucket",
+            "sourceParentRuleIds": sorted(
+                {
+                    str(item.get("sourceParentRuleId") or "")
+                    for item in uncategorized
+                    if item.get("sourceParentRuleId")
+                }
+            ),
+        },
+    }
+
+
+def attach_uncategorized_subrule_bucket(catalogs: list[dict[str, Any]], grouped_subrules: dict[str, list[dict[str, Any]]]) -> None:
+    bucket = uncategorized_subrule_bucket(catalogs, grouped_subrules)
+    if not bucket:
+        return
+    for catalog in catalogs:
+        catalog.setdefault("rules", []).append(bucket)
+        counts = catalog.setdefault("counts", {})
+        counts["rules"] = len(catalog["rules"])
+
+
 def rules_response(workflow_analysis_root: Path) -> dict[str, Any]:
     pipeline_path = latest_learning_run_path(workflow_analysis_root)
     pipeline_run = read_json_file(pipeline_path)
@@ -917,6 +973,7 @@ def rules_response(workflow_analysis_root: Path) -> dict[str, Any]:
                 subrules=grouped_subrules,
             )
         )
+    attach_uncategorized_subrule_bucket(catalogs, grouped_subrules)
     return {
         "workflowAnalysisRoot": str(workflow_analysis_root),
         "pipelineRunPath": str(pipeline_path),

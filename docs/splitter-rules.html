@@ -637,6 +637,7 @@
     }
 
     const labelDescriptions = {
+      "uncategorized-subrules": "Subrule candidates whose mined parent rule is not present in the generated or effective rule catalog.",
       "activate-one-surface-at-a-time": "Enable one user-facing, API, CLI, or integration surface per PR so each activation is reviewable, measurable, and easy to roll back.",
       "foundation/config-reader": "Add the configuration reader or lookup layer before behavior depends on it.",
       "foundation/schema-types": "Introduce schemas, types, or data models before wiring behavior through them.",
@@ -682,6 +683,7 @@
           <span class="pill">${escapeHtml(reason ? `${decision}: ${reason}` : decision)}</span>
         </div>
         <div class="metric-grid">
+          ${metricCell("Source parent", subrule.sourceParentRuleId || subrule.parentRuleId || "")}
           ${metricCell("Training support", `${formatNumber(subrule.support, 0)} / ${formatNumber(subrule.repoSupport, 0)} repos`)}
           ${metricCell("Confidence", formatNumber(subrule.confidence, 3))}
           ${metricCell("Validation stack-link delta", formatDelta(validation.stackLinkDelta))}

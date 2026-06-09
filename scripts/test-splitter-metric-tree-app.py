@@ -487,7 +487,18 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
                                         }
                                     }
                                 },
-                            }
+                            },
+                            {
+                                "candidateId": "learned-role-transition-behavior-feature-behavior-before-release",
+                                "parentRuleId": "learned-role-transition",
+                                "before": "behavior/feature-behavior",
+                                "after": "release",
+                                "support": 7,
+                                "repoSupport": 2,
+                                "confidence": 0.59,
+                                "decision": "skipped",
+                                "failureBucket": "unsupported_selector",
+                            },
                         ]
                     }
                 )
@@ -496,12 +507,17 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
 
             response = app.rules_response(root)
 
-        self.assertEqual(response["subrules"]["count"], 1)
+        self.assertEqual(response["subrules"]["count"], 2)
         generated = next(catalog for catalog in response["catalogs"] if catalog["kind"] == "generated")
-        rule = generated["rules"][0]
+        self.assertEqual(generated["counts"]["rules"], 2)
+        rule = next(rule for rule in generated["rules"] if rule["id"] == "foundation-before-behavior")
         self.assertEqual(rule["subrules"][0]["parentRuleId"], "foundation-before-behavior")
         self.assertEqual(rule["subrules"][0]["decision"], "promoted")
         self.assertEqual(rule["subrules"][0]["validation"]["stackLinkDelta"], 0.12)
+        uncategorized = next(rule for rule in generated["rules"] if rule["id"] == "uncategorized-subrules")
+        self.assertEqual(len(uncategorized["subrules"]), 1)
+        self.assertEqual(uncategorized["subrules"][0]["sourceParentRuleId"], "learned-role-transition")
+        self.assertEqual(uncategorized["subrules"][0]["before"], "behavior/feature-behavior")
 
     def test_static_rules_page_renders_collapsible_subrules(self) -> None:
         html = (REPO_ROOT / "docs" / "splitter-rules.html").read_text()
@@ -512,6 +528,7 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("Validation stack-link delta", html)
         self.assertIn("payload?.subrules?.count", html)
         self.assertIn("activate-one-surface-at-a-time", html)
+        self.assertIn("uncategorized-subrules", html)
         self.assertIn("function labelDescription", html)
         self.assertIn("function exampleLink", html)
         self.assertIn("fromCommitUrl", html)
