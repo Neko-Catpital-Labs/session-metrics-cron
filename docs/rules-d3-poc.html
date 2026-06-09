@@ -206,6 +206,7 @@
 
     .node.show-nested .nested-graph {
       opacity: 1;
+      pointer-events: auto;
     }
 
     .nested-title {
@@ -222,6 +223,16 @@
       filter: none;
     }
 
+    .nested-node {
+      cursor: pointer;
+    }
+
+    .nested-node.is-selected rect,
+    .nested-node:hover rect {
+      stroke: var(--accent);
+      stroke-width: 1.7;
+    }
+
     .nested-node text {
       fill: var(--text);
       font-size: 9px;
@@ -231,7 +242,23 @@
       fill: none;
       stroke: var(--subrule);
       stroke-width: 1.6;
+      pointer-events: stroke;
+      cursor: pointer;
       marker-end: url(#arrow-nested);
+    }
+
+    .nested-edge-hit {
+      fill: none;
+      stroke: transparent;
+      stroke-width: 12;
+      pointer-events: stroke;
+      cursor: pointer;
+    }
+
+    .nested-edge.is-selected,
+    .nested-edge:hover {
+      stroke: var(--accent);
+      stroke-width: 2.4;
     }
 
     .node.is-selected rect,
@@ -386,14 +413,93 @@
         nestedGraph: {
           title: "Nested subrules",
           nodes: [
-            { id: "config-reader", label: "config reader", x: 0, y: 0 },
-            { id: "config-behavior", label: "config behavior", x: 112, y: 0 },
-            { id: "schema-types", label: "schema/types", x: 0, y: 28 },
-            { id: "feature-behavior", label: "feature behavior", x: 112, y: 28 }
+            {
+              id: "config-reader",
+              label: "reader",
+              fullLabel: "config reader",
+              x: 0,
+              y: 0,
+              plainEnglish: "Read the existing configuration shape before adding behavior that depends on it.",
+              promptMeaning: "Ask for an earlier PR that loads or locates the config source."
+            },
+            {
+              id: "schema-types",
+              label: "schema",
+              fullLabel: "schema/types",
+              x: 74,
+              y: 0,
+              plainEnglish: "Define the typed shape or validation boundary before consumers use the config.",
+              promptMeaning: "Ask for a schema or type PR after config reading and before behavior."
+            },
+            {
+              id: "typed-model",
+              label: "typed model",
+              fullLabel: "typed config model",
+              x: 148,
+              y: 0,
+              plainEnglish: "Convert raw config into the model the implementation will consume.",
+              promptMeaning: "Ask for adapter/model work before behavior reads the values."
+            },
+            {
+              id: "validation-tests",
+              label: "tests",
+              fullLabel: "schema validation tests",
+              x: 74,
+              y: 32,
+              plainEnglish: "Prove invalid and valid config cases before behavior depends on the schema.",
+              promptMeaning: "Ask for focused validation tests before enabling behavior."
+            },
+            {
+              id: "config-behavior",
+              label: "behavior",
+              fullLabel: "config-driven behavior",
+              x: 148,
+              y: 32,
+              plainEnglish: "Use the configured value only after reader, schema, model, and validation are present.",
+              promptMeaning: "Ask for behavior implementation after the foundation graph is in place."
+            }
           ],
           edges: [
-            { source: "config-reader", target: "config-behavior" },
-            { source: "schema-types", target: "feature-behavior" }
+            {
+              id: "reader-to-schema",
+              label: "reader -> schema",
+              source: "config-reader",
+              target: "schema-types",
+              plainEnglish: "Once the repo can find/read config, define the contract that config must satisfy.",
+              prompt: "Split config discovery/loading before schema or type validation."
+            },
+            {
+              id: "schema-to-model",
+              label: "schema -> typed model",
+              source: "schema-types",
+              target: "typed-model",
+              plainEnglish: "After the schema exists, create the typed model or adapter consumed by later code.",
+              prompt: "Split schema/types before model or adapter usage."
+            },
+            {
+              id: "model-to-behavior",
+              label: "typed model -> behavior",
+              source: "typed-model",
+              target: "config-behavior",
+              plainEnglish: "Only implement config-driven behavior after the typed model is ready.",
+              prompt: "Split typed config model before behavior that consumes it."
+            },
+            {
+              id: "schema-to-tests",
+              label: "schema -> tests",
+              source: "schema-types",
+              target: "validation-tests",
+              plainEnglish: "Validate the schema before depending on it for user-visible behavior.",
+              prompt: "Split schema validation tests before enabling behavior."
+            },
+            {
+              id: "tests-to-behavior",
+              label: "tests -> behavior",
+              source: "validation-tests",
+              target: "config-behavior",
+              plainEnglish: "Use validation proof as a gate before adding behavior controlled by config.",
+              prompt: "Split focused validation proof before config-driven behavior."
+            }
           ]
         }
       },
@@ -407,14 +513,85 @@
         nestedGraph: {
           title: "Nested subrules",
           nodes: [
-            { id: "api-contract", label: "API contract", x: 0, y: 0 },
-            { id: "feature-behavior", label: "feature behavior", x: 112, y: 0 },
-            { id: "migration-path", label: "migration path", x: 0, y: 28 },
-            { id: "exposure", label: "exposure", x: 112, y: 28 }
+            {
+              id: "api-contract",
+              label: "API",
+              fullLabel: "API contract",
+              x: 0,
+              y: 0,
+              plainEnglish: "Define or preserve the public contract before changing exposed behavior.",
+              promptMeaning: "Ask for the contract-preserving PR before behavior changes."
+            },
+            {
+              id: "migration-path",
+              label: "migration",
+              fullLabel: "migration path",
+              x: 74,
+              y: 0,
+              plainEnglish: "Give existing callers or data a path from the old shape to the new shape.",
+              promptMeaning: "Ask for migration scaffolding before exposing the new behavior."
+            },
+            {
+              id: "compat-shim",
+              label: "shim",
+              fullLabel: "compatibility shim",
+              x: 148,
+              y: 0,
+              plainEnglish: "Keep old callers working while the new behavior lands.",
+              promptMeaning: "Ask for a compatibility wrapper before flipping exposure."
+            },
+            {
+              id: "stored-data",
+              label: "data",
+              fullLabel: "stored data compatibility",
+              x: 0,
+              y: 32,
+              plainEnglish: "Handle persisted data or repository identity before new behavior depends on it.",
+              promptMeaning: "Ask for stored-data compatibility work before the migration gate."
+            },
+            {
+              id: "exposure",
+              label: "exposure",
+              fullLabel: "new behavior exposure",
+              x: 148,
+              y: 32,
+              plainEnglish: "Expose the new behavior after compatibility and migration protection exist.",
+              promptMeaning: "Ask for the visible behavior or rollout after compatibility is complete."
+            }
           ],
           edges: [
-            { source: "api-contract", target: "feature-behavior" },
-            { source: "migration-path", target: "exposure" }
+            {
+              id: "api-to-migration",
+              label: "API -> migration",
+              source: "api-contract",
+              target: "migration-path",
+              plainEnglish: "The migration path should preserve the API contract.",
+              prompt: "Split API contract preservation before migration behavior."
+            },
+            {
+              id: "data-to-migration",
+              label: "data -> migration",
+              source: "stored-data",
+              target: "migration-path",
+              plainEnglish: "Migration must account for existing persisted data or repository state.",
+              prompt: "Split stored-data compatibility before migration behavior."
+            },
+            {
+              id: "migration-to-shim",
+              label: "migration -> shim",
+              source: "migration-path",
+              target: "compat-shim",
+              plainEnglish: "Use the migration path to support the compatibility shim.",
+              prompt: "Split migration path before compatibility shim."
+            },
+            {
+              id: "shim-to-exposure",
+              label: "shim -> exposure",
+              source: "compat-shim",
+              target: "exposure",
+              plainEnglish: "Expose the behavior after old callers remain protected.",
+              prompt: "Split compatibility shim before new behavior exposure."
+            }
           ]
         }
       },
@@ -541,6 +718,8 @@
     const height = 980;
     const nodeWidth = 240;
     const nodeHeight = 132;
+    const nestedNodeWidth = 66;
+    const nestedNodeHeight = 20;
     let activeFilter = "all";
     let selected = null;
     let currentZoom = 1;
@@ -711,9 +890,13 @@
 
       nodeGroups
         .attr("transform", node => `translate(${node.x},${node.y})`)
-        .classed("is-selected", node => selected?.type === "node" && selected.id === node.id)
+        .classed("is-selected", node => selected?.type === "node" && selected.id === node.id || selected?.parentId === node.id)
         .classed("is-pinned", node => node.fx != null || node.fy != null)
-        .classed("show-nested", node => Boolean(node.nestedGraph) && (currentZoom >= 1.22 || selected?.id === node.id));
+        .classed("show-nested", node => Boolean(node.nestedGraph) && (currentZoom >= 1.22 || selected?.id === node.id || selected?.parentId === node.id));
+
+      nodeGroups.each(function(parent) {
+        updateNestedSelection(d3.select(this), parent);
+      });
     }
 
     function renderNestedGraph(group, node) {
@@ -726,28 +909,56 @@
         .attr("x", 0)
         .attr("y", 5)
         .text(nested.title);
-      group.selectAll("path")
+      const edgePath = edge => {
+        const source = nestedNodes.get(edge.source);
+        const target = nestedNodes.get(edge.target);
+        return `M${source.x + nestedNodeWidth},${source.y + 20} C${source.x + nestedNodeWidth + 12},${source.y + 20} ${target.x - 12},${target.y + 20} ${target.x},${target.y + 20}`;
+      };
+      group.selectAll("path.nested-edge-hit")
+        .data(nested.edges, edge => edge.id)
+        .join("path")
+        .attr("class", "nested-edge-hit")
+        .attr("d", edgePath)
+        .on("pointerdown", event => event.stopPropagation())
+        .on("click", (event, edge) => {
+          event.stopPropagation();
+          selectNestedEdge(node, edge);
+        });
+      group.selectAll("path.nested-edge")
         .data(nested.edges)
         .join("path")
         .attr("class", "nested-edge")
-        .attr("d", edge => {
-          const source = nestedNodes.get(edge.source);
-          const target = nestedNodes.get(edge.target);
-          return `M${source.x + 82},${source.y + 20} C${source.x + 98},${source.y + 20} ${target.x - 12},${target.y + 20} ${target.x},${target.y + 20}`;
+        .attr("d", edgePath)
+        .on("pointerdown", event => event.stopPropagation())
+        .on("click", (event, edge) => {
+          event.stopPropagation();
+          selectNestedEdge(node, edge);
         });
       const mini = group.selectAll("g.nested-node")
         .data(nested.nodes)
         .join("g")
         .attr("class", "nested-node")
-        .attr("transform", item => `translate(${item.x},${item.y + 10})`);
+        .attr("transform", item => `translate(${item.x},${item.y + 10})`)
+        .on("pointerdown", event => event.stopPropagation())
+        .on("click", (event, item) => {
+          event.stopPropagation();
+          selectNestedNode(node, item);
+        });
       mini.append("rect")
-        .attr("width", 90)
-        .attr("height", 20)
+        .attr("width", nestedNodeWidth)
+        .attr("height", nestedNodeHeight)
         .attr("rx", 5);
       mini.append("text")
         .attr("x", 7)
         .attr("y", 14)
         .text(item => item.label);
+    }
+
+    function updateNestedSelection(group, parent) {
+      group.selectAll("g.nested-node")
+        .classed("is-selected", item => selected?.type === "nested-node" && selected.parentId === parent.id && selected.id === item.id);
+      group.selectAll("path.nested-edge")
+        .classed("is-selected", edge => selected?.type === "nested-edge" && selected.parentId === parent.id && selected.id === edge.id);
     }
 
     function selectNode(node) {
@@ -791,6 +1002,62 @@
         </div>
       `;
       render();
+    }
+
+    function selectNestedNode(parent, item) {
+      selected = { type: "nested-node", parentId: parent.id, id: item.id };
+      detailEl.innerHTML = `
+        <div class="detail-title">${escapeHtml(item.fullLabel || item.label)}</div>
+        <p class="detail-copy">${escapeHtml(item.plainEnglish)}</p>
+        <div class="pill-row">
+          <span class="pill">nested node</span>
+          <span class="pill">${escapeHtml(parent.label)}</span>
+        </div>
+        <div class="detail-section">
+          <h3>What the AI should hear</h3>
+          <div class="prompt-box">${escapeHtml(item.promptMeaning)}</div>
+        </div>
+        <div class="detail-section">
+          <h3>Metadata</h3>
+          <dl class="kv">
+            <dt>Parent rule</dt><dd>${escapeHtml(parent.id)}</dd>
+            <dt>Nested node id</dt><dd>${escapeHtml(item.id)}</dd>
+          </dl>
+        </div>
+      `;
+      render();
+    }
+
+    function selectNestedEdge(parent, edge) {
+      const nestedNodes = new Map(parent.nestedGraph.nodes.map(item => [item.id, item]));
+      selected = { type: "nested-edge", parentId: parent.id, id: edge.id };
+      detailEl.innerHTML = `
+        <div class="detail-title">${escapeHtml(edge.label)}</div>
+        <p class="detail-copy">${escapeHtml(edge.plainEnglish)}</p>
+        <div class="pill-row">
+          <span class="pill">nested subrule</span>
+          <span class="pill">${escapeHtml(parent.label)}</span>
+        </div>
+        <div class="detail-section">
+          <h3>Prompt instruction</h3>
+          <div class="prompt-box">${escapeHtml(edge.prompt)}</div>
+        </div>
+        <div class="detail-section">
+          <h3>Metadata</h3>
+          <dl class="kv">
+            <dt>Parent rule</dt><dd>${escapeHtml(parent.id)}</dd>
+            <dt>Subrule id</dt><dd>${escapeHtml(edge.id)}</dd>
+            <dt>Source</dt><dd>${escapeHtml(nestedNodeLabel(nestedNodes, edge.source))}</dd>
+            <dt>Target</dt><dd>${escapeHtml(nestedNodeLabel(nestedNodes, edge.target))}</dd>
+          </dl>
+        </div>
+      `;
+      render();
+    }
+
+    function nestedNodeLabel(nestedNodes, id) {
+      const node = nestedNodes.get(id);
+      return node?.fullLabel || node?.label || id;
     }
 
     function escapeHtml(value) {
