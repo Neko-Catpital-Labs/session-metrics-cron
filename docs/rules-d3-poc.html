@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>D3 Rule Graph POC</title>
+  <title>Rule Graph</title>
   <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
   <style>
     :root {
@@ -357,8 +357,8 @@
   <main>
     <header>
       <div>
-        <h1>D3 Rule Graph POC</h1>
-        <p class="subhead">Dummy graph for approving interaction, layout, and plain-English rule explanation before wiring real data.</p>
+        <h1>Rule Graph</h1>
+        <p class="subhead">Live production view of generated rules, subrules, role labels, and planning prompt metadata.</p>
       </div>
       <a class="nav-link" href="/rules.html">Back to Rules</a>
     </header>
@@ -386,13 +386,13 @@
           </div>
         </div>
         <div id="canvas-wrap" class="canvas-wrap">
-          <svg id="graph" role="img" aria-label="Interactive D3 rule graph proof of concept"></svg>
+          <svg id="graph" role="img" aria-label="Interactive D3 rule and subrule graph"></svg>
         </div>
       </section>
 
       <aside id="detail" class="detail-panel" aria-live="polite">
         <div class="detail-title">Select a node or edge</div>
-        <p class="detail-copy">The production version should show plain-English meaning, why the model uses it, and the exact prompt/hint payload that affects planning.</p>
+        <p class="detail-copy">Select an item to see its plain-English meaning, why the model uses it, and the exact prompt/hint payload that affects planning.</p>
       </aside>
     </div>
   </main>
@@ -407,7 +407,7 @@
       { id: "cleanup", label: "Cleanup", x: 1550 }
     ];
 
-    const nodes = [
+    let nodes = [
       {
         id: "capture-evidence",
         label: "Capture evidence",
@@ -650,7 +650,7 @@
       }
     ];
 
-    const edges = [
+    let edges = [
       {
         id: "evidence-before-change",
         source: "capture-evidence",
@@ -790,6 +790,192 @@
 
     function stageX(stageId) {
       return stages.find(stage => stage.id === stageId)?.x || 900;
+    }
+
+    function stageIndex(stageId) {
+      return Math.max(0, stages.findIndex(stage => stage.id === stageId));
+    }
+
+    function stageFromLabel(label) {
+      const value = String(label || "").toLowerCase();
+      if (value.includes("evidence") || value.includes("repro") || value.includes("diagnostic")) return "evidence";
+      if (value.includes("foundation") || value.includes("schema") || value.includes("config") || value.includes("adapter")) return "foundation";
+      if (value.includes("compat") || value.includes("migration") || value.includes("api") || value.includes("contract")) return "compatibility";
+      if (value.includes("verify") || value.includes("test") || value.includes("validation")) return "verification";
+      if (value.includes("cleanup") || value.includes("legacy") || value.includes("delete") || value.includes("remove")) return "cleanup";
+      return "behavior";
+    }
+
+    function midpointStage(beforeLabels, afterLabels) {
+      const labels = [...(beforeLabels || []), ...(afterLabels || [])];
+      if (!labels.length) return "behavior";
+      const average = labels.reduce((sum, label) => sum + stageIndex(stageFromLabel(label)), 0) / labels.length;
+      return stages[Math.max(0, Math.min(stages.length - 1, Math.round(average)))]?.id || "behavior";
+    }
+
+    function labelTitle(label) {
+      return String(label || "")
+        .replace(/^tag:/, "")
+        .split("/")
+        .map(part => part.split("-").filter(Boolean).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" "))
+        .join(" / ");
+    }
+
+    function compactLabel(label) {
+      const title = labelTitle(label);
+      if (title.length <= 18) return title;
+      const parts = title.split(" / ");
+      return parts[parts.length - 1].slice(0, 18);
+    }
+
+    function labelDescription(label) {
+      const value = String(label || "");
+      const descriptions = {
+        "uncategorized-subrules": "Subrule candidates whose mined parent rule is not present in the generated or effective rule catalog.",
+        "foundation/config-reader": "Add the configuration reader or lookup layer before behavior depends on it.",
+        "foundation/schema-types": "Introduce schemas, types, or data models before wiring behavior through them.",
+        "foundation/adapter-wrapper": "Add adapter or wrapper structure before using it for feature behavior.",
+        "compatibility/api-contract": "Preserve or introduce the API compatibility contract before exposing behavior changes.",
+        "behavior/config-behavior": "Implement behavior controlled by configuration or repository settings.",
+        "behavior/feature-behavior": "Implement the main product or workflow behavior.",
+        "behavior/test-fixture": "Add fixtures or harness support needed to verify behavior.",
+        "verification/terminal-tests": "Run or add terminal-level verification after implementation is present.",
+        "cleanup/legacy-cleanup": "Remove legacy code after the replacement behavior is in place."
+      };
+      if (descriptions[value]) return descriptions[value];
+      if (!value) return "";
+      return `${labelTitle(value)} is a learned role label mined from PR stack examples.`;
+    }
+
+    function productionCatalog(payload) {
+      const catalogs = payload.catalogs || [];
+      return catalogs.find(catalog => catalog.kind === "effective")
+        || catalogs.find(catalog => catalog.kind === "generated")
+        || catalogs[0]
+        || { rules: [], kind: "empty", title: "No rules" };
+    }
+
+    function graphFromRulesPayload(payload) {
+      const catalog = productionCatalog(payload);
+      const nodeMap = new Map();
+      const graphEdges = [];
+
+      function ensureNode(node) {
+        if (!nodeMap.has(node.id)) nodeMap.set(node.id, node);
+        return nodeMap.get(node.id);
+      }
+
+      function ensureTask(label) {
+        const id = `task:${label}`;
+        return ensureNode({
+          id,
+          label: compactLabel(label),
+          fullLabel: label,
+          stage: stageFromLabel(label),
+          kind: "task",
+          plainEnglish: labelDescription(label),
+          promptMeaning: `Planner role label: ${label}`
+        });
+      }
+
+      function nestedGraphForRule(rule) {
+        const subrules = rule.subrules || [];
+        if (!subrules.length) return null;
+        const nestedNodes = new Map();
+        const laneCounts = new Map();
+
+        function nestedNode(label) {
+          if (nestedNodes.has(label)) return nestedNodes.get(label);
+          const stage = stageFromLabel(label);
+          const lane = laneCounts.get(stage) || 0;
+          laneCounts.set(stage, lane + 1);
+          const item = {
+            id: label,
+            label: compactLabel(label),
+            fullLabel: label,
+            x: stageIndex(stage) * 74,
+            y: lane * 34,
+            plainEnglish: labelDescription(label),
+            promptMeaning: `Subrule role label: ${label}`
+          };
+          nestedNodes.set(label, item);
+          return item;
+        }
+
+        const nestedEdges = subrules
+          .filter(subrule => subrule.before && subrule.after)
+          .map(subrule => {
+            const source = nestedNode(subrule.before);
+            const target = nestedNode(subrule.after);
+            return {
+              id: subrule.id || subrule.candidateId || `${rule.id}:${subrule.before}->${subrule.after}`,
+              label: `${compactLabel(subrule.before)} -> ${compactLabel(subrule.after)}`,
+              source: source.id,
+              target: target.id,
+              plainEnglish: subrule.failureBucket || subrule.rejectedReason || `${labelTitle(subrule.before)} should precede ${labelTitle(subrule.after)}.`,
+              prompt: `When both appear, plan ${subrule.before} before ${subrule.after}.`,
+              raw: subrule
+            };
+          });
+        if (!nestedEdges.length) return null;
+        return {
+          title: `${subrules.length} subrules`,
+          nodes: Array.from(nestedNodes.values()),
+          edges: nestedEdges
+        };
+      }
+
+      for (const rule of catalog.rules || []) {
+        const before = rule.before || [];
+        const after = rule.after || [];
+        const ruleNode = ensureNode({
+          id: `rule:${rule.id}`,
+          label: compactLabel(rule.id),
+          fullLabel: rule.id,
+          stage: midpointStage(before, after),
+          kind: "rule-anchor",
+          plainEnglish: rule.reason || rule.reasonId || "Generated planning rule.",
+          promptMeaning: [
+            `Relation: ${rule.relation || "rule"}`,
+            rule.triggerThreshold ? `Trigger threshold: ${rule.triggerThreshold}` : "",
+            rule.triggerTerms?.length ? `Trigger terms: ${rule.triggerTerms.map(term => term.text).filter(Boolean).join(", ")}` : ""
+          ].filter(Boolean).join("\n"),
+          nestedGraph: nestedGraphForRule(rule),
+          raw: rule
+        });
+        for (const label of before) {
+          const task = ensureTask(label);
+          graphEdges.push({
+            id: `${rule.id}:input:${label}`,
+            source: task.id,
+            target: ruleNode.id,
+            kind: "rule",
+            label: `${compactLabel(label)} -> ${compactLabel(rule.id)}`,
+            plainEnglish: rule.reason || `Input role for ${rule.id}.`,
+            prompt: `Rule ${rule.id} applies after ${label}.`
+          });
+        }
+        for (const label of after) {
+          const task = ensureTask(label);
+          graphEdges.push({
+            id: `${rule.id}:output:${label}`,
+            source: ruleNode.id,
+            target: task.id,
+            kind: "rule",
+            label: `${compactLabel(rule.id)} -> ${compactLabel(label)}`,
+            plainEnglish: rule.reason || `Output role for ${rule.id}.`,
+            prompt: `Rule ${rule.id} plans before ${label}.`
+          });
+        }
+      }
+
+      return {
+        nodes: Array.from(nodeMap.values()),
+        edges: graphEdges,
+        catalog,
+        run: payload.run || {},
+        workflowAnalysisRoot: payload.workflowAnalysisRoot || ""
+      };
     }
 
     function visibleEdges() {
@@ -943,7 +1129,7 @@
     }
 
     function nestedClipId(parent) {
-      return `nested-clip-${parent.id}`;
+      return `nested-clip-${String(parent.id || "").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
     }
 
     function nestedGraphOrigin(parent) {
@@ -1508,14 +1694,20 @@
         .replace(/"/g, "&quot;");
     }
 
-    const nodesById = new Map(nodes.map(node => [node.id, node]));
-    const ySlots = new Map();
-    for (const node of nodes) {
-      const count = ySlots.get(node.stage) || 0;
-      ySlots.set(node.stage, count + 1);
-      node.x = stageX(node.stage);
-      node.y = 210 + count * 190;
+    let nodesById = new Map();
+
+    function initializeGraphPositions() {
+      nodesById = new Map(nodes.map(node => [node.id, node]));
+      const ySlots = new Map();
+      for (const node of nodes) {
+        const count = ySlots.get(node.stage) || 0;
+        ySlots.set(node.stage, count + 1);
+        if (node.x == null) node.x = stageX(node.stage);
+        if (node.y == null) node.y = 190 + count * 150;
+      }
     }
+
+    initializeGraphPositions();
 
     const simulation = d3.forceSimulation(nodes)
       .force("charge", d3.forceManyBody().strength(-520).distanceMin(140).distanceMax(650))
@@ -1528,6 +1720,20 @@
     function updateOuterCollision() {
       const collide = simulation.force("collide");
       if (collide) collide.radius(node => nodeCollisionRadius(node));
+    }
+
+    function replaceGraph(nextNodes, nextEdges) {
+      nodes = nextNodes;
+      edges = nextEdges;
+      selected = null;
+      nestedSimulations.clear();
+      defs.selectAll("clipPath[id^='nested-clip-']").remove();
+      initializeGraphPositions();
+      simulation.nodes(nodes);
+      simulation.force("link").links(edges);
+      simulation.alpha(0.8).restart();
+      render();
+      fitGraph();
     }
 
     function dragStarted(event, node) {
@@ -1580,7 +1786,8 @@
     }
 
     function zoomNestedNode() {
-      const node = nodesById.get("foundation");
+      const node = nodes.find(item => item.nestedGraph) || nodes.find(item => item.kind === "rule-anchor");
+      if (!node) return;
       const scale = 2.15;
       const transform = d3.zoomIdentity
         .translate(width / 2 - node.x * scale, height / 2 - node.y * scale)
@@ -1594,6 +1801,45 @@
       svg.transition().duration(350).call(zoom.transform, d3.zoomIdentity);
     }
 
+    async function loadProductionRules() {
+      detailEl.innerHTML = `<div class="detail-title">Loading rules</div><p class="detail-copy">Fetching latest model rules from /api/splitter-rules...</p>`;
+      try {
+        const response = await fetch("/api/splitter-rules", { cache: "no-store" });
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || `HTTP ${response.status}`);
+        const graph = graphFromRulesPayload(payload);
+        if (!graph.nodes.length || !graph.edges.length) throw new Error("No production rules were available to graph.");
+        replaceGraph(graph.nodes, graph.edges);
+        detailEl.innerHTML = `
+          <div class="detail-title">Production rule graph</div>
+          <p class="detail-copy">Loaded ${escapeHtml(graph.catalog.title || graph.catalog.kind || "rule catalog")} from the latest learning run.</p>
+          <div class="pill-row">
+            <span class="pill">${escapeHtml(graph.nodes.length)} nodes</span>
+            <span class="pill">${escapeHtml(graph.edges.length)} edges</span>
+            <span class="pill">${escapeHtml((graph.run || {}).shortSha || "no sha")}</span>
+          </div>
+          <div class="detail-section">
+            <h3>Run</h3>
+            <dl class="kv">
+              <dt>Run id</dt><dd>${escapeHtml((graph.run || {}).runId || "")}</dd>
+              <dt>Branch</dt><dd>${escapeHtml((graph.run || {}).branch || "")}</dd>
+              <dt>SHA</dt><dd>${escapeHtml((graph.run || {}).headSha || "")}</dd>
+            </dl>
+          </div>
+        `;
+        if (new URLSearchParams(window.location.search).get("demo") === "nested") {
+          window.setTimeout(zoomNestedNode, 700);
+        }
+      } catch (error) {
+        detailEl.innerHTML = `
+          <div class="detail-title">Using fallback demo</div>
+          <p class="detail-copy">${escapeHtml(error.message || error)}</p>
+        `;
+        render();
+        fitGraph();
+      }
+    }
+
     document.getElementById("filter-all").addEventListener("click", () => setFilter("all"));
     document.getElementById("filter-rules").addEventListener("click", () => setFilter("rules"));
     document.getElementById("filter-subrules").addEventListener("click", () => setFilter("subrules"));
@@ -1603,11 +1849,7 @@
 
     render();
     fitGraph();
-
-    const demoParams = new URLSearchParams(window.location.search);
-    if (demoParams.get("demo") === "nested") {
-      window.setTimeout(zoomNestedNode, 700);
-    }
+    loadProductionRules();
   </script>
 </body>
 </html>
