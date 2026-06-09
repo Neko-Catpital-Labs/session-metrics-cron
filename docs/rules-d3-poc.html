@@ -730,8 +730,10 @@
     const width = 1760;
     const height = 980;
     const nodeWidth = 240;
+    const nodeMaxWidth = 390;
     const nodeHeight = 132;
     const nestedNodeWidth = 66;
+    const nestedNodeMaxWidth = 190;
     const nestedNodeHeight = 20;
     let activeFilter = "all";
     let selected = null;
@@ -821,11 +823,8 @@
         .join(" / ");
     }
 
-    function compactLabel(label) {
-      const title = labelTitle(label);
-      if (title.length <= 18) return title;
-      const parts = title.split(" / ");
-      return parts[parts.length - 1].slice(0, 18);
+    function graphLabel(label) {
+      return labelTitle(label);
     }
 
     function labelDescription(label) {
@@ -869,7 +868,7 @@
         const id = `task:${label}`;
         return ensureNode({
           id,
-          label: compactLabel(label),
+          label: graphLabel(label),
           fullLabel: label,
           stage: stageFromLabel(label),
           kind: "task",
@@ -891,7 +890,7 @@
           laneCounts.set(stage, lane + 1);
           const item = {
             id: label,
-            label: compactLabel(label),
+            label: graphLabel(label),
             fullLabel: label,
             x: stageIndex(stage) * 74,
             y: lane * 34,
@@ -909,7 +908,7 @@
             const target = nestedNode(subrule.after);
             return {
               id: subrule.id || subrule.candidateId || `${rule.id}:${subrule.before}->${subrule.after}`,
-              label: `${compactLabel(subrule.before)} -> ${compactLabel(subrule.after)}`,
+              label: `${graphLabel(subrule.before)} -> ${graphLabel(subrule.after)}`,
               source: source.id,
               target: target.id,
               plainEnglish: subrule.failureBucket || subrule.rejectedReason || `${labelTitle(subrule.before)} should precede ${labelTitle(subrule.after)}.`,
@@ -930,7 +929,7 @@
         const after = rule.after || [];
         const ruleNode = ensureNode({
           id: `rule:${rule.id}`,
-          label: compactLabel(rule.id),
+          label: graphLabel(rule.id),
           fullLabel: rule.id,
           stage: midpointStage(before, after),
           kind: "rule-anchor",
@@ -950,7 +949,7 @@
             source: task.id,
             target: ruleNode.id,
             kind: "rule",
-            label: `${compactLabel(label)} -> ${compactLabel(rule.id)}`,
+            label: `${graphLabel(label)} -> ${graphLabel(rule.id)}`,
             plainEnglish: rule.reason || `Input role for ${rule.id}.`,
             prompt: `Rule ${rule.id} applies after ${label}.`
           });
@@ -962,7 +961,7 @@
             source: ruleNode.id,
             target: task.id,
             kind: "rule",
-            label: `${compactLabel(rule.id)} -> ${compactLabel(label)}`,
+            label: `${graphLabel(rule.id)} -> ${graphLabel(label)}`,
             plainEnglish: rule.reason || `Output role for ${rule.id}.`,
             prompt: `Rule ${rule.id} plans before ${label}.`
           });
@@ -992,15 +991,44 @@
       return typeof value === "object" ? value.id : value;
     }
 
+    function boundaryPoint(from, to, halfWidth, halfHeight) {
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) return { x: from.x, y: from.y };
+      const xScale = Math.abs(dx) < 0.001 ? Number.POSITIVE_INFINITY : halfWidth / Math.abs(dx);
+      const yScale = Math.abs(dy) < 0.001 ? Number.POSITIVE_INFINITY : halfHeight / Math.abs(dy);
+      const scale = Math.min(xScale, yScale);
+      return { x: from.x + dx * scale, y: from.y + dy * scale };
+    }
+
+    function straightRectPath(sourceCenter, targetCenter, sourceWidth, sourceHeight, targetWidth, targetHeight, margin = 8) {
+      const source = boundaryPoint(
+        sourceCenter,
+        targetCenter,
+        sourceWidth / 2 + margin,
+        sourceHeight / 2 + margin
+      );
+      const target = boundaryPoint(
+        targetCenter,
+        sourceCenter,
+        targetWidth / 2 + margin + 4,
+        targetHeight / 2 + margin + 4
+      );
+      return `M${source.x},${source.y} L${target.x},${target.y}`;
+    }
+
     function edgePath(edge) {
       const source = nodesById.get(edge.source.id || edge.source);
       const target = nodesById.get(edge.target.id || edge.target);
-      const sx = source.x + nodeBoxWidth(source) / 2 + 8;
-      const sy = source.y;
-      const tx = target.x - nodeBoxWidth(target) / 2 - 12;
-      const ty = target.y;
-      const bend = Math.max(90, Math.abs(tx - sx) * 0.45);
-      return `M${sx},${sy} C${sx + bend},${sy} ${tx - bend},${ty} ${tx},${ty}`;
+      if (!source || !target) return "";
+      return straightRectPath(
+        { x: source.x, y: source.y },
+        { x: target.x, y: target.y },
+        nodeBoxWidth(source),
+        nodeBoxHeight(source),
+        nodeBoxWidth(target),
+        nodeBoxHeight(target)
+      );
     }
 
     function nestedIsRequested(node) {
@@ -1022,7 +1050,8 @@
     }
 
     function nodeBoxWidth(node) {
-      return nodeWidth + (nestedExpansion(node) - 1) * 220;
+      const labelWidth = String(node.fullLabel || node.label || "").length * 8.2 + 42;
+      return Math.max(nodeWidth, Math.min(nodeMaxWidth, labelWidth)) + (nestedExpansion(node) - 1) * 220;
     }
 
     function nodeBoxHeight(node) {
@@ -1033,8 +1062,12 @@
       return Math.hypot(nodeBoxWidth(node), nodeBoxHeight(node)) / 2 + 18;
     }
 
-    function nestedCollisionRadius() {
-      return Math.hypot(nestedNodeWidth, nestedNodeHeight) / 2 + 16;
+    function nestedNodeBoxWidth(item) {
+      return Math.max(nestedNodeWidth, Math.min(nestedNodeMaxWidth, String(item.fullLabel || item.label || "").length * 5.8 + 18));
+    }
+
+    function nestedCollisionRadius(item) {
+      return Math.hypot(nestedNodeBoxWidth(item), nestedNodeHeight) / 2 + 16;
     }
 
     function rectOverlap(a, b) {
@@ -1079,14 +1112,14 @@
     function nestedDragRect(item, x = item.x, y = item.y, margin = 10) {
       return {
         left: x - margin,
-        right: x + nestedNodeWidth + margin,
+        right: x + nestedNodeBoxWidth(item) + margin,
         top: y - margin,
         bottom: y + nestedNodeHeight + margin
       };
     }
 
     function resolveNestedDragPoint(parent, item, x, y) {
-      const point = clampNestedPoint(parent, x, y);
+      const point = clampNestedPoint(parent, item, x, y);
       for (let iteration = 0; iteration < 8; iteration += 1) {
         let moved = false;
         for (const other of parent.nestedGraph.nodes) {
@@ -1095,13 +1128,13 @@
           if (!overlap.overlapping) continue;
           moved = true;
           if (overlap.x < overlap.y) {
-            const direction = point.x + nestedNodeWidth / 2 >= other.x + nestedNodeWidth / 2 ? 1 : -1;
+            const direction = point.x + nestedNodeBoxWidth(item) / 2 >= other.x + nestedNodeBoxWidth(other) / 2 ? 1 : -1;
             point.x += direction * (overlap.x + 1);
           } else {
             const direction = point.y + nestedNodeHeight / 2 >= other.y + nestedNodeHeight / 2 ? 1 : -1;
             point.y += direction * (overlap.y + 1);
           }
-          const clamped = clampNestedPoint(parent, point.x, point.y);
+          const clamped = clampNestedPoint(parent, item, point.x, point.y);
           point.x = clamped.x;
           point.y = clamped.y;
         }
@@ -1123,7 +1156,8 @@
       if (!parent.nestedGraph) return false;
       const layout = nestedLayout(parent);
       const nodeCount = parent.nestedGraph.nodes.length;
-      const minWidth = Math.max(180, nestedNodeWidth * Math.min(3, nodeCount) + 42);
+      const widestNode = Math.max(nestedNodeWidth, d3.max(parent.nestedGraph.nodes, item => nestedNodeBoxWidth(item)) || nestedNodeWidth);
+      const minWidth = Math.max(180, widestNode * Math.min(3, nodeCount) + 42);
       const minHeight = Math.max(86, nestedNodeHeight * Math.ceil(nodeCount / 3) + 62);
       return layout.width >= minWidth && layout.height >= minHeight;
     }
@@ -1189,7 +1223,7 @@
         }))).id(item => item.id).distance(() => 92 * nestedExpansion(parent)).strength(0.32))
         .force("x", d3.forceX(item => nestedTargetX(parent, item)).strength(0.18))
         .force("y", d3.forceY(item => nestedTargetY(parent, item)).strength(0.2))
-        .force("collide", d3.forceCollide(nestedCollisionRadius()).strength(1))
+        .force("collide", d3.forceCollide(item => nestedCollisionRadius(item)).strength(1))
         .on("tick", () => {
           containNestedNodes(parent);
           render();
@@ -1224,7 +1258,7 @@
     function nestedTargetX(parent, item) {
       const layout = nestedLayout(parent);
       const maxX = parent.nestedGraph.baseMaxX || 1;
-      return layout.left + (item.baseX / maxX) * Math.max(1, layout.width - nestedNodeWidth);
+      return layout.left + (item.baseX / maxX) * Math.max(1, layout.width - nestedNodeBoxWidth(item));
     }
 
     function nestedTargetY(parent, item) {
@@ -1235,17 +1269,17 @@
 
     function containNestedNodes(parent) {
       for (const item of parent.nestedGraph.nodes) {
-        const point = clampNestedPoint(parent, item.x, item.y);
+        const point = clampNestedPoint(parent, item, item.x, item.y);
         item.x = point.x;
         item.y = point.y;
       }
       resolveNestedCollisions(parent);
     }
 
-    function clampNestedPoint(parent, x, y) {
+    function clampNestedPoint(parent, item, x, y) {
       const layout = nestedLayout(parent);
       return {
-        x: Math.max(layout.left, Math.min(layout.left + layout.width - nestedNodeWidth, x)),
+        x: Math.max(layout.left, Math.min(layout.left + layout.width - nestedNodeBoxWidth(item), x)),
         y: Math.max(layout.top, Math.min(layout.top + layout.height - nestedNodeHeight, y))
       };
     }
@@ -1266,7 +1300,7 @@
             const pushX = overlap.x + 1;
             const pushY = overlap.y + 1;
             if (overlap.x < overlap.y) {
-              const direction = a.x + nestedNodeWidth / 2 <= b.x + nestedNodeWidth / 2 ? -1 : 1;
+              const direction = a.x + nestedNodeBoxWidth(a) / 2 <= b.x + nestedNodeBoxWidth(b) / 2 ? -1 : 1;
               separateNestedPair(parent, a, b, "x", direction * pushX, aPinned, bPinned);
             } else {
               const direction = a.y + nestedNodeHeight / 2 <= b.y + nestedNodeHeight / 2 ? -1 : 1;
@@ -1275,7 +1309,7 @@
           }
         }
         for (const item of items) {
-          const point = clampNestedPoint(parent, item.x, item.y);
+          const point = clampNestedPoint(parent, item, item.x, item.y);
           item.x = point.x;
           item.y = point.y;
           if (item.fx != null) item.fx = item.x;
@@ -1402,7 +1436,8 @@
 
       nodeGroups.select("text:not(.meta)")
         .attr("x", node => -nodeBoxWidth(node) / 2 + 12)
-        .attr("y", node => nodeTitleY(node));
+        .attr("y", node => nodeTitleY(node))
+        .text(node => node.fullLabel ? graphLabel(node.fullLabel) : node.label);
 
       nodeGroups.select("text.meta")
         .attr("x", node => -nodeBoxWidth(node) / 2 + 12)
@@ -1445,12 +1480,16 @@
       const edgePath = edge => {
         const source = nestedNodes.get(nestedId(edge.source));
         const target = nestedNodes.get(nestedId(edge.target));
-        const sx = source.x + nestedNodeWidth;
-        const sy = source.y + nestedNodeHeight / 2;
-        const tx = target.x;
-        const ty = target.y + nestedNodeHeight / 2;
-        const bend = Math.max(22, Math.abs(tx - sx) * 0.45);
-        return `M${sx},${sy} C${sx + bend},${sy} ${tx - bend},${ty} ${tx},${ty}`;
+        if (!source || !target) return "";
+        return straightRectPath(
+          { x: source.x + nestedNodeBoxWidth(source) / 2, y: source.y + nestedNodeHeight / 2 },
+          { x: target.x + nestedNodeBoxWidth(target) / 2, y: target.y + nestedNodeHeight / 2 },
+          nestedNodeBoxWidth(source),
+          nestedNodeHeight,
+          nestedNodeBoxWidth(target),
+          nestedNodeHeight,
+          2
+        );
       };
       nestedContent.selectAll("path.nested-edge-hit")
         .data(nested.edges, edge => edge.id)
@@ -1492,7 +1531,7 @@
               .attr("class", "nested-node-hit")
               .attr("x", -7)
               .attr("y", -6)
-              .attr("width", nestedNodeWidth + 14)
+              .attr("width", item => nestedNodeBoxWidth(item) + 14)
               .attr("height", nestedNodeHeight + 12)
               .attr("rx", 8)
               .on("pointerdown", stopNestedPointer)
@@ -1502,7 +1541,7 @@
               });
             itemGroup.append("rect")
               .attr("class", "nested-node-body")
-              .attr("width", nestedNodeWidth)
+              .attr("width", item => nestedNodeBoxWidth(item))
               .attr("height", nestedNodeHeight)
               .attr("rx", 5)
               .on("pointerdown", stopNestedPointer)
@@ -1525,7 +1564,11 @@
         );
       mini
         .attr("transform", item => `translate(${item.x},${item.y})`);
-      mini.select("text").text(item => item.label);
+      mini.select("rect.nested-node-hit")
+        .attr("width", item => nestedNodeBoxWidth(item) + 14);
+      mini.select("rect.nested-node-body")
+        .attr("width", item => nestedNodeBoxWidth(item));
+      mini.select("text").text(item => item.fullLabel ? graphLabel(item.fullLabel) : item.label);
     }
 
     function nestedId(value) {
