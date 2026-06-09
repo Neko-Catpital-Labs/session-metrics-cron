@@ -175,7 +175,7 @@
       opacity: 1;
     }
 
-    .node rect {
+    .node > rect {
       fill: #fff;
       stroke: #b8c7dc;
       stroke-width: 1.5;
@@ -183,9 +183,9 @@
       filter: drop-shadow(0 2px 3px rgba(15, 23, 42, 0.08));
     }
 
-    .node.rule-anchor rect { fill: #eef6ff; stroke: #8dbcf2; }
-    .node.task rect { fill: #fff; }
-    .node.model-hint rect { fill: #f8f5ff; stroke: #c4b5fd; stroke-dasharray: 5 4; }
+    .node.rule-anchor > rect { fill: #eef6ff; stroke: #8dbcf2; }
+    .node.task > rect { fill: #fff; }
+    .node.model-hint > rect { fill: #f8f5ff; stroke: #c4b5fd; stroke-dasharray: 5 4; }
 
     .node text {
       pointer-events: none;
@@ -216,7 +216,13 @@
       text-transform: uppercase;
     }
 
-    .nested-node rect {
+    .nested-node-hit {
+      fill: transparent;
+      stroke: transparent;
+      pointer-events: all;
+    }
+
+    .nested-node rect.nested-node-body {
       fill: #fff;
       stroke: #cbd5e1;
       stroke-width: 1;
@@ -228,8 +234,8 @@
       cursor: pointer;
     }
 
-    .nested-node.is-selected rect,
-    .nested-node:hover rect {
+    .nested-node.is-selected rect.nested-node-body,
+    .nested-node:hover rect.nested-node-body {
       stroke: var(--accent);
       stroke-width: 1.7;
     }
@@ -263,14 +269,14 @@
       stroke-width: 2.4;
     }
 
-    .node.is-selected rect,
-    .node:hover rect {
+    .node.is-selected > rect,
+    .node:hover > rect {
       stroke: var(--accent);
       stroke-width: 2.5;
       cursor: grab;
     }
 
-    .node.is-pinned rect {
+    .node.is-pinned > rect {
       stroke: var(--warn);
       stroke-width: 2.25;
     }
@@ -996,6 +1002,21 @@
                 selectNestedNode(node, item);
               });
             itemGroup.append("rect")
+              .attr("class", "nested-node-hit")
+              .attr("x", -7)
+              .attr("y", -6)
+              .attr("width", nestedNodeWidth + 14)
+              .attr("height", nestedNodeHeight + 12)
+              .attr("rx", 8)
+              .on("pointerdown", stopNestedPointer)
+              .on("mousedown", stopNestedPointer)
+              .on("touchstart", stopNestedPointer)
+              .on("click", (event, item) => {
+                event.stopPropagation();
+                selectNestedNode(node, item);
+              });
+            itemGroup.append("rect")
+              .attr("class", "nested-node-body")
               .attr("width", nestedNodeWidth)
               .attr("height", nestedNodeHeight)
               .attr("rx", 5)
