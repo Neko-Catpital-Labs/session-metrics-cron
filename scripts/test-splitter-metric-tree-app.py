@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -282,6 +283,52 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertEqual(history["root.a"][1]["short_sha"], "fedcba654321")
         self.assertEqual(history["root.a"][1]["effective_weight_pct"], 30.0)
 
+    def test_ready_response_reports_missing_bigquery_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            static_path = root / "index.html"
+            rules_static_path = root / "rules.html"
+            static_path.write_text("<html></html>")
+            rules_static_path.write_text("<html></html>")
+            run_dir = root / "target" / "stack-learning" / "runs" / "20260609T000000Z"
+            run_dir.mkdir(parents=True)
+            (run_dir / "pipeline-run.json").write_text(
+                json.dumps(
+                    {
+                        "runId": "20260609T000000Z",
+                        "headSha": "62197da994421e1e5c3ae3014e777ba46862c2b5",
+                        "artifacts": {},
+                    }
+                )
+            )
+
+            original_credentials = os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+            try:
+                payload, status = app.ready_response(
+                    static_path=static_path,
+                    rules_static_path=rules_static_path,
+                    workflow_analysis_root=root,
+                    table="project.dataset.table",
+                    project_id="project",
+                    backend="bigquery",
+                    metabase_url="",
+                    metabase_api_key="",
+                    bigquery_location="US",
+                )
+            finally:
+                if original_credentials is not None:
+                    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = original_credentials
+
+        checks = {item["name"]: item for item in payload["checks"]}
+        self.assertEqual(status, app.HTTPStatus.SERVICE_UNAVAILABLE)
+        self.assertFalse(payload["ok"])
+        self.assertTrue(checks["static_page"]["ok"])
+        self.assertTrue(checks["rules_page"]["ok"])
+        self.assertTrue(checks["rules_artifacts"]["ok"])
+        self.assertFalse(checks["bigquery_credentials"]["ok"])
+        self.assertFalse(checks["bigquery_import"]["ok"])
+        self.assertIn("GOOGLE_APPLICATION_CREDENTIALS", checks["bigquery_credentials"]["message"])
+
     def test_static_history_chart_uses_time_axis_and_metadata_popup(self) -> None:
         html = (REPO_ROOT / "docs" / "splitter-metric-tree-mvp.html").read_text()
 
@@ -469,6 +516,18 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("function exampleLink", html)
         self.assertIn("fromCommitUrl", html)
         self.assertIn("target=\"_blank\"", html)
+
+    def test_splitter_metric_tree_launcher_uses_bigquery_venv(self) -> None:
+        launcher = (REPO_ROOT / "scripts" / "run-splitter-metric-tree-app.sh").read_text()
+        installer = (REPO_ROOT / "scripts" / "install-splitter-metric-tree-do1.sh").read_text()
+
+        self.assertIn("bigquery.env", launcher)
+        self.assertIn("bigquery-venv", launcher)
+        self.assertIn("google-cloud-bigquery", launcher)
+        self.assertIn("WORKFLOW_ANALYSIS_SERVICE_ROOT", launcher)
+        self.assertIn("scripts/splitter_metric_tree_app.py", launcher)
+        self.assertIn("pgrep -f \"scripts/splitter_metric_tree_app.py\"", installer)
+        self.assertIn("/healthz", installer)
 
 
 if __name__ == "__main__":

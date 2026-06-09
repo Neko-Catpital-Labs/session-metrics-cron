@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import sys
@@ -36,6 +37,7 @@ MAX_HISTORY_RUNS = 100
 MAX_METRIC_PATH_LENGTH = 512
 DEFAULT_CACHE_TTL_SECONDS = 60
 DEFAULT_METABASE_DATABASE_ID = 2
+DEFAULT_BIGQUERY_LOCATION = "US"
 DIAGNOSTIC_SCORE_PARENTS = {
     "correctStackLinkCount": "correctStackLinksScore",
     "extraStackLinkCount": "noExtraStackLinksScore",
@@ -139,6 +141,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--metabase-url", default=os.environ.get("METABASE_URL", ""))
     parser.add_argument("--metabase-api-key", default=os.environ.get("METABASE_API_KEY", ""))
     parser.add_argument("--metabase-database-id", type=int, default=int(os.environ.get("METABASE_BIGQUERY_DATABASE_ID", str(DEFAULT_METABASE_DATABASE_ID))))
+    parser.add_argument("--bigquery-location", default=os.environ.get("SPLITTER_BIGQUERY_LOCATION", DEFAULT_BIGQUERY_LOCATION))
     parser.add_argument("--static-path", type=Path, default=DEFAULT_STATIC_PATH)
     parser.add_argument("--rules-static-path", type=Path, default=DEFAULT_RULES_STATIC_PATH)
     parser.add_argument("--workflow-analysis-root", type=Path, default=DEFAULT_WORKFLOW_ANALYSIS_ROOT)
@@ -933,6 +936,122 @@ def rules_response(workflow_analysis_root: Path) -> dict[str, Any]:
     }
 
 
+def check_result(name: str, ok: bool, message: str = "", **details: Any) -> dict[str, Any]:
+    result = {"name": name, "ok": ok}
+    if message:
+        result["message"] = message
+    result.update(details)
+    return result
+
+
+def bigquery_credentials_check() -> dict[str, Any]:
+    path_value = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    if not path_value:
+        return check_result("bigquery_credentials", False, "GOOGLE_APPLICATION_CREDENTIALS is not set")
+    path = Path(path_value)
+    if not path.exists():
+        return check_result(
+            "bigquery_credentials",
+            False,
+            "GOOGLE_APPLICATION_CREDENTIALS file does not exist",
+            path=str(path),
+        )
+    return check_result("bigquery_credentials", True, path=str(path))
+
+
+def bigquery_import_check() -> dict[str, Any]:
+    try:
+        spec = importlib.util.find_spec("google.cloud.bigquery")
+    except ModuleNotFoundError:
+        spec = None
+    if spec is None:
+        return check_result("bigquery_import", False, "google-cloud-bigquery is not installed")
+    return check_result("bigquery_import", True)
+
+
+def bigquery_table_check(project_id: str, table: str, location: str) -> dict[str, Any]:
+    from google.cloud import bigquery  # type: ignore
+
+    client = bigquery.Client(project=project_id)
+    sql = f"SELECT COUNT(1) AS row_count FROM `{table}` WHERE dirty = FALSE"
+    rows = list(client.query(sql, location=location).result())
+    row_count = int(rows[0]["row_count"]) if rows else 0
+    return check_result(
+        "bigquery_metrics_table",
+        row_count > 0,
+        "" if row_count > 0 else "metrics table returned zero clean rows",
+        table=table,
+        rowCount=row_count,
+    )
+
+
+def metabase_ready_check(metabase_url: str, metabase_api_key: str) -> dict[str, Any]:
+    return check_result(
+        "metabase_config",
+        bool(metabase_url and metabase_api_key),
+        "" if metabase_url and metabase_api_key else "METABASE_URL or METABASE_API_KEY is missing",
+    )
+
+
+def rules_artifacts_check(workflow_analysis_root: Path) -> dict[str, Any]:
+    pipeline_path = latest_learning_run_path(workflow_analysis_root)
+    pipeline_run = read_json_file(pipeline_path)
+    subrule_artifacts = load_subrule_artifacts(workflow_analysis_root, pipeline_run, pipeline_path)
+    return check_result(
+        "rules_artifacts",
+        True,
+        pipelineRunPath=str(pipeline_path),
+        runId=pipeline_run.get("runId"),
+        headSha=pipeline_run.get("headSha"),
+        subruleCount=subrule_artifacts.get("count", 0),
+    )
+
+
+def ready_response(
+    *,
+    static_path: Path,
+    rules_static_path: Path,
+    workflow_analysis_root: Path,
+    table: str,
+    project_id: str,
+    backend: str,
+    metabase_url: str,
+    metabase_api_key: str,
+    bigquery_location: str,
+) -> tuple[dict[str, Any], HTTPStatus]:
+    checks = [
+        check_result("static_page", static_path.exists(), path=str(static_path)),
+        check_result("rules_page", rules_static_path.exists(), path=str(rules_static_path)),
+    ]
+    try:
+        checks.append(rules_artifacts_check(workflow_analysis_root))
+    except Exception as exc:
+        checks.append(check_result("rules_artifacts", False, str(exc)))
+
+    if backend == "metabase":
+        checks.append(metabase_ready_check(metabase_url, metabase_api_key))
+    else:
+        credentials = bigquery_credentials_check()
+        checks.append(credentials)
+        import_check = bigquery_import_check()
+        checks.append(import_check)
+        if credentials["ok"] and import_check["ok"]:
+            try:
+                checks.append(bigquery_table_check(project_id, table, bigquery_location))
+            except Exception as exc:
+                checks.append(check_result("bigquery_metrics_table", False, str(exc), table=table))
+
+    ok = all(check.get("ok") for check in checks)
+    return {
+        "ok": ok,
+        "backend": backend,
+        "table": table,
+        "projectId": project_id,
+        "workflowAnalysisRoot": str(workflow_analysis_root),
+        "checks": checks,
+    }, HTTPStatus.OK if ok else HTTPStatus.SERVICE_UNAVAILABLE
+
+
 def make_handler(
     static_path: Path,
     rules_static_path: Path,
@@ -943,12 +1062,13 @@ def make_handler(
     metabase_url: str,
     metabase_api_key: str,
     metabase_database_id: int,
+    bigquery_location: str,
     cache: TTLCache,
 ) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def do_HEAD(self) -> None:
             parsed = urlparse(self.path)
-            if parsed.path in {"/", "/index.html", "/rules.html", "/healthz"}:
+            if parsed.path in {"/", "/index.html", "/rules.html", "/healthz", "/readyz"}:
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
@@ -971,6 +1091,20 @@ def make_handler(
                 return
             if parsed.path == "/healthz":
                 self.send_json({"ok": True})
+                return
+            if parsed.path == "/readyz":
+                payload, status = ready_response(
+                    static_path=static_path,
+                    rules_static_path=rules_static_path,
+                    workflow_analysis_root=workflow_analysis_root,
+                    table=table,
+                    project_id=project_id,
+                    backend=backend,
+                    metabase_url=metabase_url,
+                    metabase_api_key=metabase_api_key,
+                    bigquery_location=bigquery_location,
+                )
+                self.send_json(payload, status=status)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -1049,6 +1183,7 @@ def main() -> int:
         args.metabase_url,
         args.metabase_api_key,
         args.metabase_database_id,
+        args.bigquery_location,
         cache,
     )
     server = ThreadingHTTPServer((args.host, args.port), handler)
