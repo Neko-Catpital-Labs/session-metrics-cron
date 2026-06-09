@@ -787,6 +787,16 @@
       return stages.find(stage => stage.id === stageId)?.x || 900;
     }
 
+    function stageBand(stageId) {
+      const index = stageIndex(stageId);
+      const stage = stages[index] || stages[0];
+      const previous = stages[index - 1];
+      const next = stages[index + 1];
+      const left = previous ? (previous.x + stage.x) / 2 : stage.x - 140;
+      const right = next ? (stage.x + next.x) / 2 : stage.x + 140;
+      return { left: left + 10, right: right - 10, center: stage.x };
+    }
+
     function stageIndex(stageId) {
       return Math.max(0, stages.findIndex(stage => stage.id === stageId));
     }
@@ -1144,8 +1154,29 @@
       };
     }
 
+    function clampOuterX(node, x) {
+      const band = stageBand(node.stage);
+      const halfWidth = nodeBoxWidth(node) / 2 + 10;
+      const minX = band.left + halfWidth;
+      const maxX = band.right - halfWidth;
+      if (minX > maxX) return band.center;
+      return Math.max(minX, Math.min(maxX, x));
+    }
+
+    function clampOuterPoint(node, x, y) {
+      return { x: clampOuterX(node, x), y };
+    }
+
+    function containOuterNodes() {
+      for (const node of nodes) {
+        const x = clampOuterX(node, node.x);
+        node.x = x;
+        if (node.fx != null) node.fx = x;
+      }
+    }
+
     function resolveOuterDragPoint(node, x, y) {
-      const point = { x, y };
+      const point = clampOuterPoint(node, x, y);
       for (let iteration = 0; iteration < 8; iteration += 1) {
         let moved = false;
         for (const other of nodes) {
@@ -1160,6 +1191,9 @@
             const direction = point.y >= other.y ? 1 : -1;
             point.y += direction * (overlap.y + 1);
           }
+          const clamped = clampOuterPoint(node, point.x, point.y);
+          point.x = clamped.x;
+          point.y = clamped.y;
         }
         if (!moved) break;
       }
@@ -1797,6 +1831,7 @@
         ySlots.set(node.stage, count + 1);
         if (node.x == null) node.x = stageX(node.stage);
         if (node.y == null) node.y = 190 + count * 150;
+        node.x = clampOuterX(node, node.x);
       }
     }
 
@@ -1804,11 +1839,15 @@
 
     const simulation = d3.forceSimulation(nodes)
       .force("charge", d3.forceManyBody().strength(-520).distanceMin(140).distanceMax(650))
-      .force("x", d3.forceX(node => stageX(node.stage)).strength(0.1))
+      .force("x", d3.forceX(node => stageX(node.stage)).strength(0.45))
       .force("y", d3.forceY(height / 2).strength(0.025))
       .force("collide", d3.forceCollide(node => nodeCollisionRadius(node)).strength(1).iterations(3))
       .force("link", d3.forceLink(edges).id(node => node.id).distance(360).strength(0.035))
-      .on("tick", render);
+      .on("tick", () => {
+        containOuterNodes();
+        render();
+      });
+    simulation.stop();
 
     function updateOuterCollision() {
       const collide = simulation.force("collide");
@@ -1928,6 +1967,7 @@
           <div class="detail-title">Using fallback demo</div>
           <p class="detail-copy">${escapeHtml(error.message || error)}</p>
         `;
+        simulation.alpha(0.8).restart();
         render();
         fitGraph();
       }
@@ -1940,8 +1980,6 @@
     document.getElementById("fit").addEventListener("click", fitGraph);
     document.getElementById("reset").addEventListener("click", resetGraph);
 
-    render();
-    fitGraph();
     loadProductionRules();
   </script>
 </body>
