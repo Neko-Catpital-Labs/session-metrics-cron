@@ -847,6 +847,70 @@
         || { rules: [], kind: "empty", title: "No rules" };
     }
 
+    function layoutSubruleGraph(nestedNodes, nestedEdges) {
+      const nodeList = Array.from(nestedNodes.values());
+      const incoming = new Map(nodeList.map(node => [node.id, []]));
+      const outgoing = new Map(nodeList.map(node => [node.id, []]));
+      for (const edge of nestedEdges) {
+        if (!nestedNodes.has(edge.source) || !nestedNodes.has(edge.target)) continue;
+        outgoing.get(edge.source).push(edge.target);
+        incoming.get(edge.target).push(edge.source);
+      }
+
+      const layerById = new Map(nodeList.map(node => [node.id, 0]));
+      for (let pass = 0; pass < nodeList.length; pass += 1) {
+        let changed = false;
+        for (const edge of nestedEdges) {
+          const sourceLayer = layerById.get(edge.source) || 0;
+          const targetLayer = layerById.get(edge.target) || 0;
+          const nextLayer = Math.min(nodeList.length - 1, sourceLayer + 1);
+          if (nextLayer > targetLayer) {
+            layerById.set(edge.target, nextLayer);
+            changed = true;
+          }
+        }
+        if (!changed) break;
+      }
+
+      const layers = new Map();
+      for (const node of nodeList) {
+        const layer = layerById.get(node.id) || 0;
+        if (!layers.has(layer)) layers.set(layer, []);
+        layers.get(layer).push(node);
+      }
+
+      const orderedLayers = Array.from(layers.keys()).sort((a, b) => a - b);
+      const orderById = new Map();
+      for (const layer of orderedLayers) {
+        const layerNodes = layers.get(layer);
+        layerNodes.sort((a, b) => {
+          const aScore = neighborOrderScore(a.id, incoming, outgoing, orderById);
+          const bScore = neighborOrderScore(b.id, incoming, outgoing, orderById);
+          if (aScore !== bScore) return aScore - bScore;
+          return graphLabel(a.id).localeCompare(graphLabel(b.id));
+        });
+        layerNodes.forEach((node, index) => orderById.set(node.id, index));
+      }
+
+      const maxLayerSize = Math.max(1, ...Array.from(layers.values(), layer => layer.length));
+      for (const layer of orderedLayers) {
+        const layerNodes = layers.get(layer);
+        const yOffset = (maxLayerSize - layerNodes.length) * 34;
+        layerNodes.forEach((node, index) => {
+          node.x = layer * 170;
+          node.y = yOffset + index * 68;
+        });
+      }
+    }
+
+    function neighborOrderScore(nodeId, incoming, outgoing, orderById) {
+      const neighbors = [...(incoming.get(nodeId) || []), ...(outgoing.get(nodeId) || [])]
+        .filter(id => orderById.has(id))
+        .map(id => orderById.get(id));
+      if (!neighbors.length) return Number.POSITIVE_INFINITY;
+      return neighbors.reduce((sum, value) => sum + value, 0) / neighbors.length;
+    }
+
     function graphFromRulesPayload(payload) {
       const catalog = productionCatalog(payload);
       const nodeMap = new Map();
@@ -878,14 +942,13 @@
 
         function nestedNode(label) {
           if (nestedNodes.has(label)) return nestedNodes.get(label);
-          const stage = stageFromLabel(label);
-          const lane = laneCounts.get(stage) || 0;
-          laneCounts.set(stage, lane + 1);
+          const lane = laneCounts.get("default") || 0;
+          laneCounts.set("default", lane + 1);
           const item = {
             id: label,
             label: graphLabel(label),
             fullLabel: label,
-            x: stageIndex(stage) * 74,
+            x: 0,
             y: lane * 34,
             plainEnglish: labelDescription(label),
             promptMeaning: `Subrule role label: ${label}`
@@ -910,6 +973,7 @@
             };
           });
         if (!nestedEdges.length) return null;
+        layoutSubruleGraph(nestedNodes, nestedEdges);
         return {
           title: `${subrules.length} subrules`,
           nodes: Array.from(nestedNodes.values()),
@@ -1208,14 +1272,14 @@
       nested.baseMaxY = Math.max(1, d3.max(nested.nodes, item => item.baseY) || 1);
 
       const sim = d3.forceSimulation(nested.nodes)
-        .force("charge", d3.forceManyBody().strength(-115).distanceMin(28).distanceMax(220))
+        .force("charge", d3.forceManyBody().strength(-135).distanceMin(32).distanceMax(260))
         .force("link", d3.forceLink(nested.edges.map(edge => ({
           id: edge.id,
           source: edge.source,
           target: edge.target
-        }))).id(item => item.id).distance(() => 92 * nestedExpansion(parent)).strength(0.32))
-        .force("x", d3.forceX(item => nestedTargetX(parent, item)).strength(0.18))
-        .force("y", d3.forceY(item => nestedTargetY(parent, item)).strength(0.2))
+        }))).id(item => item.id).distance(() => 118 * nestedExpansion(parent)).strength(0.18))
+        .force("x", d3.forceX(item => nestedTargetX(parent, item)).strength(0.42))
+        .force("y", d3.forceY(item => nestedTargetY(parent, item)).strength(0.34))
         .force("collide", d3.forceCollide(item => nestedCollisionRadius(item)).strength(1))
         .on("tick", () => {
           containNestedNodes(parent);
