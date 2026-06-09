@@ -572,6 +572,21 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertNotIn("Generated candidate</h3>", html)
         self.assertNotIn("Effective after gate</h3>", html)
 
+    def test_static_rules_d3_poc_page_is_interactive_demo(self) -> None:
+        html = (REPO_ROOT / "docs" / "rules-d3-poc.html").read_text()
+        app_source = (REPO_ROOT / "scripts" / "splitter_metric_tree_app.py").read_text()
+
+        self.assertIn("<title>D3 Rule Graph POC</title>", html)
+        self.assertIn("https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js", html)
+        self.assertIn("d3.forceSimulation", html)
+        self.assertIn("d3.zoom", html)
+        self.assertIn("d3.drag", html)
+        self.assertIn("function selectNode", html)
+        self.assertIn("function selectEdge", html)
+        self.assertIn("Keep compatibility contract", html)
+        self.assertIn("Prompt instruction", html)
+        self.assertIn("rules-d3-poc.html", app_source)
+
     def test_splitter_metric_tree_launcher_uses_bigquery_venv(self) -> None:
         launcher = (REPO_ROOT / "scripts" / "run-splitter-metric-tree-app.sh").read_text()
         installer = (REPO_ROOT / "scripts" / "install-splitter-metric-tree-do1.sh").read_text()

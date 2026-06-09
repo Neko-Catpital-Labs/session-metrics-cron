@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>D3 Rule Graph POC</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --text: #111827;
+      --muted: #53627a;
+      --line: #d8e0ec;
+      --accent: #2563eb;
+      --rule: #2563eb;
+      --subrule: #0f9f6e;
+      --candidate: #8a5cf6;
+      --warn: #b45309;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    header, .toolbar, .graph-shell {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    h1, h2, h3, p { margin: 0; }
+
+    h1 { font-size: 24px; }
+
+    .subhead {
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    button, a.nav-link {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      color: var(--text);
+      min-height: 34px;
+      padding: 0 12px;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    button[aria-pressed="true"] {
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 650;
+    }
+
+    .toolbar {
+      margin: 18px 0 12px;
+      justify-content: flex-start;
+      flex-wrap: wrap;
+    }
+
+    .graph-shell {
+      align-items: stretch;
+    }
+
+    .graph-panel, .detail-panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .graph-panel {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .detail-panel {
+      flex: 0 0 340px;
+      padding: 16px;
+    }
+
+    .graph-head {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .swatch {
+      width: 22px;
+      height: 3px;
+      border-radius: 999px;
+      background: var(--rule);
+    }
+
+    .canvas-wrap {
+      height: 720px;
+      overflow: hidden;
+      background:
+        linear-gradient(#f0f4fa 1px, transparent 1px),
+        linear-gradient(90deg, #f0f4fa 1px, transparent 1px);
+      background-size: 24px 24px;
+      position: relative;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .stage-band rect {
+      fill: rgba(37, 99, 235, 0.035);
+      stroke: #e5ebf5;
+    }
+
+    .stage-band text {
+      fill: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .edge {
+      fill: none;
+      stroke-width: 2.5;
+      opacity: 0.9;
+    }
+
+    .edge.rule { stroke: var(--rule); }
+    .edge.subrule { stroke: var(--subrule); stroke-dasharray: 8 5; }
+    .edge.candidate { stroke: var(--candidate); stroke-dasharray: 3 5; }
+
+    .edge-hit {
+      fill: none;
+      stroke: transparent;
+      stroke-width: 22;
+      pointer-events: stroke;
+      cursor: pointer;
+    }
+
+    .edge.is-selected {
+      stroke-width: 4.5;
+      opacity: 1;
+    }
+
+    .node rect {
+      fill: #fff;
+      stroke: #b8c7dc;
+      stroke-width: 1.5;
+      rx: 8;
+      filter: drop-shadow(0 2px 3px rgba(15, 23, 42, 0.08));
+    }
+
+    .node.rule-anchor rect { fill: #eef6ff; stroke: #8dbcf2; }
+    .node.task rect { fill: #fff; }
+    .node.model-hint rect { fill: #f8f5ff; stroke: #c4b5fd; stroke-dasharray: 5 4; }
+
+    .node text {
+      pointer-events: none;
+      fill: var(--text);
+      font-size: 12px;
+    }
+
+    .node .meta {
+      fill: var(--muted);
+      font-size: 11px;
+    }
+
+    .node.is-selected rect,
+    .node:hover rect {
+      stroke: var(--accent);
+      stroke-width: 2.5;
+      cursor: grab;
+    }
+
+    .pill-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      padding: 3px 8px;
+      font-size: 12px;
+      background: #fff;
+    }
+
+    .detail-title {
+      font-size: 18px;
+      font-weight: 750;
+      overflow-wrap: anywhere;
+    }
+
+    .detail-copy {
+      margin-top: 8px;
+      color: var(--muted);
+    }
+
+    .detail-section {
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 110px 1fr;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .kv dt {
+      color: var(--muted);
+    }
+
+    .kv dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .prompt-box {
+      margin-top: 10px;
+      padding: 12px;
+      border-radius: 7px;
+      background: #0f172a;
+      color: #e5e7eb;
+      white-space: pre-wrap;
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    @media (max-width: 900px) {
+      main { padding: 16px; }
+      header, .graph-shell, .graph-head { display: block; }
+      .detail-panel { margin-top: 14px; }
+      .canvas-wrap { height: 620px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>D3 Rule Graph POC</h1>
+        <p class="subhead">Dummy graph for approving interaction, layout, and plain-English rule explanation before wiring real data.</p>
+      </div>
+      <a class="nav-link" href="/rules.html">Back to Rules</a>
+    </header>
+
+    <div class="toolbar" aria-label="Graph controls">
+      <button id="filter-all" type="button" aria-pressed="true">All Edges</button>
+      <button id="filter-rules" type="button" aria-pressed="false">Rules Only</button>
+      <button id="filter-subrules" type="button" aria-pressed="false">Subrules Only</button>
+      <button id="fit" type="button">Fit</button>
+      <button id="reset" type="button">Reset</button>
+    </div>
+
+    <div class="graph-shell">
+      <section class="graph-panel">
+        <div class="graph-head">
+          <div>
+            <h2>Stack Planning Model</h2>
+            <p class="subhead">Drag nodes. Scroll or pinch to zoom. Click a node or edge for details.</p>
+          </div>
+          <div class="legend">
+            <span><i class="swatch" style="background: var(--rule)"></i>rule</span>
+            <span><i class="swatch" style="background: var(--subrule)"></i>subrule</span>
+            <span><i class="swatch" style="background: var(--candidate)"></i>candidate</span>
+          </div>
+        </div>
+        <div id="canvas-wrap" class="canvas-wrap">
+          <svg id="graph" role="img" aria-label="Interactive D3 rule graph proof of concept"></svg>
+        </div>
+      </section>
+
+      <aside id="detail" class="detail-panel" aria-live="polite">
+        <div class="detail-title">Select a node or edge</div>
+        <p class="detail-copy">The production version should show plain-English meaning, why the model uses it, and the exact prompt/hint payload that affects planning.</p>
+      </aside>
+    </div>
+  </main>
+
+  <script>
+    const stages = [
+      { id: "evidence", label: "Evidence", x: 120 },
+      { id: "foundation", label: "Foundation", x: 330 },
+      { id: "compatibility", label: "Compatibility", x: 540 },
+      { id: "behavior", label: "Behavior", x: 750 },
+      { id: "verification", label: "Verification", x: 960 },
+      { id: "cleanup", label: "Cleanup", x: 1170 }
+    ];
+
+    const nodes = [
+      {
+        id: "capture-evidence",
+        label: "Capture evidence",
+        stage: "evidence",
+        kind: "task",
+        plainEnglish: "Start by proving what is broken or what behavior exists today before changing code.",
+        promptMeaning: "Ask the AI to add a workflow step that gathers reproduction details, current behavior, logs, screenshots, or failing tests first."
+      },
+      {
+        id: "foundation",
+        label: "Establish foundation",
+        stage: "foundation",
+        kind: "rule-anchor",
+        plainEnglish: "Create the supporting structure before relying on it. Examples: config reader, schema, adapter, wrapper, or typed data model.",
+        promptMeaning: "Ask the AI to split prerequisite infrastructure into an earlier PR before behavior PRs consume it."
+      },
+      {
+        id: "compatibility",
+        label: "Keep compatibility contract",
+        stage: "compatibility",
+        kind: "rule-anchor",
+        plainEnglish: "Protect existing callers, stored data, command behavior, API shape, repository identity, or migration path before exposing new behavior.",
+        promptMeaning: "Ask the AI to include a compatibility/migration PR before the PR that turns on or depends on the behavior."
+      },
+      {
+        id: "behavior",
+        label: "Implement behavior",
+        stage: "behavior",
+        kind: "task",
+        plainEnglish: "Make the actual product/code behavior change after prerequisites are ready.",
+        promptMeaning: "Ask the AI to keep user-visible behavior in its own PR, after foundation and compatibility work."
+      },
+      {
+        id: "verification",
+        label: "Verify terminally",
+        stage: "verification",
+        kind: "task",
+        plainEnglish: "Run or add verification after implementation exists, so proof matches the final behavior.",
+        promptMeaning: "Ask the AI to include a final verification workflow after the implementation workflow."
+      },
+      {
+        id: "cleanup",
+        label: "Clean up legacy path",
+        stage: "cleanup",
+        kind: "task",
+        plainEnglish: "Remove old code only after replacement behavior is implemented and verified.",
+        promptMeaning: "Ask the AI to defer deletion or migration cleanup until after the safer replacement path exists."
+      },
+      {
+        id: "config-reader",
+        label: "Config reader",
+        stage: "foundation",
+        kind: "model-hint",
+        plainEnglish: "A narrower foundation subrule: read settings first, then use those settings in behavior.",
+        promptMeaning: "Model hint candidate: create a PR for config loading before behavior controlled by that config."
+      },
+      {
+        id: "api-contract",
+        label: "API contract",
+        stage: "compatibility",
+        kind: "model-hint",
+        plainEnglish: "A narrower compatibility subrule: preserve or define the public contract before behavior depends on it.",
+        promptMeaning: "Model hint candidate: add compatibility contract work before changing exposed behavior."
+      }
+    ];
+
+    const edges = [
+      {
+        id: "evidence-before-change",
+        source: "capture-evidence",
+        target: "behavior",
+        kind: "rule",
+        label: "evidence before behavior",
+        plainEnglish: "Do not start implementation until the current state or failure is captured.",
+        prompt: "Plan evidence-gathering before implementation when the request mentions reproduction, failing behavior, regression, or observed symptoms."
+      },
+      {
+        id: "foundation-before-behavior",
+        source: "foundation",
+        target: "behavior",
+        kind: "rule",
+        label: "foundation before behavior",
+        plainEnglish: "Supporting structure comes before the PR that uses it.",
+        prompt: "Split prerequisite structures into an earlier workflow before behavior workflows consume them."
+      },
+      {
+        id: "compatibility-before-exposure",
+        source: "compatibility",
+        target: "behavior",
+        kind: "rule",
+        label: "compatibility before behavior",
+        plainEnglish: "Protect the old contract or migration path before exposing the new behavior.",
+        prompt: "If compatibility, API contract, preferred branch, repository identity, or migration risk appears, plan compatibility work before behavior work."
+      },
+      {
+        id: "behavior-before-verification",
+        source: "behavior",
+        target: "verification",
+        kind: "rule",
+        label: "behavior before verification",
+        plainEnglish: "Verify after the implementation exists, not before.",
+        prompt: "Place terminal verification after the implementation workflow."
+      },
+      {
+        id: "behavior-before-cleanup",
+        source: "behavior",
+        target: "cleanup",
+        kind: "rule",
+        label: "behavior before cleanup",
+        plainEnglish: "Do not delete legacy code before the replacement behavior exists.",
+        prompt: "Place cleanup/removal work after the behavior workflow."
+      },
+      {
+        id: "config-reader-before-config-behavior",
+        source: "config-reader",
+        target: "behavior",
+        kind: "subrule",
+        label: "config reader before config behavior",
+        plainEnglish: "Load config first, then implement behavior using that config.",
+        prompt: "Subrule candidate: when config-reader and config-behavior both appear, split config-reader first."
+      },
+      {
+        id: "api-contract-before-feature",
+        source: "api-contract",
+        target: "behavior",
+        kind: "subrule",
+        label: "API contract before feature behavior",
+        plainEnglish: "Define or preserve the API contract before feature behavior relies on it.",
+        prompt: "Subrule candidate: when API contract and feature behavior both appear, put API contract first."
+      },
+      {
+        id: "candidate-foundation-to-compatibility",
+        source: "foundation",
+        target: "compatibility",
+        kind: "candidate",
+        label: "possible foundation before compatibility",
+        plainEnglish: "This is intentionally shown as a candidate edge: we might discover that some compatibility work needs foundation first.",
+        prompt: "Candidate only: do not promote unless replay proves it improves held-out stacks."
+      }
+    ];
+
+    const graphEl = document.getElementById("graph");
+    const detailEl = document.getElementById("detail");
+    const wrapEl = document.getElementById("canvas-wrap");
+    const width = 1320;
+    const height = 900;
+    const nodeWidth = 190;
+    const nodeHeight = 64;
+    let activeFilter = "all";
+    let selected = null;
+
+    const svg = d3.select(graphEl)
+      .attr("viewBox", [0, 0, width, height])
+      .attr("tabindex", "0");
+
+    const defs = svg.append("defs");
+    for (const kind of ["rule", "subrule", "candidate"]) {
+      defs.append("marker")
+        .attr("id", `arrow-${kind}`)
+        .attr("viewBox", "0 -5 12 10")
+        .attr("refX", 10)
+        .attr("refY", 0)
+        .attr("markerWidth", 9)
+        .attr("markerHeight", 9)
+        .attr("orient", "auto")
+        .append("path")
+        .attr("d", "M0,-5L12,0L0,5")
+        .attr("fill", edgeColor(kind));
+    }
+
+    const viewport = svg.append("g");
+    const stageLayer = viewport.append("g");
+    const edgeLayer = viewport.append("g");
+    const nodeLayer = viewport.append("g");
+
+    const zoom = d3.zoom()
+      .scaleExtent([0.35, 1.8])
+      .on("zoom", event => viewport.attr("transform", event.transform));
+    svg.call(zoom);
+
+    function edgeColor(kind) {
+      if (kind === "subrule") return "#0f9f6e";
+      if (kind === "candidate") return "#8a5cf6";
+      return "#2563eb";
+    }
+
+    function stageX(stageId) {
+      return stages.find(stage => stage.id === stageId)?.x || 900;
+    }
+
+    function visibleEdges() {
+      if (activeFilter === "rules") return edges.filter(edge => edge.kind === "rule");
+      if (activeFilter === "subrules") return edges.filter(edge => edge.kind !== "rule");
+      return edges;
+    }
+
+    function visibleNodeIds(edgeList) {
+      return new Set(edgeList.flatMap(edge => [nodeId(edge.source), nodeId(edge.target)]));
+    }
+
+    function nodeId(value) {
+      return typeof value === "object" ? value.id : value;
+    }
+
+    function edgePath(edge) {
+      const source = nodesById.get(edge.source.id || edge.source);
+      const target = nodesById.get(edge.target.id || edge.target);
+      const sx = source.x + nodeWidth / 2 + 8;
+      const sy = source.y;
+      const tx = target.x - nodeWidth / 2 - 12;
+      const ty = target.y;
+      const bend = Math.max(90, Math.abs(tx - sx) * 0.45);
+      return `M${sx},${sy} C${sx + bend},${sy} ${tx - bend},${ty} ${tx},${ty}`;
+    }
+
+    function render() {
+      const edgeList = visibleEdges();
+      const nodeIds = visibleNodeIds(edgeList);
+      const visibleNodes = nodes.filter(node => nodeIds.has(node.id));
+
+      stageLayer.selectAll("g").data(stages, stage => stage.id).join(enter => {
+        const group = enter.append("g").attr("class", "stage-band");
+        group.append("rect")
+          .attr("x", stage => stage.x - 120)
+          .attr("y", 24)
+          .attr("width", 240)
+          .attr("height", height - 56)
+          .attr("rx", 10);
+        group.append("text")
+          .attr("x", stage => stage.x - 94)
+          .attr("y", 52)
+          .text(stage => `${stage.label} ->`);
+        return group;
+      });
+
+      const edgeGroups = edgeLayer.selectAll("g.edge-row")
+        .data(edgeList, edge => edge.id)
+        .join(
+          enter => {
+            const group = enter.append("g").attr("class", "edge-row");
+            group.append("path")
+              .attr("class", "edge-hit")
+              .attr("role", "button")
+              .attr("tabindex", "0")
+              .on("click", (_event, edge) => selectEdge(edge));
+            group.append("path")
+              .attr("class", edge => `edge ${edge.kind}`)
+              .attr("marker-end", edge => `url(#arrow-${edge.kind})`);
+            group.append("title").text(edge => edge.label);
+            return group;
+          },
+          update => update,
+          exit => exit.remove()
+        );
+
+      edgeGroups.select(".edge-hit").attr("d", edgePath);
+      edgeGroups.select(".edge")
+        .attr("d", edgePath)
+        .classed("is-selected", edge => selected?.type === "edge" && selected.id === edge.id);
+
+      const nodeGroups = nodeLayer.selectAll("g.node")
+        .data(visibleNodes, node => node.id)
+        .join(
+          enter => {
+            const group = enter.append("g")
+              .attr("class", node => `node ${node.kind}`)
+              .attr("role", "button")
+              .attr("tabindex", "0")
+              .call(d3.drag()
+                .on("start", dragStarted)
+                .on("drag", dragged)
+                .on("end", dragEnded))
+              .on("click", (_event, node) => selectNode(node));
+            group.append("rect")
+              .attr("x", -nodeWidth / 2)
+              .attr("y", -nodeHeight / 2)
+              .attr("width", nodeWidth)
+              .attr("height", nodeHeight);
+            group.append("text")
+              .attr("x", -nodeWidth / 2 + 12)
+              .attr("y", -9)
+              .text(node => node.label);
+            group.append("text")
+              .attr("class", "meta")
+              .attr("x", -nodeWidth / 2 + 12)
+              .attr("y", 12)
+              .text(node => node.kind.replace("-", " "));
+            group.append("title").text(node => node.plainEnglish);
+            return group;
+          },
+          update => update,
+          exit => exit.remove()
+        );
+
+      nodeGroups
+        .attr("transform", node => `translate(${node.x},${node.y})`)
+        .classed("is-selected", node => selected?.type === "node" && selected.id === node.id);
+    }
+
+    function selectNode(node) {
+      selected = { type: "node", id: node.id };
+      detailEl.innerHTML = `
+        <div class="detail-title">${escapeHtml(node.label)}</div>
+        <p class="detail-copy">${escapeHtml(node.plainEnglish)}</p>
+        <div class="pill-row">
+          <span class="pill">${escapeHtml(node.stage)}</span>
+          <span class="pill">${escapeHtml(node.kind)}</span>
+        </div>
+        <div class="detail-section">
+          <h3>What the AI should hear</h3>
+          <div class="prompt-box">${escapeHtml(node.promptMeaning)}</div>
+        </div>
+      `;
+      render();
+    }
+
+    function selectEdge(edge) {
+      selected = { type: "edge", id: edge.id };
+      detailEl.innerHTML = `
+        <div class="detail-title">${escapeHtml(edge.label)}</div>
+        <p class="detail-copy">${escapeHtml(edge.plainEnglish)}</p>
+        <div class="pill-row">
+          <span class="pill">${escapeHtml(edge.kind)}</span>
+          <span class="pill">${escapeHtml(nodeId(edge.source))} -> ${escapeHtml(nodeId(edge.target))}</span>
+        </div>
+        <div class="detail-section">
+          <h3>Prompt instruction</h3>
+          <div class="prompt-box">${escapeHtml(edge.prompt)}</div>
+        </div>
+        <div class="detail-section">
+          <h3>Metadata</h3>
+          <dl class="kv">
+            <dt>Edge id</dt><dd>${escapeHtml(edge.id)}</dd>
+            <dt>Source</dt><dd>${escapeHtml(nodeId(edge.source))}</dd>
+            <dt>Target</dt><dd>${escapeHtml(nodeId(edge.target))}</dd>
+          </dl>
+        </div>
+      `;
+      render();
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    const nodesById = new Map(nodes.map(node => [node.id, node]));
+    const ySlots = new Map();
+    for (const node of nodes) {
+      const count = ySlots.get(node.stage) || 0;
+      ySlots.set(node.stage, count + 1);
+      node.x = stageX(node.stage);
+      node.y = 150 + count * 125;
+    }
+
+    const simulation = d3.forceSimulation(nodes)
+      .force("x", d3.forceX(node => stageX(node.stage)).strength(0.22))
+      .force("y", d3.forceY(height / 2).strength(0.04))
+      .force("collide", d3.forceCollide(78).strength(0.9))
+      .force("link", d3.forceLink(edges).id(node => node.id).distance(250).strength(0.08))
+      .on("tick", render);
+
+    function dragStarted(event, node) {
+      if (!event.active) simulation.alphaTarget(0.25).restart();
+      node.fx = node.x;
+      node.fy = node.y;
+    }
+
+    function dragged(event, node) {
+      node.fx = event.x;
+      node.fy = event.y;
+    }
+
+    function dragEnded(event, node) {
+      if (!event.active) simulation.alphaTarget(0);
+      node.fx = null;
+      node.fy = null;
+    }
+
+    function setFilter(next) {
+      activeFilter = next;
+      for (const button of document.querySelectorAll(".toolbar button[aria-pressed]")) {
+        button.setAttribute("aria-pressed", String(button.id === `filter-${next}`));
+      }
+      selected = null;
+      detailEl.innerHTML = `<div class="detail-title">Select a node or edge</div><p class="detail-copy">Filtered to ${escapeHtml(next)}. Click the graph to inspect prompt meaning and metadata.</p>`;
+      simulation.alpha(0.5).restart();
+      render();
+    }
+
+    function fitGraph() {
+      const transform = d3.zoomIdentity.translate(20, 18).scale(0.95);
+      svg.transition().duration(350).call(zoom.transform, transform);
+    }
+
+    function resetGraph() {
+      svg.transition().duration(350).call(zoom.transform, d3.zoomIdentity);
+    }
+
+    document.getElementById("filter-all").addEventListener("click", () => setFilter("all"));
+    document.getElementById("filter-rules").addEventListener("click", () => setFilter("rules"));
+    document.getElementById("filter-subrules").addEventListener("click", () => setFilter("subrules"));
+    document.getElementById("fit").addEventListener("click", fitGraph);
+    document.getElementById("reset").addEventListener("click", resetGraph);
+
+    render();
+    fitGraph();
+  </script>
+</body>
+</html>
