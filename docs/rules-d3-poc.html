@@ -221,6 +221,7 @@
       stroke: #cbd5e1;
       stroke-width: 1;
       filter: none;
+      pointer-events: all;
     }
 
     .nested-node {
@@ -236,6 +237,7 @@
     .nested-node text {
       fill: var(--text);
       font-size: 9px;
+      pointer-events: all;
     }
 
     .nested-edge {
@@ -986,7 +988,9 @@
           enter => {
             const itemGroup = enter.append("g")
               .attr("class", "nested-node")
-              .on("pointerdown", event => event.stopPropagation())
+              .on("pointerdown", stopNestedPointer)
+              .on("mousedown", stopNestedPointer)
+              .on("touchstart", stopNestedPointer)
               .on("click", (event, item) => {
                 event.stopPropagation();
                 selectNestedNode(node, item);
@@ -994,10 +998,24 @@
             itemGroup.append("rect")
               .attr("width", nestedNodeWidth)
               .attr("height", nestedNodeHeight)
-              .attr("rx", 5);
+              .attr("rx", 5)
+              .on("pointerdown", stopNestedPointer)
+              .on("mousedown", stopNestedPointer)
+              .on("touchstart", stopNestedPointer)
+              .on("click", (event, item) => {
+                event.stopPropagation();
+                selectNestedNode(node, item);
+              });
             itemGroup.append("text")
               .attr("x", 7)
-              .attr("y", 14);
+              .attr("y", 14)
+              .on("pointerdown", stopNestedPointer)
+              .on("mousedown", stopNestedPointer)
+              .on("touchstart", stopNestedPointer)
+              .on("click", (event, item) => {
+                event.stopPropagation();
+                selectNestedNode(node, item);
+              });
             return itemGroup;
           },
           update => update,
@@ -1009,6 +1027,10 @@
           return `translate(${point.x},${point.y + 10})`;
         });
       mini.select("text").text(item => item.label);
+    }
+
+    function stopNestedPointer(event) {
+      event.stopPropagation();
     }
 
     function updateNestedSelection(group, parent) {

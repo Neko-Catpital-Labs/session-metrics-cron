@@ -588,6 +588,8 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("function renderNestedGraph", html)
         self.assertIn("function nestedExpansion", html)
         self.assertIn("function nestedIsFocused", html)
+        self.assertIn("function stopNestedPointer", html)
+        self.assertIn("pointer-events: all;", html)
         self.assertIn("zoom ${expansion.toFixed(1)}x spacing", html)
         self.assertIn("function zoomNestedNode", html)
         self.assertIn("function selectNestedNode", html)
