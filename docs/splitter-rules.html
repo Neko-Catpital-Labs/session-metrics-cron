@@ -35,7 +35,7 @@
       padding: 24px;
     }
 
-    header, .section-head, .rule-summary, .subrule-head, .topline {
+    header, .section-head, .rule-summary, .subrule-head, .topline, .tabs {
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -349,6 +349,203 @@
       background: var(--soft-warn);
     }
 
+    .tabs {
+      justify-content: flex-start;
+      margin: 0 0 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .tab-button {
+      border: 0;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      background: transparent;
+      min-height: 40px;
+      padding: 0 4px;
+      color: var(--muted);
+    }
+
+    .tab-button[aria-selected="true"] {
+      border-bottom-color: var(--accent);
+      color: var(--text);
+      font-weight: 650;
+    }
+
+    .tab-panel[hidden] {
+      display: none;
+    }
+
+    .graph-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .graph-panel, .graph-detail {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .graph-head {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfe;
+    }
+
+    .graph-canvas {
+      width: 100%;
+      min-height: 560px;
+      overflow: auto;
+      background: #fff;
+    }
+
+    .graph-svg {
+      display: block;
+      min-width: 960px;
+      background:
+        linear-gradient(#f8fafc 1px, transparent 1px),
+        linear-gradient(90deg, #f8fafc 1px, transparent 1px);
+      background-size: 24px 24px;
+    }
+
+    .graph-node rect {
+      fill: #fff;
+      stroke: var(--line);
+      stroke-width: 1.5;
+      rx: 7;
+    }
+
+    .graph-node.task rect {
+      fill: var(--soft);
+      stroke: #9cc7ef;
+    }
+
+    .graph-node.abstract rect {
+      fill: #f8fafc;
+      stroke: #cbd5e1;
+      stroke-dasharray: 4 3;
+    }
+
+    .graph-node text {
+      fill: var(--text);
+      font-size: 12px;
+      pointer-events: none;
+    }
+
+    .graph-node .node-meta {
+      fill: var(--muted);
+      font-size: 11px;
+    }
+
+    .graph-node.is-selected rect {
+      stroke: var(--accent);
+      stroke-width: 2.5;
+    }
+
+    .graph-edge {
+      fill: none;
+      stroke: #475467;
+      stroke-width: 2.25;
+      opacity: 0.9;
+    }
+
+    .graph-edge-hit {
+      fill: none;
+      stroke: transparent;
+      stroke-width: 14;
+      cursor: pointer;
+    }
+
+    .graph-edge.is-selected {
+      stroke-width: 3.5;
+      opacity: 1;
+    }
+
+    .edge-evidence-before-change { stroke: #2878bd; }
+    .edge-foundation-before-behavior { stroke: #169b75; }
+    .edge-compatibility-before-exposure { stroke: #8a5cf6; }
+    .edge-behavior-before-cleanup { stroke: #b45309; }
+    .edge-terminal-verification-after-implementation { stroke: #dc2626; }
+    .edge-uncategorized-subrules { stroke: #64748b; stroke-dasharray: 7 5; }
+    .edge-default { stroke: #475467; }
+
+    .graph-node:focus,
+    .graph-edge-hit:focus {
+      outline: none;
+    }
+
+    .graph-node:focus rect,
+    .graph-node:hover rect {
+      stroke: var(--accent);
+      stroke-width: 2.5;
+    }
+
+    .graph-edge-hit:focus + .graph-edge,
+    .graph-edge-hit:hover + .graph-edge {
+      stroke-width: 3.5;
+      opacity: 1;
+    }
+
+    .graph-detail {
+      position: sticky;
+      top: 16px;
+      padding: 14px 16px;
+    }
+
+    .detail-title {
+      font-weight: 680;
+      overflow-wrap: anywhere;
+    }
+
+    .detail-section {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
+
+    .detail-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .detail-edge {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px;
+      background: #fff;
+      overflow-wrap: anywhere;
+      color: var(--text);
+      cursor: pointer;
+      text-align: left;
+      width: 100%;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .swatch {
+      width: 22px;
+      height: 3px;
+      border-radius: 999px;
+      background: #475467;
+    }
+
     .empty, .error {
       padding: 24px;
     }
@@ -369,6 +566,12 @@
       .run-main, .metric-grid {
         grid-template-columns: 1fr;
       }
+      .graph-layout {
+        grid-template-columns: 1fr;
+      }
+      .graph-detail {
+        position: static;
+      }
     }
   </style>
 </head>
@@ -388,19 +591,29 @@
     </header>
 
     <section id="run" class="run-panel"></section>
-    <section id="content"></section>
+    <nav class="tabs" aria-label="Rule views">
+      <button id="graph-tab" class="tab-button" type="button" role="tab" aria-selected="true">Graph</button>
+      <button id="list-tab" class="tab-button" type="button" role="tab" aria-selected="false">List</button>
+    </nav>
+    <section id="graph-view" class="tab-panel" role="tabpanel" aria-labelledby="graph-tab"></section>
+    <section id="list-view" class="tab-panel" role="tabpanel" aria-labelledby="list-tab" hidden></section>
   </main>
 
   <script>
     const UNCATEGORIZED_ID = "uncategorized-subrules";
     const runEl = document.getElementById("run");
-    const contentEl = document.getElementById("content");
+    const graphTabEl = document.getElementById("graph-tab");
+    const listTabEl = document.getElementById("list-tab");
+    const graphViewEl = document.getElementById("graph-view");
+    const listViewEl = document.getElementById("list-view");
     const compareToggleEl = document.getElementById("compare-toggle");
     const debugToggleEl = document.getElementById("debug-toggle");
     const refreshEl = document.getElementById("refresh");
     let payload = null;
     let compareMode = false;
     let debugMode = false;
+    let activeTab = "graph";
+    let selectedGraphItem = null;
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -548,6 +761,335 @@
       if (descriptions[value]) return descriptions[value];
       if (!value) return "";
       return `${labelTitle(value)} is a learned role label mined from PR stack examples.`;
+    }
+
+    function classToken(value) {
+      return String(value || "default").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "default";
+    }
+
+    function nodeType(label) {
+      return String(label || "").includes(":") ? "abstract" : "task";
+    }
+
+    function edgeKey(edge) {
+      return [edge.from, edge.to, edge.parentRuleId, edge.subruleId || "rule"].join("|");
+    }
+
+    function displayEdgeId(edge, index) {
+      return `${edgeKey(edge)}|${index}`;
+    }
+
+    function edgeFromRule(rule, before, after) {
+      return {
+        id: `${rule.id}__${before}__${after}`,
+        kind: "rule",
+        from: before,
+        to: after,
+        parentRuleId: rule.id,
+        ruleId: rule.id,
+        decision: "catalog",
+        reason: rule.reason || rule.reasonId || "",
+        relation: rule.relation || "",
+        confidence: null,
+        support: null,
+        repoSupport: null,
+        validation: {},
+        test: {},
+        examples: [],
+        raw: rule.raw || rule,
+      };
+    }
+
+    function edgeFromSubrule(rule, subrule) {
+      const reason = subrule.failureBucket || subrule.rejectedReason || "";
+      return {
+        id: subrule.id || subrule.candidateId || `${rule.id}__${subrule.before}__${subrule.after}`,
+        kind: "subrule",
+        from: subrule.before || "",
+        to: subrule.after || "",
+        parentRuleId: rule.id,
+        sourceParentRuleId: subrule.sourceParentRuleId || subrule.parentRuleId || "",
+        subruleId: subrule.id || subrule.candidateId || "",
+        decision: subrule.decision || (subrule.promoted ? "promoted" : "candidate"),
+        reason,
+        confidence: subrule.confidence,
+        support: subrule.support,
+        repoSupport: subrule.repoSupport,
+        validation: subrule.validation || {},
+        test: subrule.test || {},
+        repos: subrule.repos || [],
+        examples: subrule.examples || [],
+        raw: subrule.raw || subrule,
+      };
+    }
+
+    function edgesForRules(rules) {
+      const edges = [];
+      for (const rule of rules || []) {
+        if (rule.id !== UNCATEGORIZED_ID) {
+          for (const before of rule.before || []) {
+            for (const after of rule.after || []) {
+              if (before && after) edges.push(edgeFromRule(rule, before, after));
+            }
+          }
+        }
+        for (const subrule of rule.subrules || []) {
+          if (subrule.before && subrule.after) edges.push(edgeFromSubrule(rule, subrule));
+        }
+      }
+      return edges;
+    }
+
+    function graphRules() {
+      return allDisplayRules();
+    }
+
+    function graphEdges() {
+      const edges = edgesForRules(graphRules());
+      if (!compareMode) return edges.map(edge => ({ ...edge, status: "" }));
+      const generatedEdges = new Map(edgesForRules(catalogByKind("generated")?.rules || []).map(edge => [edgeKey(edge), edge]));
+      const effectiveEdges = new Map(edgesForRules(catalogByKind("effective")?.rules || []).map(edge => [edgeKey(edge), edge]));
+      const keys = [...new Set([...generatedEdges.keys(), ...effectiveEdges.keys()])];
+      return keys.map(key => {
+        const generated = generatedEdges.get(key);
+        const effective = effectiveEdges.get(key);
+        const edge = effective || generated;
+        let status = "same";
+        if (generated && effective && JSON.stringify(generated.raw || generated) !== JSON.stringify(effective.raw || effective)) status = "changed";
+        else if (generated && !effective) status = "generated only";
+        else if (!generated && effective) status = "effective only";
+        return { ...edge, status };
+      });
+    }
+
+    function graphData() {
+      const edges = graphEdges().map((edge, index) => ({
+        ...edge,
+        graphId: displayEdgeId(edge, index),
+      }));
+      const nodeMap = new Map();
+      function ensureNode(label) {
+        if (!nodeMap.has(label)) {
+          nodeMap.set(label, {
+            id: label,
+            label,
+            type: nodeType(label),
+            incoming: [],
+            outgoing: [],
+            ruleBuckets: new Set(),
+          });
+        }
+        return nodeMap.get(label);
+      }
+      for (const edge of edges) {
+        const from = ensureNode(edge.from);
+        const to = ensureNode(edge.to);
+        from.outgoing.push(edge);
+        to.incoming.push(edge);
+        from.ruleBuckets.add(edge.parentRuleId);
+        to.ruleBuckets.add(edge.parentRuleId);
+      }
+      const nodes = [...nodeMap.values()].map(node => ({
+        ...node,
+        ruleBuckets: [...node.ruleBuckets].sort(),
+      }));
+      return { nodes, edges };
+    }
+
+    function nodeRanks(nodes, edges) {
+      const ranks = new Map(nodes.map(node => [node.id, 0]));
+      for (let index = 0; index < nodes.length; index += 1) {
+        let changed = false;
+        for (const edge of edges) {
+          const nextRank = Math.min(4, (ranks.get(edge.from) || 0) + 1);
+          if (nextRank > (ranks.get(edge.to) || 0)) {
+            ranks.set(edge.to, nextRank);
+            changed = true;
+          }
+        }
+        if (!changed) break;
+      }
+      return ranks;
+    }
+
+    function layoutGraph(data) {
+      const ranks = nodeRanks(data.nodes, data.edges);
+      const columns = new Map();
+      for (const node of data.nodes) {
+        const rank = ranks.get(node.id) || 0;
+        if (!columns.has(rank)) columns.set(rank, []);
+        columns.get(rank).push(node);
+      }
+      for (const nodes of columns.values()) {
+        nodes.sort((left, right) => left.label.localeCompare(right.label));
+      }
+      const nodeWidth = 220;
+      const nodeHeight = 64;
+      const columnGap = 210;
+      const rowGap = 104;
+      const margin = 32;
+      const positions = new Map();
+      let maxRows = 1;
+      for (const [rank, nodes] of columns.entries()) {
+        maxRows = Math.max(maxRows, nodes.length);
+        nodes.forEach((node, index) => {
+          positions.set(node.id, {
+            x: margin + rank * columnGap,
+            y: margin + index * rowGap,
+            width: nodeWidth,
+            height: nodeHeight,
+          });
+        });
+      }
+      const maxRank = Math.max(0, ...columns.keys());
+      return {
+        positions,
+        width: margin * 2 + nodeWidth + maxRank * columnGap,
+        height: margin * 2 + nodeHeight + (maxRows - 1) * rowGap,
+      };
+    }
+
+    function edgePath(edge, positions) {
+      const from = positions.get(edge.from);
+      const to = positions.get(edge.to);
+      if (!from || !to) return "";
+      const startX = from.x + from.width;
+      const startY = from.y + from.height / 2;
+      const endX = to.x;
+      const endY = to.y + to.height / 2;
+      const curve = Math.max(60, Math.abs(endX - startX) / 2);
+      return `M ${startX} ${startY} C ${startX + curve} ${startY}, ${endX - curve} ${endY}, ${endX} ${endY}`;
+    }
+
+    function graphEdgeClass(edge) {
+      return `graph-edge edge-${classToken(edge.parentRuleId || "default")}${selectedGraphItem?.type === "edge" && selectedGraphItem.id === edge.graphId ? " is-selected" : ""}`;
+    }
+
+    function nodeLabelLines(label) {
+      const value = String(label || "");
+      if (value.length <= 24) return [value];
+      if (value.includes("/")) {
+        const parts = value.split("/");
+        return [`${parts.shift()}/`, parts.join("/")];
+      }
+      const words = value.split("-");
+      if (words.length < 2) return [value];
+      const midpoint = Math.ceil(words.length / 2);
+      return [words.slice(0, midpoint).join("-"), words.slice(midpoint).join("-")];
+    }
+
+    function renderGraphSvg(data, layout) {
+      const edgeMarkup = data.edges.map(edge => {
+        const path = edgePath(edge, layout.positions);
+        return `<g>
+          <path class="graph-edge-hit" d="${path}" tabindex="0" role="button" aria-label="${escapeHtml(edge.from)} to ${escapeHtml(edge.to)}" data-edge-id="${escapeHtml(edge.graphId)}"></path>
+          <path class="${graphEdgeClass(edge)}" d="${path}" marker-end="url(#arrow-${escapeHtml(classToken(edge.parentRuleId || "default"))})"></path>
+        </g>`;
+      }).join("");
+      const nodeMarkup = data.nodes.map(node => {
+        const position = layout.positions.get(node.id);
+        const selected = selectedGraphItem?.type === "node" && selectedGraphItem.id === node.id;
+        const labelLines = nodeLabelLines(node.label);
+        return `<g class="graph-node ${node.type}${selected ? " is-selected" : ""}" tabindex="0" role="button" aria-label="${escapeHtml(node.label)}" data-node-id="${escapeHtml(node.id)}" transform="translate(${position.x}, ${position.y})">
+          <title>${escapeHtml(node.label)}</title>
+          <rect width="${position.width}" height="${position.height}"></rect>
+          <text x="12" y="20">${labelLines.map((line, index) => `<tspan x="12" dy="${index === 0 ? 0 : 14}">${escapeHtml(line)}</tspan>`).join("")}</text>
+          <text class="node-meta" x="12" y="54">${escapeHtml(`${node.incoming.length} in / ${node.outgoing.length} out`)}</text>
+        </g>`;
+      }).join("");
+      const buckets = [...new Set(data.edges.map(edge => edge.parentRuleId || "default"))];
+      const markers = buckets.map(bucket => {
+        const id = classToken(bucket);
+        const color = edgeColor(bucket);
+        return `<marker id="arrow-${escapeHtml(id)}" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+          <path d="M0,0 L0,6 L9,3 z" fill="${escapeHtml(color)}"></path>
+        </marker>`;
+      }).join("");
+      return `<svg class="graph-svg" width="${layout.width}" height="${layout.height}" viewBox="0 0 ${layout.width} ${layout.height}" role="img" aria-label="Model rule graph">
+        <defs>${markers}</defs>
+        ${edgeMarkup}
+        ${nodeMarkup}
+      </svg>`;
+    }
+
+    function edgeColor(bucket) {
+      const colors = {
+        "evidence-before-change": "#2878bd",
+        "foundation-before-behavior": "#169b75",
+        "compatibility-before-exposure": "#8a5cf6",
+        "behavior-before-cleanup": "#b45309",
+        "terminal-verification-after-implementation": "#dc2626",
+        [UNCATEGORIZED_ID]: "#64748b",
+      };
+      return colors[bucket] || "#475467";
+    }
+
+    function renderGraphLegend(edges) {
+      const buckets = [...new Set(edges.map(edge => edge.parentRuleId || "default"))].sort();
+      return `<div class="legend">${buckets.map(bucket => `
+        <span class="legend-item"><span class="swatch" style="background:${escapeHtml(edgeColor(bucket))}"></span>${escapeHtml(bucket)}</span>
+      `).join("")}</div>`;
+    }
+
+    function renderGraphDetail(data) {
+      if (!selectedGraphItem) {
+        return `<aside id="graph-detail" class="graph-detail"><div class="detail-title">Select a node or edge</div><div class="description">Click a node to see its incoming and outgoing relationships, or click an edge to see rule metadata.</div></aside>`;
+      }
+      if (selectedGraphItem.type === "node") {
+        const node = data.nodes.find(candidate => candidate.id === selectedGraphItem.id);
+        if (!node) return `<aside id="graph-detail" class="graph-detail"><div class="detail-title">Selection unavailable</div></aside>`;
+        return `<aside id="graph-detail" class="graph-detail">
+          <div class="detail-title">${escapeHtml(node.label)}</div>
+          <div class="description">${escapeHtml(labelDescription(node.label))}</div>
+          <div class="pill-row debug-block">
+            <span class="pill">${escapeHtml(node.type)}</span>
+            <span class="pill">${escapeHtml(node.incoming.length)} incoming</span>
+            <span class="pill">${escapeHtml(node.outgoing.length)} outgoing</span>
+          </div>
+          <div class="detail-section">
+            <div class="label">Rule buckets</div>
+            <div class="pill-row">${node.ruleBuckets.map(bucket => `<span class="pill">${escapeHtml(bucket)}</span>`).join("")}</div>
+          </div>
+          ${renderNodeEdgeList("Incoming", node.incoming)}
+          ${renderNodeEdgeList("Outgoing", node.outgoing)}
+        </aside>`;
+      }
+      const edge = data.edges.find(candidate => candidate.graphId === selectedGraphItem.id);
+      if (!edge) return `<aside id="graph-detail" class="graph-detail"><div class="detail-title">Selection unavailable</div></aside>`;
+      return `<aside id="graph-detail" class="graph-detail">
+        <div class="detail-title">${escapeHtml(edge.from)} &rarr; ${escapeHtml(edge.to)}</div>
+        <div class="description">${escapeHtml(edge.kind === "subrule" ? labelDescription(edge.to) : edge.reason)}</div>
+        <div class="pill-row debug-block">
+          <span class="pill">${escapeHtml(edge.kind)}</span>
+          <span class="pill">${escapeHtml(edge.parentRuleId)}</span>
+          ${edge.status ? `<span class="pill status-${edge.status.replaceAll(" ", "-")}">${escapeHtml(edge.status)}</span>` : ""}
+        </div>
+        <div class="metric-grid">
+          ${metricCell("Decision", edge.reason ? `${edge.decision}: ${edge.reason}` : edge.decision)}
+          ${metricCell("Support", edge.support == null ? "" : `${formatNumber(edge.support, 0)} / ${formatNumber(edge.repoSupport, 0)} repos`)}
+          ${metricCell("Confidence", formatNumber(edge.confidence, 3))}
+          ${metricCell("Source parent", edge.sourceParentRuleId || edge.parentRuleId || "")}
+          ${metricCell("Validation delta", formatDelta(edge.validation?.stackLinkDelta))}
+          ${metricCell("Test delta", formatDelta(edge.test?.stackLinkDelta))}
+          ${metricCell("Validation paired", formatNumber(edge.validation?.pairedCount, 0))}
+          ${metricCell("Test paired", formatNumber(edge.test?.pairedCount, 0))}
+        </div>
+        ${renderExamples(edge.examples)}
+        <details class="debug-only debug-block">
+          <summary>Raw JSON</summary>
+          <pre>${escapeHtml(JSON.stringify(edge.raw || edge, null, 2))}</pre>
+        </details>
+      </aside>`;
+    }
+
+    function renderNodeEdgeList(title, edges) {
+      if (!edges.length) return "";
+      return `<div class="detail-section">
+        <div class="label">${escapeHtml(title)}</div>
+        <div class="detail-list">
+          ${edges.map(edge => `<button type="button" class="detail-edge" data-edge-id="${escapeHtml(edge.graphId)}">${escapeHtml(edge.from)} &rarr; ${escapeHtml(edge.to)}<br><span class="label">${escapeHtml(edge.parentRuleId)}</span></button>`).join("")}
+        </div>
+      </div>`;
     }
 
     function renderFlow(values) {
@@ -704,36 +1246,127 @@
       </section>`;
     }
 
-    function render() {
+    function selectGraphNode(nodeId) {
+      selectedGraphItem = { type: "node", id: nodeId };
+      renderGraph();
+    }
+
+    function selectGraphEdge(edgeId) {
+      selectedGraphItem = { type: "edge", id: edgeId };
+      renderGraph();
+    }
+
+    function graphItemKeydown(event) {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      const nodeId = event.currentTarget.getAttribute("data-node-id");
+      const edgeId = event.currentTarget.getAttribute("data-edge-id");
+      if (nodeId) selectGraphNode(nodeId);
+      if (edgeId) selectGraphEdge(edgeId);
+    }
+
+    function addGraphItemHandlers(root) {
+      root.querySelectorAll("[data-node-id]").forEach(element => {
+        element.addEventListener("click", () => selectGraphNode(element.getAttribute("data-node-id")));
+        element.addEventListener("keydown", graphItemKeydown);
+      });
+      root.querySelectorAll("[data-edge-id]").forEach(element => {
+        element.addEventListener("click", () => selectGraphEdge(element.getAttribute("data-edge-id")));
+        element.addEventListener("keydown", graphItemKeydown);
+      });
+    }
+
+    function renderGraph() {
       if (!payload) return;
-      document.body.classList.toggle("debug", debugMode);
-      compareToggleEl.setAttribute("aria-pressed", String(compareMode));
-      debugToggleEl.setAttribute("aria-pressed", String(debugMode));
-      renderRun(payload.run || {}, payload.workflowAnalysisRoot, payload.pipelineRunPath);
+      const data = graphData();
+      if (!data.nodes.length) {
+        selectedGraphItem = null;
+        graphViewEl.innerHTML = `<div class="empty">No rule graph found.</div>`;
+        return;
+      }
+      if (selectedGraphItem?.type === "node" && !data.nodes.some(node => node.id === selectedGraphItem.id)) {
+        selectedGraphItem = null;
+      }
+      if (selectedGraphItem?.type === "edge" && !data.edges.some(edge => edge.graphId === selectedGraphItem.id)) {
+        selectedGraphItem = null;
+      }
+      const layout = layoutGraph(data);
+      const ruleEdges = data.edges.filter(edge => edge.kind === "rule").length;
+      const subruleEdges = data.edges.filter(edge => edge.kind === "subrule").length;
+      graphViewEl.innerHTML = `<div class="graph-layout">
+        <section class="graph-panel">
+          <div class="graph-head">
+            <div class="topline">
+              <div>
+                <h2>Rule Graph</h2>
+                <div class="section-note">Tasks are nodes. Rules and subrules are directed edges between tasks.</div>
+              </div>
+              <div class="pill-row">
+                <span class="pill">${escapeHtml(data.nodes.length)} nodes</span>
+                <span class="pill">${escapeHtml(ruleEdges)} rules</span>
+                <span class="pill">${escapeHtml(subruleEdges)} subrules</span>
+              </div>
+            </div>
+            ${renderGraphLegend(data.edges)}
+          </div>
+          <div class="graph-canvas">${renderGraphSvg(data, layout)}</div>
+        </section>
+        ${renderGraphDetail(data)}
+      </div>`;
+      addGraphItemHandlers(graphViewEl);
+    }
+
+    function renderList() {
+      if (!payload) return;
       const categorized = categorizedRules();
       const uncategorized = uncategorizedRule();
       const sections = [
         renderSection("Categorized Rules", "Rules currently present in the effective model catalog.", categorized),
         uncategorized ? renderSection("Needs Categorization", "Mined subrule candidates whose parent rule is still a broad generated bucket.", [uncategorized], { needsCategorization: true }) : ""
       ].join("");
-      contentEl.innerHTML = sections || `<div class="empty">No rule catalogs found.</div>`;
+      listViewEl.innerHTML = sections || `<div class="empty">No rule catalogs found.</div>`;
+    }
+
+    function render() {
+      if (!payload) return;
+      document.body.classList.toggle("debug", debugMode);
+      compareToggleEl.setAttribute("aria-pressed", String(compareMode));
+      debugToggleEl.setAttribute("aria-pressed", String(debugMode));
+      graphTabEl.setAttribute("aria-selected", String(activeTab === "graph"));
+      listTabEl.setAttribute("aria-selected", String(activeTab === "list"));
+      graphViewEl.hidden = activeTab !== "graph";
+      listViewEl.hidden = activeTab !== "list";
+      renderRun(payload.run || {}, payload.workflowAnalysisRoot, payload.pipelineRunPath);
+      renderGraph();
+      renderList();
     }
 
     async function loadRules() {
       runEl.innerHTML = `<div class="label">Loading</div><div class="value">Fetching latest rules...</div>`;
-      contentEl.innerHTML = "";
+      graphViewEl.innerHTML = "";
+      listViewEl.innerHTML = "";
       try {
         const response = await fetch("/api/splitter-rules", { cache: "no-store" });
         const data = await response.json();
         if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
         payload = data;
+        selectedGraphItem = null;
         render();
       } catch (error) {
         runEl.innerHTML = "";
-        contentEl.innerHTML = `<div class="error">${escapeHtml(error.message || error)}</div>`;
+        graphViewEl.innerHTML = `<div class="error">${escapeHtml(error.message || error)}</div>`;
+        listViewEl.innerHTML = "";
       }
     }
 
+    graphTabEl.addEventListener("click", () => {
+      activeTab = "graph";
+      render();
+    });
+    listTabEl.addEventListener("click", () => {
+      activeTab = "list";
+      render();
+    });
     compareToggleEl.addEventListener("click", () => {
       compareMode = !compareMode;
       render();
