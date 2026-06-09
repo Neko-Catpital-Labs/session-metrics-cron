@@ -392,12 +392,12 @@
 
   <script>
     const stages = [
-      { id: "evidence", label: "Evidence", x: 150 },
-      { id: "foundation", label: "Foundation", x: 430 },
-      { id: "compatibility", label: "Compatibility", x: 710 },
-      { id: "behavior", label: "Behavior", x: 990 },
-      { id: "verification", label: "Verification", x: 1270 },
-      { id: "cleanup", label: "Cleanup", x: 1550 }
+      { id: "evidence", label: "Evidence", x: 150, width: 280, left: 10, right: 290 },
+      { id: "foundation", label: "Foundation", x: 430, width: 280, left: 290, right: 570 },
+      { id: "compatibility", label: "Compatibility", x: 710, width: 280, left: 570, right: 850 },
+      { id: "behavior", label: "Behavior", x: 990, width: 280, left: 850, right: 1130 },
+      { id: "verification", label: "Verification", x: 1270, width: 280, left: 1130, right: 1410 },
+      { id: "cleanup", label: "Cleanup", x: 1550, width: 280, left: 1410, right: 1690 }
     ];
 
     let nodes = [
@@ -720,8 +720,14 @@
 
     const graphEl = document.getElementById("graph");
     const detailEl = document.getElementById("detail");
-    const width = 1760;
+    const baseWidth = 1760;
+    let width = baseWidth;
     const height = 980;
+    const stageMinWidth = 300;
+    const stageGap = 34;
+    const stageOuterMargin = 42;
+    const stageHorizontalPadding = 92;
+    const maxNestedExpansion = 2.35;
     const nodeWidth = 240;
     const nodeMaxWidth = 390;
     const nodeHeight = 132;
@@ -788,13 +794,13 @@
     }
 
     function stageBand(stageId) {
-      const index = stageIndex(stageId);
-      const stage = stages[index] || stages[0];
-      const previous = stages[index - 1];
-      const next = stages[index + 1];
-      const left = previous ? (previous.x + stage.x) / 2 : stage.x - 140;
-      const right = next ? (stage.x + next.x) / 2 : stage.x + 140;
-      return { left: left + 10, right: right - 10, center: stage.x };
+      const stage = stages[stageIndex(stageId)] || stages[0];
+      return {
+        left: stage.left + 10,
+        right: stage.right - 10,
+        center: stage.x,
+        width: stage.width
+      };
     }
 
     function stageIndex(stageId) {
@@ -1116,9 +1122,18 @@
       return Math.min(2.35, 1 + Math.max(0, currentZoom - 1.18) * 1.05);
     }
 
-    function nodeBoxWidth(node) {
+    function nodeBaseWidth(node) {
       const labelWidth = String(node.fullLabel || node.label || "").length * 8.2 + 42;
-      return Math.max(nodeWidth, Math.min(nodeMaxWidth, labelWidth)) + (nestedExpansion(node) - 1) * 220;
+      return Math.max(nodeWidth, Math.min(nodeMaxWidth, labelWidth));
+    }
+
+    function nodeBoxWidth(node) {
+      return nodeBaseWidth(node) + (nestedExpansion(node) - 1) * 220;
+    }
+
+    function nodeMaxBoxWidth(node) {
+      const expansion = node.nestedGraph ? maxNestedExpansion : 1;
+      return nodeBaseWidth(node) + (expansion - 1) * 220;
     }
 
     function nodeBoxHeight(node) {
@@ -1436,17 +1451,19 @@
       stageLayer.selectAll("g").data(stages, stage => stage.id).join(enter => {
         const group = enter.append("g").attr("class", "stage-band");
         group.append("rect")
-          .attr("x", stage => stage.x - 140)
           .attr("y", 24)
-          .attr("width", 280)
           .attr("height", height - 56)
           .attr("rx", 10);
         group.append("text")
-          .attr("x", stage => stage.x - 112)
           .attr("y", 52)
           .text(stage => `${stage.label} ->`);
         return group;
       });
+      stageLayer.selectAll("g.stage-band rect")
+        .attr("x", stage => stage.left)
+        .attr("width", stage => stage.width);
+      stageLayer.selectAll("g.stage-band text")
+        .attr("x", stage => stage.left + 22);
 
       const edgeGroups = edgeLayer.selectAll("g.edge-row")
         .data(edgeList, edge => edge.id)
@@ -1823,7 +1840,23 @@
 
     let nodesById = new Map();
 
+    function layoutStageColumns() {
+      let cursor = stageOuterMargin;
+      for (const stage of stages) {
+        const stageNodes = nodes.filter(node => node.stage === stage.id);
+        const widestNode = d3.max(stageNodes, node => nodeMaxBoxWidth(node)) || nodeWidth;
+        stage.width = Math.max(stageMinWidth, widestNode + stageHorizontalPadding);
+        stage.left = cursor;
+        stage.right = cursor + stage.width;
+        stage.x = stage.left + stage.width / 2;
+        cursor = stage.right + stageGap;
+      }
+      width = Math.max(baseWidth, cursor - stageGap + stageOuterMargin);
+      svg.attr("viewBox", [0, 0, width, height]);
+    }
+
     function initializeGraphPositions() {
+      layoutStageColumns();
       nodesById = new Map(nodes.map(node => [node.id, node]));
       const ySlots = new Map();
       for (const node of nodes) {
