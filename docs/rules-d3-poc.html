@@ -240,6 +240,11 @@
       stroke-width: 1.7;
     }
 
+    .nested-node.is-pinned rect.nested-node-body {
+      stroke: var(--warn);
+      stroke-width: 1.7;
+    }
+
     .nested-node text {
       fill: var(--text);
       font-size: 9px;
@@ -372,7 +377,7 @@
         <div class="graph-head">
           <div>
             <h2>Stack Planning Model</h2>
-            <p class="subhead">Drag nodes to pin them. Double-click to release. Zoom into rule nodes to reveal and spread their nested subrule graph.</p>
+            <p class="subhead">Drag nodes to pin them. Double-click to release. Zoom into rule nodes to reveal nested force graphs; nested nodes also repel and drag.</p>
           </div>
           <div class="legend">
             <span><i class="swatch" style="background: var(--rule)"></i>rule</span>
@@ -731,6 +736,7 @@
     let activeFilter = "all";
     let selected = null;
     let currentZoom = 1;
+    const nestedSimulations = new Map();
 
     const svg = d3.select(graphEl)
       .attr("viewBox", [0, 0, width, height])
@@ -830,7 +836,102 @@
     }
 
     function nodeBoxHeight(node) {
-      return nodeHeight + (nestedExpansion(node) - 1) * 80;
+      return nodeHeight + (nestedExpansion(node) - 1) * 150;
+    }
+
+    function nestedLayout(parent) {
+      return {
+        left: 0,
+        top: 28,
+        width: Math.max(170, nodeBoxWidth(parent) - 38),
+        height: Math.max(94, nodeBoxHeight(parent) - 116)
+      };
+    }
+
+    function nodeTitleY(node) {
+      return nestedIsVisible(node) ? -nodeBoxHeight(node) / 2 + 28 : -32;
+    }
+
+    function nodeMetaY(node) {
+      return nestedIsVisible(node) ? -nodeBoxHeight(node) / 2 + 50 : -13;
+    }
+
+    function ensureNestedSimulation(parent) {
+      if (!parent.nestedGraph) return null;
+      const cached = nestedSimulations.get(parent.id);
+      if (cached) return cached;
+
+      const nested = parent.nestedGraph;
+      for (const item of nested.nodes) {
+        item.baseX = item.x;
+        item.baseY = item.y;
+        item.x = item.x * 1.35 + 18;
+        item.y = item.y * 1.7 + 34;
+      }
+      nested.baseMaxX = Math.max(1, d3.max(nested.nodes, item => item.baseX) || 1);
+      nested.baseMaxY = Math.max(1, d3.max(nested.nodes, item => item.baseY) || 1);
+
+      const sim = d3.forceSimulation(nested.nodes)
+        .force("charge", d3.forceManyBody().strength(-115).distanceMin(28).distanceMax(220))
+        .force("link", d3.forceLink(nested.edges.map(edge => ({
+          id: edge.id,
+          source: edge.source,
+          target: edge.target
+        }))).id(item => item.id).distance(() => 92 * nestedExpansion(parent)).strength(0.32))
+        .force("x", d3.forceX(item => nestedTargetX(parent, item)).strength(0.18))
+        .force("y", d3.forceY(item => nestedTargetY(parent, item)).strength(0.2))
+        .force("collide", d3.forceCollide(38).strength(0.9))
+        .on("tick", () => {
+          containNestedNodes(parent);
+          render();
+        });
+      nestedSimulations.set(parent.id, sim);
+      return sim;
+    }
+
+    function updateNestedSimulation(parent) {
+      const sim = ensureNestedSimulation(parent);
+      if (!sim) return;
+      sim.force("link")
+        .distance(() => 92 * nestedExpansion(parent));
+      sim.force("x")
+        .x(item => nestedTargetX(parent, item));
+      sim.force("y")
+        .y(item => nestedTargetY(parent, item));
+      if (nestedIsVisible(parent)) {
+        sim.alphaTarget(nestedIsFocused(parent) ? 0.035 : 0.01).restart();
+      } else {
+        sim.alphaTarget(0);
+      }
+    }
+
+    function nestedTargetX(parent, item) {
+      const layout = nestedLayout(parent);
+      const maxX = parent.nestedGraph.baseMaxX || 1;
+      return layout.left + (item.baseX / maxX) * Math.max(1, layout.width - nestedNodeWidth);
+    }
+
+    function nestedTargetY(parent, item) {
+      const layout = nestedLayout(parent);
+      const maxY = parent.nestedGraph.baseMaxY || 1;
+      return layout.top + (item.baseY / maxY) * Math.max(1, layout.height - nestedNodeHeight);
+    }
+
+    function containNestedNodes(parent) {
+      const layout = nestedLayout(parent);
+      for (const item of parent.nestedGraph.nodes) {
+        const point = clampNestedPoint(parent, item.x, item.y);
+        item.x = point.x;
+        item.y = point.y;
+      }
+    }
+
+    function clampNestedPoint(parent, x, y) {
+      const layout = nestedLayout(parent);
+      return {
+        x: Math.max(layout.left, Math.min(layout.left + layout.width - nestedNodeWidth, x)),
+        y: Math.max(layout.top, Math.min(layout.top + layout.height - nestedNodeHeight, y))
+      };
     }
 
     function render() {
@@ -899,12 +1000,12 @@
               .attr("height", node => nodeBoxHeight(node));
             group.append("text")
               .attr("x", node => -nodeBoxWidth(node) / 2 + 12)
-              .attr("y", -32)
+              .attr("y", node => nodeTitleY(node))
               .text(node => node.label);
             group.append("text")
               .attr("class", "meta")
               .attr("x", node => -nodeBoxWidth(node) / 2 + 12)
-              .attr("y", -13)
+              .attr("y", node => nodeMetaY(node))
               .text(node => node.nestedGraph ? "rule node with nested subrules" : node.kind.replace("-", " "));
             group.append("g")
               .attr("class", "nested-graph")
@@ -931,10 +1032,12 @@
         .attr("height", node => nodeBoxHeight(node));
 
       nodeGroups.select("text:not(.meta)")
-        .attr("x", node => -nodeBoxWidth(node) / 2 + 12);
+        .attr("x", node => -nodeBoxWidth(node) / 2 + 12)
+        .attr("y", node => nodeTitleY(node));
 
       nodeGroups.select("text.meta")
-        .attr("x", node => -nodeBoxWidth(node) / 2 + 12);
+        .attr("x", node => -nodeBoxWidth(node) / 2 + 12)
+        .attr("y", node => nodeMetaY(node));
 
       nodeGroups.each(function(parent) {
         renderNestedGraph(d3.select(this).select(".nested-graph"), parent);
@@ -949,24 +1052,26 @@
     function renderNestedGraph(group, node) {
       const nested = node.nestedGraph;
       if (!nested) return;
+      updateNestedSimulation(node);
       const nestedNodes = new Map(nested.nodes.map(item => [item.id, item]));
       const expansion = nestedExpansion(node);
-      const nestedPoint = item => ({
-        x: item.x * expansion,
-        y: item.y * expansion
-      });
-      group.attr("transform", `translate(${-nodeBoxWidth(node) / 2 + 13}, 2)`);
+      group.attr("transform", `translate(${-nodeBoxWidth(node) / 2 + 13}, ${-nodeBoxHeight(node) / 2 + 78})`);
       group.selectAll("text.nested-title")
         .data([nested])
         .join("text")
         .attr("class", "nested-title")
         .attr("x", 0)
         .attr("y", 5)
-        .text(() => `${nested.title} - zoom ${expansion.toFixed(1)}x spacing`);
+        .text(() => `${nested.title} - force layout ${expansion.toFixed(1)}x`);
       const edgePath = edge => {
-        const source = nestedPoint(nestedNodes.get(edge.source));
-        const target = nestedPoint(nestedNodes.get(edge.target));
-        return `M${source.x + nestedNodeWidth},${source.y + 20} C${source.x + nestedNodeWidth + 12},${source.y + 20} ${target.x - 12},${target.y + 20} ${target.x},${target.y + 20}`;
+        const source = nestedNodes.get(nestedId(edge.source));
+        const target = nestedNodes.get(nestedId(edge.target));
+        const sx = source.x + nestedNodeWidth;
+        const sy = source.y + nestedNodeHeight / 2;
+        const tx = target.x;
+        const ty = target.y + nestedNodeHeight / 2;
+        const bend = Math.max(22, Math.abs(tx - sx) * 0.45);
+        return `M${sx},${sy} C${sx + bend},${sy} ${tx - bend},${ty} ${tx},${ty}`;
       };
       group.selectAll("path.nested-edge-hit")
         .data(nested.edges, edge => edge.id)
@@ -994,9 +1099,12 @@
           enter => {
             const itemGroup = enter.append("g")
               .attr("class", "nested-node")
+              .call(d3.drag()
+                .on("start", (event, item) => nestedDragStarted(event, item, node, group.node()))
+                .on("drag", (event, item) => nestedDragged(event, item, node, group.node()))
+                .on("end", (event, item) => nestedDragEnded(event, item, node)))
               .on("pointerdown", stopNestedPointer)
-              .on("mousedown", stopNestedPointer)
-              .on("touchstart", stopNestedPointer)
+              .on("dblclick", (event, item) => releaseNestedNode(event, item, node))
               .on("click", (event, item) => {
                 event.stopPropagation();
                 selectNestedNode(node, item);
@@ -1009,8 +1117,6 @@
               .attr("height", nestedNodeHeight + 12)
               .attr("rx", 8)
               .on("pointerdown", stopNestedPointer)
-              .on("mousedown", stopNestedPointer)
-              .on("touchstart", stopNestedPointer)
               .on("click", (event, item) => {
                 event.stopPropagation();
                 selectNestedNode(node, item);
@@ -1021,8 +1127,6 @@
               .attr("height", nestedNodeHeight)
               .attr("rx", 5)
               .on("pointerdown", stopNestedPointer)
-              .on("mousedown", stopNestedPointer)
-              .on("touchstart", stopNestedPointer)
               .on("click", (event, item) => {
                 event.stopPropagation();
                 selectNestedNode(node, item);
@@ -1031,8 +1135,6 @@
               .attr("x", 7)
               .attr("y", 14)
               .on("pointerdown", stopNestedPointer)
-              .on("mousedown", stopNestedPointer)
-              .on("touchstart", stopNestedPointer)
               .on("click", (event, item) => {
                 event.stopPropagation();
                 selectNestedNode(node, item);
@@ -1043,11 +1145,54 @@
           exit => exit.remove()
         );
       mini
-        .attr("transform", item => {
-          const point = nestedPoint(item);
-          return `translate(${point.x},${point.y + 10})`;
-        });
+        .attr("transform", item => `translate(${item.x},${item.y})`);
       mini.select("text").text(item => item.label);
+    }
+
+    function nestedId(value) {
+      return typeof value === "object" ? value.id : value;
+    }
+
+    function nestedDragStarted(event, item, parent, groupNode) {
+      event.sourceEvent.stopPropagation();
+      const sim = ensureNestedSimulation(parent);
+      if (!event.active) sim.alphaTarget(0.24).restart();
+      const point = nestedPointer(event, parent, groupNode);
+      item.fx = point.x;
+      item.fy = point.y;
+      selectNestedNode(parent, item);
+    }
+
+    function nestedDragged(event, item, parent, groupNode) {
+      event.sourceEvent.stopPropagation();
+      const point = nestedPointer(event, parent, groupNode);
+      item.fx = point.x;
+      item.fy = point.y;
+      item.x = point.x;
+      item.y = point.y;
+      render();
+    }
+
+    function nestedDragEnded(event, item, parent) {
+      event.sourceEvent.stopPropagation();
+      const sim = ensureNestedSimulation(parent);
+      if (!event.active) sim.alphaTarget(nestedIsFocused(parent) ? 0.035 : 0);
+      item.fx = item.x;
+      item.fy = item.y;
+      render();
+    }
+
+    function releaseNestedNode(event, item, parent) {
+      event.stopPropagation();
+      item.fx = null;
+      item.fy = null;
+      ensureNestedSimulation(parent).alpha(0.55).restart();
+      selectNestedNode(parent, item);
+    }
+
+    function nestedPointer(event, parent, groupNode) {
+      const [x, y] = d3.pointer(event.sourceEvent, groupNode);
+      return clampNestedPoint(parent, x, y);
     }
 
     function stopNestedPointer(event) {
@@ -1056,7 +1201,8 @@
 
     function updateNestedSelection(group, parent) {
       group.selectAll("g.nested-node")
-        .classed("is-selected", item => selected?.type === "nested-node" && selected.parentId === parent.id && selected.id === item.id);
+        .classed("is-selected", item => selected?.type === "nested-node" && selected.parentId === parent.id && selected.id === item.id)
+        .classed("is-pinned", item => item.fx != null || item.fy != null);
       group.selectAll("path.nested-edge")
         .classed("is-selected", edge => selected?.type === "nested-edge" && selected.parentId === parent.id && selected.id === edge.id);
     }
