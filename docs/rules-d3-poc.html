@@ -1590,7 +1590,7 @@
     function selectNode(node) {
       selected = { type: "node", id: node.id };
       detailEl.innerHTML = `
-        <div class="detail-title">${escapeHtml(node.label)}</div>
+        <div class="detail-title">${escapeHtml(node.fullLabel || node.label)}</div>
         <p class="detail-copy">${escapeHtml(node.plainEnglish)}</p>
         <div class="pill-row">
           <span class="pill">${escapeHtml(node.stage)}</span>
