@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Splitter Rules</title>
+  <title>Model Rules</title>
   <style>
     :root {
       color-scheme: light;
       --bg: #f6f7f9;
-      --panel: #ffffff;
+      --panel: #fff;
       --text: #17202a;
       --muted: #667085;
       --line: #d8dee8;
@@ -16,6 +16,7 @@
       --good: #169b75;
       --warn: #b45309;
       --soft: #eef5ff;
+      --soft-warn: #fff7ed;
       --code: #101828;
     }
 
@@ -29,24 +30,41 @@
     }
 
     main {
-      max-width: 1240px;
+      max-width: 1120px;
       margin: 0 auto;
       padding: 24px;
     }
 
-    header {
+    header, .section-head, .rule-summary, .subrule-head, .topline {
       display: flex;
-      align-items: flex-end;
+      align-items: center;
       justify-content: space-between;
-      gap: 16px;
+      gap: 14px;
+    }
+
+    header {
+      align-items: flex-end;
       margin-bottom: 16px;
     }
 
-    h1 {
+    h1, h2, h3 {
       margin: 0;
-      font-size: 22px;
-      font-weight: 650;
       letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: 23px;
+      font-weight: 680;
+    }
+
+    h2 {
+      font-size: 17px;
+      font-weight: 660;
+    }
+
+    h3 {
+      font-size: 15px;
+      font-weight: 660;
     }
 
     .subhead {
@@ -56,25 +74,26 @@
 
     .controls {
       display: flex;
-      align-items: center;
       flex-wrap: wrap;
       gap: 8px;
+      align-items: center;
     }
 
-    button, input, select, .nav-link {
+    button, .nav-link {
       border: 1px solid var(--line);
       background: #fff;
       color: var(--text);
-      height: 34px;
+      min-height: 34px;
       padding: 0 12px;
       border-radius: 6px;
       cursor: pointer;
       font: inherit;
     }
 
-    input {
-      width: 320px;
-      cursor: text;
+    button[aria-pressed="true"] {
+      border-color: var(--accent);
+      background: var(--soft);
+      color: #1f4f82;
     }
 
     .nav-link {
@@ -83,7 +102,7 @@
       text-decoration: none;
     }
 
-    .run-panel, .catalog-panel {
+    .run-panel, .model-section, .rule-card, .empty, .error {
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -94,7 +113,7 @@
       margin-bottom: 16px;
     }
 
-    .run-grid {
+    .run-main {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 12px;
@@ -108,15 +127,30 @@
 
     .value {
       overflow-wrap: anywhere;
-      font-weight: 600;
+      font-weight: 620;
       font-variant-numeric: tabular-nums;
     }
 
-    .repo-list {
+    .debug-panel {
+      display: none;
       margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
+
+    body.debug .debug-panel,
+    body.debug .debug-only {
+      display: block;
+    }
+
+    .debug-only {
+      display: none;
+    }
+
+    .pill-row {
       display: flex;
-      gap: 6px;
       flex-wrap: wrap;
+      gap: 6px;
     }
 
     .pill {
@@ -131,251 +165,127 @@
       font-size: 12px;
     }
 
-    .catalog-panel + .catalog-panel {
+    .status-same { color: var(--good); }
+    .status-changed, .status-generated-only, .status-effective-only { color: var(--warn); }
+
+    .model-section {
       margin-top: 16px;
+      overflow: hidden;
     }
 
-    .catalog-head {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 16px;
+    .section-head {
       padding: 14px 16px;
       border-bottom: 1px solid var(--line);
       background: #fbfcfe;
     }
 
-    .catalog-head h2 {
-      margin: 0;
-      font-size: 17px;
-      font-weight: 650;
-      letter-spacing: 0;
-    }
-
-    .catalog-path {
-      margin-top: 3px;
+    .section-note {
       color: var(--muted);
-      overflow-wrap: anywhere;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 12px;
+      margin-top: 4px;
     }
 
-    .stats {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
-
-    .rules {
+    .rule-list {
       display: grid;
       gap: 0;
     }
 
-    .comparison {
-      display: grid;
-      gap: 14px;
-    }
-
-    .summary-row {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-bottom: 14px;
-    }
-
-    .comparison-row {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
+    .rule-card {
+      border-width: 0 0 1px;
+      border-radius: 0;
       overflow: hidden;
     }
 
-    .comparison-title {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 12px 14px;
-      border-bottom: 1px solid var(--line);
-      background: #fbfcfe;
+    .rule-card:last-child {
+      border-bottom: 0;
     }
 
-    .comparison-title h2 {
-      margin: 0;
-      font-size: 16px;
-      font-weight: 650;
-      letter-spacing: 0;
-      overflow-wrap: anywhere;
-    }
-
-    .comparison-grid {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    }
-
-    .comparison-col + .comparison-col {
-      border-left: 1px solid var(--line);
-    }
-
-    .comparison-col-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      min-height: 42px;
-      padding: 10px 14px;
-      border-bottom: 1px solid var(--line);
-      background: #fff;
-    }
-
-    .comparison-col-head h3 {
-      margin: 0;
-      font-size: 13px;
-      font-weight: 650;
-      letter-spacing: 0;
-    }
-
-    .rule {
+    .rule-card > summary {
+      list-style: none;
+      cursor: pointer;
       padding: 14px 16px;
-      border-bottom: 1px solid var(--line);
     }
 
-    .comparison-col .rule {
-      border-bottom: 0;
+    .rule-card > summary::-webkit-details-marker {
+      display: none;
     }
 
-    .rule:last-child {
-      border-bottom: 0;
+    .rule-summary {
+      align-items: flex-start;
     }
 
-    .rule-head {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 12px;
-      align-items: start;
-    }
-
-    .rule h3 {
-      margin: 0;
-      font-size: 15px;
-      font-weight: 650;
-      letter-spacing: 0;
-      overflow-wrap: anywhere;
-    }
-
-    .priority {
-      color: var(--accent);
-      font-weight: 700;
-      font-variant-numeric: tabular-nums;
-    }
-
-    .reason {
-      margin-top: 6px;
-      color: var(--muted);
-    }
-
-    .flow {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr);
-      gap: 10px;
-      margin-top: 12px;
-      align-items: stretch;
-    }
-
-    .flow-box {
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 10px;
-      background: #fff;
+    .rule-title {
       min-width: 0;
     }
 
-    .arrow {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: var(--muted);
-      font-size: 18px;
-    }
-
-    .chips {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-    }
-
-    .chip {
-      display: inline-flex;
-      align-items: center;
-      min-height: 22px;
-      padding: 2px 7px;
-      border-radius: 6px;
-      background: var(--soft);
-      color: #1f4f82;
-      font-size: 12px;
+    .rule-title h3 {
       overflow-wrap: anywhere;
     }
 
-    .terms {
+    .description {
+      margin-top: 4px;
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+
+    .flow-line {
       display: flex;
       flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-top: 8px;
+      color: var(--muted);
+    }
+
+    .token {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: var(--soft);
+      color: #1f4f82;
+      overflow-wrap: anywhere;
+    }
+
+    .rule-meta {
+      flex: 0 0 auto;
+      display: flex;
       gap: 6px;
-      margin-top: 12px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      max-width: 360px;
     }
 
-    .term {
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 4px 7px;
-      background: #fff;
-      font-size: 12px;
-    }
-
-    .term strong {
-      color: var(--code);
-      font-weight: 650;
-    }
-
-    .subrules {
-      margin-top: 12px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
+    .rule-body {
+      padding: 0 16px 16px;
+      border-top: 1px solid var(--line);
       background: #fbfcfe;
-      overflow: hidden;
-    }
-
-    .subrules summary {
-      padding: 10px 12px;
     }
 
     .subrule-list {
       display: grid;
       gap: 10px;
-      padding: 0 12px 12px;
+      margin-top: 12px;
     }
 
-    .subrule {
+    .subrule-card {
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: 8px;
       background: #fff;
-      padding: 10px;
+      padding: 12px;
     }
 
     .subrule-head {
-      display: flex;
       align-items: flex-start;
-      justify-content: space-between;
-      gap: 10px;
     }
 
     .subrule-title {
-      font-weight: 650;
+      font-weight: 660;
       overflow-wrap: anywhere;
     }
 
     .subrule-description {
-      margin-top: 4px;
+      margin-top: 6px;
       color: var(--muted);
       overflow-wrap: anywhere;
     }
@@ -399,15 +309,26 @@
       font-size: 13px;
     }
 
-    .examples {
-      margin-top: 10px;
-    }
-
-    details {
+    .debug-block {
       margin-top: 12px;
     }
 
-    summary {
+    .terms {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .term {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 4px 7px;
+      background: #fff;
+      font-size: 12px;
+    }
+
+    details.debug-only summary {
       cursor: pointer;
       color: var(--accent);
       font-weight: 600;
@@ -417,18 +338,19 @@
       margin: 8px 0 0;
       padding: 12px;
       border-radius: 6px;
-      background: #101828;
+      background: var(--code);
       color: #f8fafc;
       overflow: auto;
       font-size: 12px;
       line-height: 1.45;
     }
 
+    .needs-section .section-head {
+      background: var(--soft-warn);
+    }
+
     .empty, .error {
       padding: 24px;
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
     }
 
     .error {
@@ -437,43 +359,15 @@
 
     @media (max-width: 760px) {
       main { padding: 16px; }
-      header {
+      header, .section-head, .rule-summary, .subrule-head, .topline {
         display: block;
       }
-      .controls {
+      .controls, .rule-meta {
         margin-top: 12px;
-      }
-      input {
-        width: 100%;
-      }
-      .run-grid {
-        grid-template-columns: 1fr;
-      }
-      .catalog-head {
-        display: block;
-      }
-      .stats {
         justify-content: flex-start;
-        margin-top: 10px;
       }
-      .rule-head {
+      .run-main, .metric-grid {
         grid-template-columns: 1fr;
-      }
-      .flow {
-        grid-template-columns: 1fr;
-      }
-      .metric-grid {
-        grid-template-columns: 1fr 1fr;
-      }
-      .arrow {
-        min-height: 24px;
-      }
-      .comparison-grid {
-        grid-template-columns: 1fr;
-      }
-      .comparison-col + .comparison-col {
-        border-left: 0;
-        border-top: 1px solid var(--line);
       }
     }
   </style>
@@ -482,17 +376,12 @@
   <main>
     <header>
       <div>
-        <h1>Splitter Rules</h1>
-        <p class="subhead">Generated candidates beside the effective post-gate rule catalog.</p>
+        <h1>Model Rules</h1>
+        <p class="subhead">Browse the effective rule model and inspect subrules only when needed.</p>
       </div>
       <div class="controls">
-        <input id="search" placeholder="Filter rules" aria-label="Filter rules">
-        <select id="catalog-filter" aria-label="Catalog">
-          <option value="all">All rules</option>
-          <option value="changed">Changed only</option>
-          <option value="generated">Generated only</option>
-          <option value="effective">Effective only</option>
-        </select>
+        <button id="compare-toggle" type="button" aria-pressed="false">Compare</button>
+        <button id="debug-toggle" type="button" aria-pressed="false">Debug</button>
         <button id="refresh" type="button">Refresh</button>
         <a class="nav-link" href="/">Metrics</a>
       </div>
@@ -503,12 +392,15 @@
   </main>
 
   <script>
+    const UNCATEGORIZED_ID = "uncategorized-subrules";
     const runEl = document.getElementById("run");
     const contentEl = document.getElementById("content");
-    const searchEl = document.getElementById("search");
-    const catalogFilterEl = document.getElementById("catalog-filter");
+    const compareToggleEl = document.getElementById("compare-toggle");
+    const debugToggleEl = document.getElementById("debug-toggle");
     const refreshEl = document.getElementById("refresh");
     let payload = null;
+    let compareMode = false;
+    let debugMode = false;
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -529,61 +421,6 @@
       return date.toISOString().replace("T", " ").replace(".000Z", "Z");
     }
 
-    function renderRun(run, root, pipelinePath) {
-      const promotion = run.rulePromotion || {};
-      runEl.innerHTML = `
-        <div class="run-grid">
-          <div><div class="label">Learning Run</div><div class="value">${escapeHtml(run.runId || "")}</div></div>
-          <div><div class="label">Generated Against SHA</div><div class="value">${escapeHtml(short(run.headSha))}</div></div>
-          <div><div class="label">Branch</div><div class="value">${escapeHtml(run.branch || "")}</div></div>
-          <div><div class="label">Status</div><div class="value">${escapeHtml(run.pipelineStatus || "")}</div></div>
-          <div><div class="label">Collected</div><div class="value">${escapeHtml(formatDate(run.collectedAt))}</div></div>
-          <div><div class="label">Promotion</div><div class="value">${escapeHtml(promotion.status || "")}</div></div>
-          <div><div class="label">Promotion Reason</div><div class="value">${escapeHtml(promotion.reason || "")}</div></div>
-          <div><div class="label">PR</div><div class="value">${run.prUrl ? `<a href="${escapeHtml(run.prUrl)}">${escapeHtml(run.prUrl)}</a>` : ""}</div></div>
-        </div>
-        <div class="repo-list">
-          ${(run.repos || []).map(repo => `<span class="pill">${escapeHtml(repo)}</span>`).join("")}
-        </div>
-        <div class="repo-list">
-          <span class="pill">${escapeHtml(root || "")}</span>
-          <span class="pill">${escapeHtml(pipelinePath || "")}</span>
-        </div>
-      `;
-    }
-
-    function ruleText(rule) {
-      return [
-        rule.id,
-        rule.relation,
-        rule.reasonId,
-        rule.reason,
-        ...(rule.before || []),
-        ...(rule.after || []),
-        ...(rule.triggerTerms || []).map(term => `${term.text} ${term.category} ${term.weight}`),
-        ...(rule.subrules || []).map(subrule => [
-          subrule.id,
-          subrule.before,
-          subrule.after,
-          subrule.decision,
-          subrule.failureBucket,
-          subrule.rejectedReason
-        ].join(" "))
-      ].join(" ").toLowerCase();
-    }
-
-    function chips(values) {
-      if (!values || !values.length) return `<span class="pill">none</span>`;
-      return values.map(value => `<span class="chip">${escapeHtml(value)}</span>`).join("");
-    }
-
-    function terms(values) {
-      if (!values || !values.length) return "";
-      return `<div class="terms">${values.map(term => `
-        <span class="term"><strong>${escapeHtml(term.text)}</strong> ${escapeHtml(term.category || "")} ${escapeHtml(term.weight == null ? "" : `w${term.weight}`)}</span>
-      `).join("")}</div>`;
-    }
-
     function formatNumber(value, digits = 3) {
       if (value == null || value === "") return "";
       const numeric = Number(value);
@@ -601,6 +438,128 @@
 
     function metricCell(label, value) {
       return `<div class="metric-cell"><div class="label">${escapeHtml(label)}</div><div class="value">${escapeHtml(value)}</div></div>`;
+    }
+
+    function primaryCatalog() {
+      return catalogByKind("effective") || catalogByKind("generated") || null;
+    }
+
+    function catalogByKind(kind) {
+      return (payload?.catalogs || []).find(catalog => catalog.kind === kind) || null;
+    }
+
+    function rulesById(catalog) {
+      const map = new Map();
+      for (const rule of catalog?.rules || []) {
+        if (rule.id) map.set(rule.id, rule);
+      }
+      return map;
+    }
+
+    function ruleSignature(rule) {
+      return JSON.stringify(rule?.raw || rule || {});
+    }
+
+    function comparisonStatus(ruleId) {
+      const generated = rulesById(catalogByKind("generated"));
+      const effective = rulesById(catalogByKind("effective"));
+      const generatedRule = generated.get(ruleId);
+      const effectiveRule = effective.get(ruleId);
+      if (generatedRule && effectiveRule && ruleSignature(generatedRule) === ruleSignature(effectiveRule)) return "same";
+      if (generatedRule && effectiveRule) return "changed";
+      if (generatedRule) return "generated only";
+      if (effectiveRule) return "effective only";
+      return "";
+    }
+
+    function allDisplayRules() {
+      const primary = primaryCatalog();
+      if (!compareMode) return [...(primary?.rules || [])];
+      const generated = rulesById(catalogByKind("generated"));
+      const effective = rulesById(catalogByKind("effective"));
+      const ids = [...new Set([...generated.keys(), ...effective.keys()])];
+      return ids
+        .map(id => effective.get(id) || generated.get(id))
+        .filter(Boolean)
+        .sort((left, right) => (right.priority || 0) - (left.priority || 0) || String(left.id).localeCompare(String(right.id)));
+    }
+
+    function categorizedRules() {
+      return allDisplayRules().filter(rule => rule.id !== UNCATEGORIZED_ID);
+    }
+
+    function uncategorizedRule() {
+      return allDisplayRules().find(rule => rule.id === UNCATEGORIZED_ID) || null;
+    }
+
+    function renderRun(run, root, pipelinePath) {
+      const promotion = run.rulePromotion || {};
+      runEl.innerHTML = `
+        <div class="run-main">
+          <div><div class="label">Run</div><div class="value">${escapeHtml(run.runId || "")}</div></div>
+          <div><div class="label">SHA</div><div class="value">${escapeHtml(short(run.headSha))}</div></div>
+          <div><div class="label">Status</div><div class="value">${escapeHtml(run.pipelineStatus || "")}</div></div>
+          <div><div class="label">PR</div><div class="value">${run.prUrl ? `<a href="${escapeHtml(run.prUrl)}">${escapeHtml(run.prUrl)}</a>` : ""}</div></div>
+        </div>
+        <div class="debug-panel">
+          <div class="run-main">
+            <div><div class="label">Collected</div><div class="value">${escapeHtml(formatDate(run.collectedAt))}</div></div>
+            <div><div class="label">Branch</div><div class="value">${escapeHtml(run.branch || "")}</div></div>
+            <div><div class="label">Promotion</div><div class="value">${escapeHtml(promotion.status || "")}</div></div>
+            <div><div class="label">Promotion Reason</div><div class="value">${escapeHtml(promotion.reason || "")}</div></div>
+          </div>
+          <div class="pill-row debug-block">
+            ${(run.repos || []).map(repo => `<span class="pill">${escapeHtml(repo)}</span>`).join("")}
+          </div>
+          <div class="pill-row debug-block">
+            <span class="pill">${escapeHtml(root || "")}</span>
+            <span class="pill">${escapeHtml(pipelinePath || "")}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    function labelDescriptions() {
+      return {
+        [UNCATEGORIZED_ID]: "Subrule candidates whose mined parent rule is not present in the generated or effective rule catalog.",
+        "activate-one-surface-at-a-time": "Enable one user-facing, API, CLI, or integration surface per PR so each activation is reviewable, measurable, and easy to roll back.",
+        "foundation/config-reader": "Add the configuration reader or lookup layer before behavior depends on it.",
+        "foundation/schema-types": "Introduce schemas, types, or data models before wiring behavior through them.",
+        "foundation/adapter-wrapper": "Add adapter or wrapper structure before using it for feature behavior.",
+        "compatibility/api-contract": "Preserve or introduce the API compatibility contract before exposing behavior changes.",
+        "behavior/config-behavior": "Implement behavior controlled by configuration or repository settings.",
+        "behavior/feature-behavior": "Implement the main product or workflow behavior.",
+        "behavior/test-fixture": "Add fixtures or harness support needed to verify behavior.",
+        "verification/terminal-tests": "Run or add terminal-level verification after implementation is present.",
+        "cleanup/legacy-cleanup": "Remove legacy code after the replacement behavior is in place."
+      };
+    }
+
+    function labelTitle(label) {
+      return String(label || "")
+        .split("/")
+        .map(part => part.split("-").filter(Boolean).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" "))
+        .join(" / ");
+    }
+
+    function labelDescription(label) {
+      const value = String(label || "");
+      const descriptions = labelDescriptions();
+      if (descriptions[value]) return descriptions[value];
+      if (!value) return "";
+      return `${labelTitle(value)} is a learned role label mined from PR stack examples.`;
+    }
+
+    function renderFlow(values) {
+      if (!values || !values.length) return `<span class="token">none</span>`;
+      return values.map(value => `<span class="token">${escapeHtml(value)}</span>`).join("");
+    }
+
+    function renderTerms(values) {
+      if (!values || !values.length) return "";
+      return `<div class="terms">${values.map(term => `
+        <span class="term"><strong>${escapeHtml(term.text)}</strong> ${escapeHtml(term.category || "")} ${escapeHtml(term.weight == null ? "" : `w${term.weight}`)}</span>
+      `).join("")}</div>`;
     }
 
     function fallbackPrUrl(example, key) {
@@ -623,8 +582,8 @@
 
     function renderExamples(examples) {
       if (!examples || !examples.length) return "";
-      return `<details class="examples">
-        <summary>Examples</summary>
+      return `<div class="debug-only debug-block">
+        <div class="label">Examples</div>
         <div class="terms">
           ${examples.slice(0, 6).map(example => `
             <span class="term">
@@ -633,35 +592,7 @@
             </span>
           `).join("")}
         </div>
-      </details>`;
-    }
-
-    const labelDescriptions = {
-      "uncategorized-subrules": "Subrule candidates whose mined parent rule is not present in the generated or effective rule catalog.",
-      "activate-one-surface-at-a-time": "Enable one user-facing, API, CLI, or integration surface per PR so each activation is reviewable, measurable, and easy to roll back.",
-      "foundation/config-reader": "Add the configuration reader or lookup layer before behavior depends on it.",
-      "foundation/schema-types": "Introduce schemas, types, or data models before wiring behavior through them.",
-      "foundation/adapter-wrapper": "Add adapter or wrapper structure before using it for feature behavior.",
-      "compatibility/api-contract": "Preserve or introduce the API compatibility contract before exposing behavior changes.",
-      "behavior/config-behavior": "Implement behavior controlled by configuration or repository settings.",
-      "behavior/feature-behavior": "Implement the main product or workflow behavior.",
-      "behavior/test-fixture": "Add fixtures or harness support needed to verify behavior.",
-      "verification/terminal-tests": "Run or add terminal-level verification after implementation is present.",
-      "cleanup/legacy-cleanup": "Remove legacy code after the replacement behavior is in place."
-    };
-
-    function labelTitle(label) {
-      return String(label || "")
-        .split("/")
-        .map(part => part.split("-").filter(Boolean).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" "))
-        .join(" / ");
-    }
-
-    function labelDescription(label) {
-      const value = String(label || "");
-      if (labelDescriptions[value]) return labelDescriptions[value];
-      if (!value) return "";
-      return `${labelTitle(value)} is a learned role label mined from PR stack examples. It describes a recurring step that appeared before or after another step in stacked changes.`;
+      </div>`;
     }
 
     function renderSubrule(subrule) {
@@ -669,11 +600,10 @@
       const test = subrule.test || {};
       const decision = subrule.decision || (subrule.promoted ? "promoted" : "candidate");
       const reason = subrule.failureBucket || subrule.rejectedReason || "";
-      return `<article class="subrule">
+      return `<article class="subrule-card">
         <div class="subrule-head">
           <div>
             <div class="subrule-title">${escapeHtml(subrule.before || "")} &rarr; ${escapeHtml(subrule.after || "")}</div>
-            <div class="reason">${escapeHtml(subrule.id || "")}</div>
             <div class="subrule-description">
               <strong>${escapeHtml(labelTitle(subrule.before))}</strong>: ${escapeHtml(labelDescription(subrule.before))}
               <br>
@@ -683,183 +613,110 @@
           <span class="pill">${escapeHtml(reason ? `${decision}: ${reason}` : decision)}</span>
         </div>
         <div class="metric-grid">
-          ${metricCell("Source parent", subrule.sourceParentRuleId || subrule.parentRuleId || "")}
-          ${metricCell("Training support", `${formatNumber(subrule.support, 0)} / ${formatNumber(subrule.repoSupport, 0)} repos`)}
+          ${metricCell("Support", `${formatNumber(subrule.support, 0)} / ${formatNumber(subrule.repoSupport, 0)} repos`)}
           ${metricCell("Confidence", formatNumber(subrule.confidence, 3))}
-          ${metricCell("Validation stack-link delta", formatDelta(validation.stackLinkDelta))}
-          ${metricCell("Test stack-link delta", formatDelta(test.stackLinkDelta))}
+          ${metricCell("Validation delta", formatDelta(validation.stackLinkDelta))}
+          ${metricCell("Test delta", formatDelta(test.stackLinkDelta))}
+        </div>
+        <div class="metric-grid">
           ${metricCell("Validation paired", formatNumber(validation.pairedCount, 0))}
           ${metricCell("Test paired", formatNumber(test.pairedCount, 0))}
           ${metricCell("Validation regressions", formatNumber(validation.regressionCount, 0))}
           ${metricCell("Test regressions", formatNumber(test.regressionCount, 0))}
         </div>
-        <div class="repo-list">
-          ${(subrule.repos || []).map(repo => `<span class="pill">${escapeHtml(repo)}</span>`).join("")}
+        <div class="debug-only debug-block">
+          <div class="pill-row">
+            <span class="pill">source parent ${escapeHtml(subrule.sourceParentRuleId || subrule.parentRuleId || "")}</span>
+            ${(subrule.repos || []).map(repo => `<span class="pill">${escapeHtml(repo)}</span>`).join("")}
+          </div>
         </div>
         ${renderExamples(subrule.examples)}
-        <details>
+        <details class="debug-only debug-block">
           <summary>Raw JSON</summary>
           <pre>${escapeHtml(JSON.stringify(subrule.raw || subrule, null, 2))}</pre>
         </details>
       </article>`;
     }
 
-    function renderSubrules(subrules) {
-      if (!subrules || !subrules.length) return "";
-      const promoted = subrules.filter(subrule => subrule.promoted).length;
-      return `<details class="subrules">
-        <summary>Subrules: ${escapeHtml(subrules.length)} candidates, ${escapeHtml(promoted)} promoted</summary>
-        <div class="subrule-list">
-          ${subrules.map(renderSubrule).join("")}
+    function renderRule(rule, options = {}) {
+      const subrules = rule.subrules || [];
+      const status = comparisonStatus(rule.id);
+      const compareBadge = compareMode && status ? `<span class="pill status-${status.replaceAll(" ", "-")}">${escapeHtml(status)}</span>` : "";
+      const className = options.needsCategorization ? "rule-card needs-rule" : "rule-card";
+      return `<details class="${className}">
+        <summary>
+          <div class="rule-summary">
+            <div class="rule-title">
+              <h3>${escapeHtml(rule.id || "")}</h3>
+              <div class="description">${escapeHtml(rule.reason || rule.reasonId || labelDescription(rule.id))}</div>
+              <div class="flow-line">
+                ${renderFlow(rule.before)}
+                <span>&rarr;</span>
+                ${renderFlow(rule.after)}
+              </div>
+            </div>
+            <div class="rule-meta">
+              ${compareBadge}
+              <span class="pill">${escapeHtml(subrules.length)} subrules</span>
+            </div>
+          </div>
+        </summary>
+        <div class="rule-body">
+          ${subrules.length ? `<div class="subrule-list">${subrules.map(renderSubrule).join("")}</div>` : `<div class="empty">No subrules attached to this rule.</div>`}
+          <div class="debug-only debug-block">
+            <div class="pill-row">
+              <span class="pill">relation ${escapeHtml(rule.relation || "")}</span>
+              <span class="pill">priority ${escapeHtml(rule.priority ?? "")}</span>
+              <span class="pill">threshold ${escapeHtml(rule.triggerThreshold ?? "")}</span>
+              <span class="pill">${escapeHtml(rule.reasonId || "")}</span>
+            </div>
+            ${renderTerms(rule.triggerTerms)}
+          </div>
+          <details class="debug-only debug-block">
+            <summary>Raw JSON</summary>
+            <pre>${escapeHtml(JSON.stringify(rule.raw || rule, null, 2))}</pre>
+          </details>
         </div>
       </details>`;
     }
 
-    function ruleSignature(rule) {
-      return JSON.stringify(rule?.raw || rule || {});
+    function sectionStats(rules) {
+      const subruleCount = rules.reduce((sum, rule) => sum + (rule.subrules || []).length, 0);
+      return `<div class="pill-row">
+        <span class="pill">${escapeHtml(rules.length)} rules</span>
+        <span class="pill">${escapeHtml(subruleCount)} subrules</span>
+      </div>`;
     }
 
-    function rulesById(catalog) {
-      const map = new Map();
-      for (const rule of catalog?.rules || []) {
-        if (rule.id) map.set(rule.id, rule);
-      }
-      return map;
-    }
-
-    function catalogByKind(kind) {
-      return (payload?.catalogs || []).find(catalog => catalog.kind === kind) || null;
-    }
-
-    function uniqueRuleIds(generated, effective) {
-      const generatedRules = rulesById(generated);
-      const effectiveRules = rulesById(effective);
-      return [...new Set([...generatedRules.keys(), ...effectiveRules.keys()])]
-        .sort((left, right) => {
-          const leftRule = generatedRules.get(left) || effectiveRules.get(left) || {};
-          const rightRule = generatedRules.get(right) || effectiveRules.get(right) || {};
-          return (rightRule.priority || 0) - (leftRule.priority || 0) || left.localeCompare(right);
-        });
-    }
-
-    function comparisonStatus(generatedRule, effectiveRule) {
-      if (generatedRule && effectiveRule && ruleSignature(generatedRule) === ruleSignature(effectiveRule)) return "same";
-      if (generatedRule && effectiveRule) return "changed";
-      if (generatedRule) return "generated only";
-      return "effective only";
-    }
-
-    function renderRule(rule) {
-      if (!rule) {
-        return `<article class="rule"><div class="empty">No matching rule in this catalog.</div></article>`;
-      }
-      return `<article class="rule">
-        <div class="rule-head">
+    function renderSection(title, note, rules, options = {}) {
+      if (!rules.length) return "";
+      return `<section class="model-section ${options.needsCategorization ? "needs-section" : ""}">
+        <div class="section-head">
           <div>
-            <h3>${escapeHtml(rule.id || "")}</h3>
-            <div class="reason">${escapeHtml(rule.reason || rule.reasonId || "")}</div>
+            <h2>${escapeHtml(title)}</h2>
+            <div class="section-note">${escapeHtml(note)}</div>
           </div>
-          <div class="priority">P${escapeHtml(rule.priority ?? "")}</div>
+          ${sectionStats(rules)}
         </div>
-        <div class="flow">
-          <div class="flow-box">
-            <div class="label">Before</div>
-            <div class="chips">${chips(rule.before)}</div>
-          </div>
-          <div class="arrow">&rarr;</div>
-          <div class="flow-box">
-            <div class="label">After</div>
-            <div class="chips">${chips(rule.after)}</div>
-          </div>
-        </div>
-        <div class="repo-list">
-          <span class="pill">relation ${escapeHtml(rule.relation || "")}</span>
-          <span class="pill">threshold ${escapeHtml(rule.triggerThreshold ?? "")}</span>
-          <span class="pill">${escapeHtml(rule.reasonId || "")}</span>
-        </div>
-        ${terms(rule.triggerTerms)}
-        ${renderSubrules(rule.subrules)}
-        <details>
-          <summary>Raw JSON</summary>
-          <pre>${escapeHtml(JSON.stringify(rule.raw || rule, null, 2))}</pre>
-        </details>
-      </article>`;
-    }
-
-    function renderComparisonRow(id, generatedRule, effectiveRule) {
-      const status = comparisonStatus(generatedRule, effectiveRule);
-      return `<section class="comparison-row">
-        <div class="comparison-title">
-          <h2>${escapeHtml(id)}</h2>
-          <span class="pill">${escapeHtml(status)}</span>
-        </div>
-        <div class="comparison-grid">
-          <div class="comparison-col">
-            <div class="comparison-col-head">
-              <h3>Generated candidate</h3>
-              <span class="pill">${generatedRule ? "present" : "missing"}</span>
-            </div>
-            ${renderRule(generatedRule)}
-          </div>
-          <div class="comparison-col">
-            <div class="comparison-col-head">
-              <h3>Effective after gate</h3>
-              <span class="pill">${effectiveRule ? "present" : "missing"}</span>
-            </div>
-            ${renderRule(effectiveRule)}
-          </div>
+        <div class="rule-list">
+          ${rules.map(rule => renderRule(rule, options)).join("")}
         </div>
       </section>`;
     }
 
-    function renderComparison(query, mode) {
-      const generated = catalogByKind("generated");
-      const effective = catalogByKind("effective");
-      const generatedRules = rulesById(generated);
-      const effectiveRules = rulesById(effective);
-      const allIds = uniqueRuleIds(generated, effective);
-      const rows = allIds
-        .map(id => ({
-          id,
-          generatedRule: generatedRules.get(id) || null,
-          effectiveRule: effectiveRules.get(id) || null,
-        }))
-        .filter(row => {
-          if (query && !ruleText(row.generatedRule || {}).includes(query) && !ruleText(row.effectiveRule || {}).includes(query)) {
-            return false;
-          }
-          if (mode === "changed") return comparisonStatus(row.generatedRule, row.effectiveRule) !== "same";
-          if (mode === "generated") return Boolean(row.generatedRule);
-          if (mode === "effective") return Boolean(row.effectiveRule);
-          return true;
-        });
-      const changedCount = allIds.filter(id => comparisonStatus(generatedRules.get(id), effectiveRules.get(id)) !== "same").length;
-      const sameCount = allIds.length - changedCount;
-      return `<div class="summary-row">
-          <span class="pill">${escapeHtml(allIds.length)} unique rules</span>
-          <span class="pill">${escapeHtml(generated?.counts?.rules ?? 0)} generated</span>
-          <span class="pill">${escapeHtml(effective?.counts?.rules ?? 0)} effective</span>
-          <span class="pill">${escapeHtml(sameCount)} same</span>
-          <span class="pill">${escapeHtml(changedCount)} changed/missing</span>
-          <span class="pill">${escapeHtml(payload?.subrules?.count ?? 0)} subrules</span>
-          <span class="pill">${escapeHtml(payload?.subrules?.promotedCount ?? 0)} subrules promoted</span>
-          <span class="pill">generated: ${escapeHtml(generated?.path || "")}</span>
-          <span class="pill">effective: ${escapeHtml(effective?.path || "")}</span>
-          <span class="pill">subrules: ${escapeHtml(payload?.subrules?.candidatePath || payload?.subrules?.path || "")}</span>
-        </div>
-        <div class="comparison">
-          ${rows.length ? rows.map(row => renderComparisonRow(row.id, row.generatedRule, row.effectiveRule)).join("") : `<div class="empty">No rules match this filter.</div>`}
-        </div>`;
-    }
-
     function render() {
       if (!payload) return;
-      const query = searchEl.value.trim().toLowerCase();
-      const mode = catalogFilterEl.value;
+      document.body.classList.toggle("debug", debugMode);
+      compareToggleEl.setAttribute("aria-pressed", String(compareMode));
+      debugToggleEl.setAttribute("aria-pressed", String(debugMode));
       renderRun(payload.run || {}, payload.workflowAnalysisRoot, payload.pipelineRunPath);
-      contentEl.innerHTML = (payload.catalogs || []).length
-        ? renderComparison(query, mode)
-        : `<div class="empty">No rule catalogs found.</div>`;
+      const categorized = categorizedRules();
+      const uncategorized = uncategorizedRule();
+      const sections = [
+        renderSection("Categorized Rules", "Rules currently present in the effective model catalog.", categorized),
+        uncategorized ? renderSection("Needs Categorization", "Mined subrule candidates whose parent rule is still a broad generated bucket.", [uncategorized], { needsCategorization: true }) : ""
+      ].join("");
+      contentEl.innerHTML = sections || `<div class="empty">No rule catalogs found.</div>`;
     }
 
     async function loadRules() {
@@ -877,8 +734,14 @@
       }
     }
 
-    searchEl.addEventListener("input", render);
-    catalogFilterEl.addEventListener("change", render);
+    compareToggleEl.addEventListener("click", () => {
+      compareMode = !compareMode;
+      render();
+    });
+    debugToggleEl.addEventListener("click", () => {
+      debugMode = !debugMode;
+      render();
+    });
     refreshEl.addEventListener("click", loadRules);
     loadRules();
   </script>
