@@ -124,7 +124,7 @@
     }
 
     .canvas-wrap {
-      height: 720px;
+      height: 760px;
       overflow: hidden;
       background:
         linear-gradient(#f0f4fa 1px, transparent 1px),
@@ -198,11 +198,52 @@
       font-size: 11px;
     }
 
+    .node .nested-graph {
+      opacity: 0;
+      transition: opacity 160ms ease;
+      pointer-events: none;
+    }
+
+    .node.show-nested .nested-graph {
+      opacity: 1;
+    }
+
+    .nested-title {
+      fill: var(--muted);
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .nested-node rect {
+      fill: #fff;
+      stroke: #cbd5e1;
+      stroke-width: 1;
+      filter: none;
+    }
+
+    .nested-node text {
+      fill: var(--text);
+      font-size: 9px;
+    }
+
+    .nested-edge {
+      fill: none;
+      stroke: var(--subrule);
+      stroke-width: 1.6;
+      marker-end: url(#arrow-nested);
+    }
+
     .node.is-selected rect,
     .node:hover rect {
       stroke: var(--accent);
       stroke-width: 2.5;
       cursor: grab;
+    }
+
+    .node.is-pinned rect {
+      stroke: var(--warn);
+      stroke-width: 2.25;
     }
 
     .pill-row {
@@ -286,6 +327,7 @@
       <button id="filter-all" type="button" aria-pressed="true">All Edges</button>
       <button id="filter-rules" type="button" aria-pressed="false">Rules Only</button>
       <button id="filter-subrules" type="button" aria-pressed="false">Subrules Only</button>
+      <button id="zoom-nested" type="button">Zoom Node Detail</button>
       <button id="fit" type="button">Fit</button>
       <button id="reset" type="button">Reset</button>
     </div>
@@ -295,7 +337,7 @@
         <div class="graph-head">
           <div>
             <h2>Stack Planning Model</h2>
-            <p class="subhead">Drag nodes. Scroll or pinch to zoom. Click a node or edge for details.</p>
+            <p class="subhead">Drag nodes to pin them. Double-click a node to release it. Zoom into rule nodes to reveal their nested subrule graph.</p>
           </div>
           <div class="legend">
             <span><i class="swatch" style="background: var(--rule)"></i>rule</span>
@@ -317,12 +359,12 @@
 
   <script>
     const stages = [
-      { id: "evidence", label: "Evidence", x: 120 },
-      { id: "foundation", label: "Foundation", x: 330 },
-      { id: "compatibility", label: "Compatibility", x: 540 },
-      { id: "behavior", label: "Behavior", x: 750 },
-      { id: "verification", label: "Verification", x: 960 },
-      { id: "cleanup", label: "Cleanup", x: 1170 }
+      { id: "evidence", label: "Evidence", x: 150 },
+      { id: "foundation", label: "Foundation", x: 430 },
+      { id: "compatibility", label: "Compatibility", x: 710 },
+      { id: "behavior", label: "Behavior", x: 990 },
+      { id: "verification", label: "Verification", x: 1270 },
+      { id: "cleanup", label: "Cleanup", x: 1550 }
     ];
 
     const nodes = [
@@ -340,7 +382,20 @@
         stage: "foundation",
         kind: "rule-anchor",
         plainEnglish: "Create the supporting structure before relying on it. Examples: config reader, schema, adapter, wrapper, or typed data model.",
-        promptMeaning: "Ask the AI to split prerequisite infrastructure into an earlier PR before behavior PRs consume it."
+        promptMeaning: "Ask the AI to split prerequisite infrastructure into an earlier PR before behavior PRs consume it.",
+        nestedGraph: {
+          title: "Nested subrules",
+          nodes: [
+            { id: "config-reader", label: "config reader", x: 0, y: 0 },
+            { id: "config-behavior", label: "config behavior", x: 112, y: 0 },
+            { id: "schema-types", label: "schema/types", x: 0, y: 28 },
+            { id: "feature-behavior", label: "feature behavior", x: 112, y: 28 }
+          ],
+          edges: [
+            { source: "config-reader", target: "config-behavior" },
+            { source: "schema-types", target: "feature-behavior" }
+          ]
+        }
       },
       {
         id: "compatibility",
@@ -348,7 +403,20 @@
         stage: "compatibility",
         kind: "rule-anchor",
         plainEnglish: "Protect existing callers, stored data, command behavior, API shape, repository identity, or migration path before exposing new behavior.",
-        promptMeaning: "Ask the AI to include a compatibility/migration PR before the PR that turns on or depends on the behavior."
+        promptMeaning: "Ask the AI to include a compatibility/migration PR before the PR that turns on or depends on the behavior.",
+        nestedGraph: {
+          title: "Nested subrules",
+          nodes: [
+            { id: "api-contract", label: "API contract", x: 0, y: 0 },
+            { id: "feature-behavior", label: "feature behavior", x: 112, y: 0 },
+            { id: "migration-path", label: "migration path", x: 0, y: 28 },
+            { id: "exposure", label: "exposure", x: 112, y: 28 }
+          ],
+          edges: [
+            { source: "api-contract", target: "feature-behavior" },
+            { source: "migration-path", target: "exposure" }
+          ]
+        }
       },
       {
         id: "behavior",
@@ -469,13 +537,13 @@
 
     const graphEl = document.getElementById("graph");
     const detailEl = document.getElementById("detail");
-    const wrapEl = document.getElementById("canvas-wrap");
-    const width = 1320;
-    const height = 900;
-    const nodeWidth = 190;
-    const nodeHeight = 64;
+    const width = 1760;
+    const height = 980;
+    const nodeWidth = 240;
+    const nodeHeight = 132;
     let activeFilter = "all";
     let selected = null;
+    let currentZoom = 1;
 
     const svg = d3.select(graphEl)
       .attr("viewBox", [0, 0, width, height])
@@ -495,6 +563,17 @@
         .attr("d", "M0,-5L12,0L0,5")
         .attr("fill", edgeColor(kind));
     }
+    defs.append("marker")
+      .attr("id", "arrow-nested")
+      .attr("viewBox", "0 -4 9 8")
+      .attr("refX", 8)
+      .attr("refY", 0)
+      .attr("markerWidth", 6)
+      .attr("markerHeight", 6)
+      .attr("orient", "auto")
+      .append("path")
+      .attr("d", "M0,-4L9,0L0,4")
+      .attr("fill", "#0f9f6e");
 
     const viewport = svg.append("g");
     const stageLayer = viewport.append("g");
@@ -503,7 +582,11 @@
 
     const zoom = d3.zoom()
       .scaleExtent([0.35, 1.8])
-      .on("zoom", event => viewport.attr("transform", event.transform));
+      .on("zoom", event => {
+        currentZoom = event.transform.k;
+        viewport.attr("transform", event.transform);
+        render();
+      });
     svg.call(zoom);
 
     function edgeColor(kind) {
@@ -549,13 +632,13 @@
       stageLayer.selectAll("g").data(stages, stage => stage.id).join(enter => {
         const group = enter.append("g").attr("class", "stage-band");
         group.append("rect")
-          .attr("x", stage => stage.x - 120)
+          .attr("x", stage => stage.x - 140)
           .attr("y", 24)
-          .attr("width", 240)
+          .attr("width", 280)
           .attr("height", height - 56)
           .attr("rx", 10);
         group.append("text")
-          .attr("x", stage => stage.x - 94)
+          .attr("x", stage => stage.x - 112)
           .attr("y", 52)
           .text(stage => `${stage.label} ->`);
         return group;
@@ -598,6 +681,7 @@
                 .on("start", dragStarted)
                 .on("drag", dragged)
                 .on("end", dragEnded))
+              .on("dblclick", (event, node) => releaseNode(event, node))
               .on("click", (_event, node) => selectNode(node));
             group.append("rect")
               .attr("x", -nodeWidth / 2)
@@ -606,13 +690,18 @@
               .attr("height", nodeHeight);
             group.append("text")
               .attr("x", -nodeWidth / 2 + 12)
-              .attr("y", -9)
+              .attr("y", -32)
               .text(node => node.label);
             group.append("text")
               .attr("class", "meta")
               .attr("x", -nodeWidth / 2 + 12)
-              .attr("y", 12)
-              .text(node => node.kind.replace("-", " "));
+              .attr("y", -13)
+              .text(node => node.nestedGraph ? "rule node with nested subrules" : node.kind.replace("-", " "));
+            group.append("g")
+              .attr("class", "nested-graph")
+              .each(function(node) {
+                renderNestedGraph(d3.select(this), node);
+              });
             group.append("title").text(node => node.plainEnglish);
             return group;
           },
@@ -622,7 +711,43 @@
 
       nodeGroups
         .attr("transform", node => `translate(${node.x},${node.y})`)
-        .classed("is-selected", node => selected?.type === "node" && selected.id === node.id);
+        .classed("is-selected", node => selected?.type === "node" && selected.id === node.id)
+        .classed("is-pinned", node => node.fx != null || node.fy != null)
+        .classed("show-nested", node => Boolean(node.nestedGraph) && (currentZoom >= 1.22 || selected?.id === node.id));
+    }
+
+    function renderNestedGraph(group, node) {
+      const nested = node.nestedGraph;
+      if (!nested) return;
+      const nestedNodes = new Map(nested.nodes.map(item => [item.id, item]));
+      group.attr("transform", `translate(${-nodeWidth / 2 + 13}, 2)`);
+      group.append("text")
+        .attr("class", "nested-title")
+        .attr("x", 0)
+        .attr("y", 5)
+        .text(nested.title);
+      group.selectAll("path")
+        .data(nested.edges)
+        .join("path")
+        .attr("class", "nested-edge")
+        .attr("d", edge => {
+          const source = nestedNodes.get(edge.source);
+          const target = nestedNodes.get(edge.target);
+          return `M${source.x + 82},${source.y + 20} C${source.x + 98},${source.y + 20} ${target.x - 12},${target.y + 20} ${target.x},${target.y + 20}`;
+        });
+      const mini = group.selectAll("g.nested-node")
+        .data(nested.nodes)
+        .join("g")
+        .attr("class", "nested-node")
+        .attr("transform", item => `translate(${item.x},${item.y + 10})`);
+      mini.append("rect")
+        .attr("width", 90)
+        .attr("height", 20)
+        .attr("rx", 5);
+      mini.append("text")
+        .attr("x", 7)
+        .attr("y", 14)
+        .text(item => item.label);
     }
 
     function selectNode(node) {
@@ -638,6 +763,7 @@
           <h3>What the AI should hear</h3>
           <div class="prompt-box">${escapeHtml(node.promptMeaning)}</div>
         </div>
+        ${node.nestedGraph ? `<div class="detail-section"><h3>Nested subrule graph</h3><p class="detail-copy">Zoom into this node to see the subrules rendered inside it.</p></div>` : ""}
       `;
       render();
     }
@@ -681,14 +807,15 @@
       const count = ySlots.get(node.stage) || 0;
       ySlots.set(node.stage, count + 1);
       node.x = stageX(node.stage);
-      node.y = 150 + count * 125;
+      node.y = 210 + count * 190;
     }
 
     const simulation = d3.forceSimulation(nodes)
-      .force("x", d3.forceX(node => stageX(node.stage)).strength(0.22))
-      .force("y", d3.forceY(height / 2).strength(0.04))
-      .force("collide", d3.forceCollide(78).strength(0.9))
-      .force("link", d3.forceLink(edges).id(node => node.id).distance(250).strength(0.08))
+      .force("charge", d3.forceManyBody().strength(-520).distanceMin(140).distanceMax(650))
+      .force("x", d3.forceX(node => stageX(node.stage)).strength(0.1))
+      .force("y", d3.forceY(height / 2).strength(0.025))
+      .force("collide", d3.forceCollide(160).strength(1))
+      .force("link", d3.forceLink(edges).id(node => node.id).distance(360).strength(0.035))
       .on("tick", render);
 
     function dragStarted(event, node) {
@@ -704,8 +831,17 @@
 
     function dragEnded(event, node) {
       if (!event.active) simulation.alphaTarget(0);
+      node.fx = event.x;
+      node.fy = event.y;
+      render();
+    }
+
+    function releaseNode(event, node) {
+      event.stopPropagation();
       node.fx = null;
       node.fy = null;
+      simulation.alpha(0.45).restart();
+      render();
     }
 
     function setFilter(next) {
@@ -720,8 +856,19 @@
     }
 
     function fitGraph() {
-      const transform = d3.zoomIdentity.translate(20, 18).scale(0.95);
+      const transform = d3.zoomIdentity.translate(18, 24).scale(0.67);
       svg.transition().duration(350).call(zoom.transform, transform);
+    }
+
+    function zoomNestedNode() {
+      const node = nodesById.get("foundation");
+      const scale = 1.55;
+      const transform = d3.zoomIdentity
+        .translate(width / 2 - node.x * scale, height / 2 - node.y * scale)
+        .scale(scale);
+      selected = { type: "node", id: node.id };
+      selectNode(node);
+      svg.call(zoom.transform, transform);
     }
 
     function resetGraph() {
@@ -731,6 +878,7 @@
     document.getElementById("filter-all").addEventListener("click", () => setFilter("all"));
     document.getElementById("filter-rules").addEventListener("click", () => setFilter("rules"));
     document.getElementById("filter-subrules").addEventListener("click", () => setFilter("subrules"));
+    document.getElementById("zoom-nested").addEventListener("click", zoomNestedNode);
     document.getElementById("fit").addEventListener("click", fitGraph);
     document.getElementById("reset").addEventListener("click", resetGraph);
 
