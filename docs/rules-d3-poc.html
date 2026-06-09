@@ -364,7 +364,7 @@
         <div class="graph-head">
           <div>
             <h2>Stack Planning Model</h2>
-            <p class="subhead">Drag nodes to pin them. Double-click a node to release it. Zoom into rule nodes to reveal their nested subrule graph.</p>
+            <p class="subhead">Drag nodes to pin them. Double-click to release. Zoom into rule nodes to reveal and spread their nested subrule graph.</p>
           </div>
           <div class="legend">
             <span><i class="swatch" style="background: var(--rule)"></i>rule</span>
@@ -760,7 +760,7 @@
     const nodeLayer = viewport.append("g");
 
     const zoom = d3.zoom()
-      .scaleExtent([0.35, 1.8])
+      .scaleExtent([0.35, 3.2])
       .on("zoom", event => {
         currentZoom = event.transform.k;
         viewport.attr("transform", event.transform);
@@ -795,12 +795,34 @@
     function edgePath(edge) {
       const source = nodesById.get(edge.source.id || edge.source);
       const target = nodesById.get(edge.target.id || edge.target);
-      const sx = source.x + nodeWidth / 2 + 8;
+      const sx = source.x + nodeBoxWidth(source) / 2 + 8;
       const sy = source.y;
-      const tx = target.x - nodeWidth / 2 - 12;
+      const tx = target.x - nodeBoxWidth(target) / 2 - 12;
       const ty = target.y;
       const bend = Math.max(90, Math.abs(tx - sx) * 0.45);
       return `M${sx},${sy} C${sx + bend},${sy} ${tx - bend},${ty} ${tx},${ty}`;
+    }
+
+    function nestedIsVisible(node) {
+      return Boolean(node.nestedGraph) && (currentZoom >= 1.22 || selected?.id === node.id || selected?.parentId === node.id);
+    }
+
+    function nestedIsFocused(node) {
+      return Boolean(node.nestedGraph) && (selected?.id === node.id || selected?.parentId === node.id);
+    }
+
+    function nestedExpansion(node) {
+      if (!nestedIsVisible(node)) return 1;
+      if (!nestedIsFocused(node)) return 1.12;
+      return Math.min(2.35, 1 + Math.max(0, currentZoom - 1.18) * 1.05);
+    }
+
+    function nodeBoxWidth(node) {
+      return nodeWidth + (nestedExpansion(node) - 1) * 220;
+    }
+
+    function nodeBoxHeight(node) {
+      return nodeHeight + (nestedExpansion(node) - 1) * 80;
     }
 
     function render() {
@@ -863,17 +885,17 @@
               .on("dblclick", (event, node) => releaseNode(event, node))
               .on("click", (_event, node) => selectNode(node));
             group.append("rect")
-              .attr("x", -nodeWidth / 2)
-              .attr("y", -nodeHeight / 2)
-              .attr("width", nodeWidth)
-              .attr("height", nodeHeight);
+              .attr("x", node => -nodeBoxWidth(node) / 2)
+              .attr("y", node => -nodeBoxHeight(node) / 2)
+              .attr("width", node => nodeBoxWidth(node))
+              .attr("height", node => nodeBoxHeight(node));
             group.append("text")
-              .attr("x", -nodeWidth / 2 + 12)
+              .attr("x", node => -nodeBoxWidth(node) / 2 + 12)
               .attr("y", -32)
               .text(node => node.label);
             group.append("text")
               .attr("class", "meta")
-              .attr("x", -nodeWidth / 2 + 12)
+              .attr("x", node => -nodeBoxWidth(node) / 2 + 12)
               .attr("y", -13)
               .text(node => node.nestedGraph ? "rule node with nested subrules" : node.kind.replace("-", " "));
             group.append("g")
@@ -892,26 +914,50 @@
         .attr("transform", node => `translate(${node.x},${node.y})`)
         .classed("is-selected", node => selected?.type === "node" && selected.id === node.id || selected?.parentId === node.id)
         .classed("is-pinned", node => node.fx != null || node.fy != null)
-        .classed("show-nested", node => Boolean(node.nestedGraph) && (currentZoom >= 1.22 || selected?.id === node.id || selected?.parentId === node.id));
+        .classed("show-nested", node => nestedIsVisible(node));
+
+      nodeGroups.select("rect")
+        .attr("x", node => -nodeBoxWidth(node) / 2)
+        .attr("y", node => -nodeBoxHeight(node) / 2)
+        .attr("width", node => nodeBoxWidth(node))
+        .attr("height", node => nodeBoxHeight(node));
+
+      nodeGroups.select("text:not(.meta)")
+        .attr("x", node => -nodeBoxWidth(node) / 2 + 12);
+
+      nodeGroups.select("text.meta")
+        .attr("x", node => -nodeBoxWidth(node) / 2 + 12);
 
       nodeGroups.each(function(parent) {
+        renderNestedGraph(d3.select(this).select(".nested-graph"), parent);
         updateNestedSelection(d3.select(this), parent);
       });
+
+      nodeGroups
+        .filter(node => selected?.type === "node" && selected.id === node.id || selected?.parentId === node.id)
+        .raise();
     }
 
     function renderNestedGraph(group, node) {
       const nested = node.nestedGraph;
       if (!nested) return;
       const nestedNodes = new Map(nested.nodes.map(item => [item.id, item]));
-      group.attr("transform", `translate(${-nodeWidth / 2 + 13}, 2)`);
-      group.append("text")
+      const expansion = nestedExpansion(node);
+      const nestedPoint = item => ({
+        x: item.x * expansion,
+        y: item.y * expansion
+      });
+      group.attr("transform", `translate(${-nodeBoxWidth(node) / 2 + 13}, 2)`);
+      group.selectAll("text.nested-title")
+        .data([nested])
+        .join("text")
         .attr("class", "nested-title")
         .attr("x", 0)
         .attr("y", 5)
-        .text(nested.title);
+        .text(() => `${nested.title} - zoom ${expansion.toFixed(1)}x spacing`);
       const edgePath = edge => {
-        const source = nestedNodes.get(edge.source);
-        const target = nestedNodes.get(edge.target);
+        const source = nestedPoint(nestedNodes.get(edge.source));
+        const target = nestedPoint(nestedNodes.get(edge.target));
         return `M${source.x + nestedNodeWidth},${source.y + 20} C${source.x + nestedNodeWidth + 12},${source.y + 20} ${target.x - 12},${target.y + 20} ${target.x},${target.y + 20}`;
       };
       group.selectAll("path.nested-edge-hit")
@@ -925,7 +971,7 @@
           selectNestedEdge(node, edge);
         });
       group.selectAll("path.nested-edge")
-        .data(nested.edges)
+        .data(nested.edges, edge => edge.id)
         .join("path")
         .attr("class", "nested-edge")
         .attr("d", edgePath)
@@ -935,23 +981,34 @@
           selectNestedEdge(node, edge);
         });
       const mini = group.selectAll("g.nested-node")
-        .data(nested.nodes)
-        .join("g")
-        .attr("class", "nested-node")
-        .attr("transform", item => `translate(${item.x},${item.y + 10})`)
-        .on("pointerdown", event => event.stopPropagation())
-        .on("click", (event, item) => {
-          event.stopPropagation();
-          selectNestedNode(node, item);
+        .data(nested.nodes, item => item.id)
+        .join(
+          enter => {
+            const itemGroup = enter.append("g")
+              .attr("class", "nested-node")
+              .on("pointerdown", event => event.stopPropagation())
+              .on("click", (event, item) => {
+                event.stopPropagation();
+                selectNestedNode(node, item);
+              });
+            itemGroup.append("rect")
+              .attr("width", nestedNodeWidth)
+              .attr("height", nestedNodeHeight)
+              .attr("rx", 5);
+            itemGroup.append("text")
+              .attr("x", 7)
+              .attr("y", 14);
+            return itemGroup;
+          },
+          update => update,
+          exit => exit.remove()
+        );
+      mini
+        .attr("transform", item => {
+          const point = nestedPoint(item);
+          return `translate(${point.x},${point.y + 10})`;
         });
-      mini.append("rect")
-        .attr("width", nestedNodeWidth)
-        .attr("height", nestedNodeHeight)
-        .attr("rx", 5);
-      mini.append("text")
-        .attr("x", 7)
-        .attr("y", 14)
-        .text(item => item.label);
+      mini.select("text").text(item => item.label);
     }
 
     function updateNestedSelection(group, parent) {
@@ -1129,7 +1186,7 @@
 
     function zoomNestedNode() {
       const node = nodesById.get("foundation");
-      const scale = 1.55;
+      const scale = 2.15;
       const transform = d3.zoomIdentity
         .translate(width / 2 - node.x * scale, height / 2 - node.y * scale)
         .scale(scale);
