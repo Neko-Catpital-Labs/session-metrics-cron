@@ -25,7 +25,19 @@ while IFS= read -r old_pid; do
   if [[ -n "$old_pid" ]]; then
     kill "$old_pid" >/dev/null 2>&1 || true
   fi
-done < <(pgrep -f "scripts/splitter_metric_tree_app.py" || true)
+done < <(pgrep -f "[s]plitter_metric_tree_app.py" || true)
+
+for _ in {1..40}; do
+  if ! pgrep -f "[s]plitter_metric_tree_app.py" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.25
+done
+
+if pgrep -f "[s]plitter_metric_tree_app.py" >/dev/null 2>&1; then
+  pkill -9 -f "[s]plitter_metric_tree_app.py" >/dev/null 2>&1 || true
+  sleep 0.25
+fi
 
 cd "$REPO_DIR"
 nohup bash scripts/run-splitter-metric-tree-app.sh >>"$LOG_FILE" 2>&1 &
