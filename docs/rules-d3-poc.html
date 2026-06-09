@@ -397,7 +397,8 @@
       { id: "compatibility", label: "Compatibility", x: 710, width: 280, left: 570, right: 850 },
       { id: "behavior", label: "Behavior", x: 990, width: 280, left: 850, right: 1130 },
       { id: "verification", label: "Verification", x: 1270, width: 280, left: 1130, right: 1410 },
-      { id: "cleanup", label: "Cleanup", x: 1550, width: 280, left: 1410, right: 1690 }
+      { id: "cleanup", label: "Cleanup", x: 1550, width: 280, left: 1410, right: 1690 },
+      { id: "diagnostics", label: "Diagnostics", x: 1830, width: 280, left: 1690, right: 1970 }
     ];
 
     let nodes = [
@@ -807,9 +808,177 @@
       return Math.max(0, stages.findIndex(stage => stage.id === stageId));
     }
 
-    function stageFromLabel(label) {
+    const RULE_DEFINITIONS = {
+      "evidence-before-change": {
+        title: "Evidence before change",
+        stage: "evidence",
+        plainEnglish: "Capture the current behavior, failure, or reproduction before changing implementation.",
+        promptMeaning: "Plan an evidence-gathering PR before any behavior-changing PR."
+      },
+      "foundation-before-behavior": {
+        title: "Foundation before behavior",
+        stage: "foundation",
+        plainEnglish: "Create prerequisite structure before later PRs depend on it for behavior.",
+        promptMeaning: "Plan schema, reader, wrapper, adapter, or other foundation work before behavior work."
+      },
+      "compatibility-before-exposure": {
+        title: "Compatibility before exposure",
+        stage: "compatibility",
+        plainEnglish: "Preserve compatibility contracts before exposing or migrating behavior.",
+        promptMeaning: "Plan compatibility, migration, API, data, or command-contract protection before behavior exposure."
+      },
+      "behavior-before-cleanup": {
+        title: "Behavior before cleanup",
+        stage: "behavior",
+        plainEnglish: "Land the replacement behavior before removing old paths.",
+        promptMeaning: "Plan behavior migration before cleanup or deletion PRs."
+      },
+      "activate-one-surface-at-a-time": {
+        title: "Activate one surface at a time",
+        stage: "compatibility",
+        plainEnglish: "Migrate command or API surfaces independently so each activation can be reviewed and verified.",
+        promptMeaning: "Plan separate PRs for each command, API, or user-facing surface instead of bundling them."
+      },
+      "terminal-verification-after-implementation": {
+        title: "Terminal verification after implementation",
+        stage: "verification",
+        plainEnglish: "Run final verification after the implementation exists so proof matches the finished behavior.",
+        promptMeaning: "Plan terminal or end-to-end verification after implementation PRs."
+      },
+      "uncategorized-subrules": {
+        title: "Uncategorized subrules",
+        stage: "diagnostics",
+        plainEnglish: "Show mined subrule candidates whose parent rule is not present in the active catalog.",
+        promptMeaning: "Use this as diagnostic model data, not as a normal workflow-planning rule."
+      }
+    };
+
+    const ROLE_DEFINITIONS = {
+      "action:capture-evidence": {
+        title: "Capture evidence",
+        stage: "evidence",
+        plainEnglish: "Gather proof of the current behavior, failure, reproduction, or baseline.",
+        promptMeaning: "Ask for a PR that captures evidence before code changes."
+      },
+      "tag:foundation": {
+        title: "Foundation",
+        stage: "foundation",
+        plainEnglish: "Prerequisite structure that later PRs depend on, such as schemas, readers, wrappers, adapters, or shared models.",
+        promptMeaning: "Ask for enabling structure before behavior consumes it."
+      },
+      "tag:behavior": {
+        title: "Behavior",
+        stage: "behavior",
+        plainEnglish: "The implementation PR that changes product, workflow, command, API, or user-visible behavior.",
+        promptMeaning: "Ask for behavior work after prerequisite evidence, foundation, or compatibility PRs."
+      },
+      "action:keep-compatibility-contract": {
+        title: "Keep compatibility contract",
+        stage: "compatibility",
+        plainEnglish: "Protect existing callers, stored data, command behavior, API shape, or repository identity while behavior changes.",
+        promptMeaning: "Ask for compatibility protection before exposing migrated behavior."
+      },
+      "tag:command-migration": {
+        title: "Command migration",
+        stage: "compatibility",
+        plainEnglish: "Move one command or command surface without mixing unrelated surfaces into the same PR.",
+        promptMeaning: "Ask for one migrated command surface per PR."
+      },
+      "tag:implementation": {
+        title: "Implementation",
+        stage: "behavior",
+        plainEnglish: "The code change that implements the intended behavior after prerequisites are ready.",
+        promptMeaning: "Ask for implementation before terminal verification."
+      },
+      "action:run-terminal-verification": {
+        title: "Run terminal verification",
+        stage: "verification",
+        plainEnglish: "Run final checks against the completed implementation.",
+        promptMeaning: "Ask for terminal or end-to-end verification after implementation PRs."
+      },
+      "action:remove-migrated-cleanup-paths": {
+        title: "Remove migrated cleanup paths",
+        stage: "cleanup",
+        plainEnglish: "Delete or simplify old paths after replacement behavior has landed.",
+        promptMeaning: "Ask for cleanup only after the behavior migration is complete."
+      },
+      "unmapped mined parent rules": {
+        title: "Unmapped mined parent rules",
+        stage: "diagnostics",
+        plainEnglish: "Mined subrule candidates whose parent rule id is not in the current generated or effective catalog.",
+        promptMeaning: "Treat this as diagnostic learning output, not a normal planning step."
+      },
+      "candidate subrules": {
+        title: "Candidate subrules",
+        stage: "diagnostics",
+        plainEnglish: "Potential subrules produced by mining that have not been promoted into active planning rules.",
+        promptMeaning: "Use these for model review and investigation before promotion."
+      },
+      "compatibility": {
+        title: "Compatibility",
+        stage: "compatibility",
+        plainEnglish: "Work that preserves compatibility with existing contracts, callers, data, or commands.",
+        promptMeaning: "Ask for compatibility work before behavior exposure."
+      },
+      "release": {
+        title: "Release",
+        stage: "cleanup",
+        plainEnglish: "Release, branch, or backport handling that happens after the relevant change is ready.",
+        promptMeaning: "Ask for release handling after the change it packages or propagates."
+      },
+      "behavior/feature-behavior": {
+        title: "Feature behavior",
+        stage: "behavior",
+        plainEnglish: "Main feature or workflow behavior implemented by the stack.",
+        promptMeaning: "Ask for feature behavior after prerequisite work."
+      },
+      "behavior/config-behavior": {
+        title: "Config behavior",
+        stage: "behavior",
+        plainEnglish: "Behavior controlled by configuration, settings, or repository state.",
+        promptMeaning: "Ask for config-driven behavior after config reading and validation."
+      },
+      "cleanup/legacy-cleanup": {
+        title: "Legacy cleanup",
+        stage: "cleanup",
+        plainEnglish: "Remove old code paths after replacement behavior is present.",
+        promptMeaning: "Ask for cleanup after behavior and verification."
+      },
+      "refactor": {
+        title: "Refactor",
+        stage: "foundation",
+        plainEnglish: "Restructure code to make a later behavior change easier or safer.",
+        promptMeaning: "Ask for refactoring before the behavior that relies on it."
+      },
+      "security": {
+        title: "Security",
+        stage: "compatibility",
+        plainEnglish: "Security-sensitive compatibility or safety work that should be isolated from broad behavior changes.",
+        promptMeaning: "Ask for security-sensitive work in a focused PR."
+      },
+      "backport": {
+        title: "Backport",
+        stage: "cleanup",
+        plainEnglish: "Apply an already-made change onto a release or maintenance branch.",
+        promptMeaning: "Ask for backport work after the source change is understood."
+      },
+      "docs/docs-update": {
+        title: "Docs update",
+        stage: "cleanup",
+        plainEnglish: "Update documentation after the behavior or interface being documented is known.",
+        promptMeaning: "Ask for docs updates after the relevant behavior or contract change."
+      }
+    };
+
+    function definitionForLabel(label) {
+      const value = String(label || "");
+      return ROLE_DEFINITIONS[value] || RULE_DEFINITIONS[value] || null;
+    }
+
+    function keywordStageForLabel(label) {
       const value = String(label || "").toLowerCase();
-      if (value.includes("evidence") || value.includes("repro") || value.includes("diagnostic")) return "evidence";
+      if (value.includes("diagnostic") || value.includes("unmapped") || value.includes("candidate subrule")) return "diagnostics";
+      if (value.includes("evidence") || value.includes("repro")) return "evidence";
       if (value.includes("foundation") || value.includes("schema") || value.includes("config") || value.includes("adapter")) return "foundation";
       if (value.includes("compat") || value.includes("migration") || value.includes("api") || value.includes("contract")) return "compatibility";
       if (value.includes("verify") || value.includes("test") || value.includes("validation")) return "verification";
@@ -817,15 +986,21 @@
       return "behavior";
     }
 
-    function midpointStage(beforeLabels, afterLabels) {
-      const labels = [...(beforeLabels || []), ...(afterLabels || [])];
-      if (!labels.length) return "behavior";
-      const average = labels.reduce((sum, label) => sum + stageIndex(stageFromLabel(label)), 0) / labels.length;
-      return stages[Math.max(0, Math.min(stages.length - 1, Math.round(average)))]?.id || "behavior";
+    function stageForRoleLabel(label) {
+      return definitionForLabel(label)?.stage || keywordStageForLabel(label);
+    }
+
+    function stageFromLabel(label) {
+      return stageForRoleLabel(label);
+    }
+
+    function stageForRule(rule) {
+      return RULE_DEFINITIONS[rule.id]?.stage || stageForRoleLabel(rule.before?.[0] || rule.after?.[0] || "");
     }
 
     function labelTitle(label) {
       return String(label || "")
+        .replace(/^action:/, "")
         .replace(/^tag:/, "")
         .split("/")
         .map(part => part.split("-").filter(Boolean).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" "))
@@ -833,11 +1008,13 @@
     }
 
     function graphLabel(label) {
-      return labelTitle(label);
+      return definitionForLabel(label)?.title || labelTitle(label);
     }
 
     function labelDescription(label) {
       const value = String(label || "");
+      const definition = definitionForLabel(value);
+      if (definition) return definition.plainEnglish;
       const descriptions = {
         "uncategorized-subrules": "Subrule candidates whose mined parent rule is not present in the generated or effective rule catalog.",
         "foundation/config-reader": "Add the configuration reader or lookup layer before behavior depends on it.",
@@ -853,6 +1030,10 @@
       if (descriptions[value]) return descriptions[value];
       if (!value) return "";
       return `${labelTitle(value)} is a learned role label mined from PR stack examples.`;
+    }
+
+    function promptMeaningForLabel(label) {
+      return definitionForLabel(label)?.promptMeaning || `Planner role label: ${label}`;
     }
 
     function productionCatalog(payload) {
@@ -943,10 +1124,10 @@
           id,
           label: graphLabel(label),
           fullLabel: label,
-          stage: stageFromLabel(label),
+          stage: stageForRoleLabel(label),
           kind: "task",
           plainEnglish: labelDescription(label),
-          promptMeaning: `Planner role label: ${label}`
+          promptMeaning: promptMeaningForLabel(label)
         });
       }
 
@@ -967,7 +1148,7 @@
             x: 0,
             y: lane * 34,
             plainEnglish: labelDescription(label),
-            promptMeaning: `Subrule role label: ${label}`
+            promptMeaning: promptMeaningForLabel(label)
           };
           nestedNodes.set(label, item);
           return item;
@@ -1000,14 +1181,16 @@
       for (const rule of catalog.rules || []) {
         const before = rule.before || [];
         const after = rule.after || [];
+        const ruleDefinition = RULE_DEFINITIONS[rule.id] || {};
         const ruleNode = ensureNode({
           id: `rule:${rule.id}`,
           label: graphLabel(rule.id),
           fullLabel: rule.id,
-          stage: midpointStage(before, after),
+          stage: stageForRule(rule),
           kind: "rule-anchor",
-          plainEnglish: rule.reason || rule.reasonId || "Generated planning rule.",
+          plainEnglish: ruleDefinition.plainEnglish || rule.reason || rule.reasonId || "Generated planning rule.",
           promptMeaning: [
+            ruleDefinition.promptMeaning || "",
             `Relation: ${rule.relation || "rule"}`,
             rule.triggerThreshold ? `Trigger threshold: ${rule.triggerThreshold}` : "",
             rule.triggerTerms?.length ? `Trigger terms: ${rule.triggerTerms.map(term => term.text).filter(Boolean).join(", ")}` : ""
@@ -1532,6 +1715,8 @@
 
       nodeGroups
         .attr("transform", node => `translate(${node.x},${node.y})`)
+        .attr("data-stage", node => node.stage)
+        .attr("data-label", node => node.fullLabel || node.label)
         .classed("is-selected", node => selected?.type === "node" && selected.id === node.id || selected?.parentId === node.id)
         .classed("is-pinned", node => node.fx != null || node.fy != null)
         .classed("show-nested", node => nestedIsVisible(node));
