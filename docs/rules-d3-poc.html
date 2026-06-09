@@ -839,6 +839,87 @@
       return nodeHeight + (nestedExpansion(node) - 1) * 150;
     }
 
+    function nodeCollisionRadius(node) {
+      return Math.hypot(nodeBoxWidth(node), nodeBoxHeight(node)) / 2 + 18;
+    }
+
+    function nestedCollisionRadius() {
+      return Math.hypot(nestedNodeWidth, nestedNodeHeight) / 2 + 16;
+    }
+
+    function rectOverlap(a, b) {
+      const overlapX = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+      const overlapY = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+      return { x: overlapX, y: overlapY, overlapping: overlapX > 0 && overlapY > 0 };
+    }
+
+    function outerRect(node, x = node.x, y = node.y, margin = 14) {
+      const halfWidth = nodeBoxWidth(node) / 2 + margin;
+      const halfHeight = nodeBoxHeight(node) / 2 + margin;
+      return {
+        left: x - halfWidth,
+        right: x + halfWidth,
+        top: y - halfHeight,
+        bottom: y + halfHeight
+      };
+    }
+
+    function resolveOuterDragPoint(node, x, y) {
+      const point = { x, y };
+      for (let iteration = 0; iteration < 8; iteration += 1) {
+        let moved = false;
+        for (const other of nodes) {
+          if (other.id === node.id) continue;
+          const overlap = rectOverlap(outerRect(node, point.x, point.y), outerRect(other));
+          if (!overlap.overlapping) continue;
+          moved = true;
+          if (overlap.x < overlap.y) {
+            const direction = point.x >= other.x ? 1 : -1;
+            point.x += direction * (overlap.x + 1);
+          } else {
+            const direction = point.y >= other.y ? 1 : -1;
+            point.y += direction * (overlap.y + 1);
+          }
+        }
+        if (!moved) break;
+      }
+      return point;
+    }
+
+    function nestedDragRect(item, x = item.x, y = item.y, margin = 10) {
+      return {
+        left: x - margin,
+        right: x + nestedNodeWidth + margin,
+        top: y - margin,
+        bottom: y + nestedNodeHeight + margin
+      };
+    }
+
+    function resolveNestedDragPoint(parent, item, x, y) {
+      const point = clampNestedPoint(parent, x, y);
+      for (let iteration = 0; iteration < 8; iteration += 1) {
+        let moved = false;
+        for (const other of parent.nestedGraph.nodes) {
+          if (other.id === item.id) continue;
+          const overlap = rectOverlap(nestedDragRect(item, point.x, point.y), nestedDragRect(other));
+          if (!overlap.overlapping) continue;
+          moved = true;
+          if (overlap.x < overlap.y) {
+            const direction = point.x + nestedNodeWidth / 2 >= other.x + nestedNodeWidth / 2 ? 1 : -1;
+            point.x += direction * (overlap.x + 1);
+          } else {
+            const direction = point.y + nestedNodeHeight / 2 >= other.y + nestedNodeHeight / 2 ? 1 : -1;
+            point.y += direction * (overlap.y + 1);
+          }
+          const clamped = clampNestedPoint(parent, point.x, point.y);
+          point.x = clamped.x;
+          point.y = clamped.y;
+        }
+        if (!moved) break;
+      }
+      return point;
+    }
+
     function nestedLayout(parent) {
       return {
         left: 0,
@@ -880,7 +961,7 @@
         }))).id(item => item.id).distance(() => 92 * nestedExpansion(parent)).strength(0.32))
         .force("x", d3.forceX(item => nestedTargetX(parent, item)).strength(0.18))
         .force("y", d3.forceY(item => nestedTargetY(parent, item)).strength(0.2))
-        .force("collide", d3.forceCollide(38).strength(0.9))
+        .force("collide", d3.forceCollide(nestedCollisionRadius()).strength(1))
         .on("tick", () => {
           containNestedNodes(parent);
           render();
@@ -925,12 +1006,12 @@
     }
 
     function containNestedNodes(parent) {
-      const layout = nestedLayout(parent);
       for (const item of parent.nestedGraph.nodes) {
         const point = clampNestedPoint(parent, item.x, item.y);
         item.x = point.x;
         item.y = point.y;
       }
+      resolveNestedCollisions(parent);
     }
 
     function clampNestedPoint(parent, x, y) {
@@ -941,7 +1022,60 @@
       };
     }
 
+    function resolveNestedCollisions(parent) {
+      const items = parent.nestedGraph.nodes;
+      for (let iteration = 0; iteration < 6; iteration += 1) {
+        let moved = false;
+        for (let index = 0; index < items.length; index += 1) {
+          for (let otherIndex = index + 1; otherIndex < items.length; otherIndex += 1) {
+            const a = items[index];
+            const b = items[otherIndex];
+            const overlap = rectOverlap(nestedDragRect(a), nestedDragRect(b));
+            if (!overlap.overlapping) continue;
+            moved = true;
+            const aPinned = a.fx != null || a.fy != null;
+            const bPinned = b.fx != null || b.fy != null;
+            const pushX = overlap.x + 1;
+            const pushY = overlap.y + 1;
+            if (overlap.x < overlap.y) {
+              const direction = a.x + nestedNodeWidth / 2 <= b.x + nestedNodeWidth / 2 ? -1 : 1;
+              separateNestedPair(parent, a, b, "x", direction * pushX, aPinned, bPinned);
+            } else {
+              const direction = a.y + nestedNodeHeight / 2 <= b.y + nestedNodeHeight / 2 ? -1 : 1;
+              separateNestedPair(parent, a, b, "y", direction * pushY, aPinned, bPinned);
+            }
+          }
+        }
+        for (const item of items) {
+          const point = clampNestedPoint(parent, item.x, item.y);
+          item.x = point.x;
+          item.y = point.y;
+          if (item.fx != null) item.fx = item.x;
+          if (item.fy != null) item.fy = item.y;
+        }
+        if (!moved) break;
+      }
+    }
+
+    function separateNestedPair(parent, a, b, axis, amount, aPinned, bPinned) {
+      if (aPinned && bPinned) {
+        b[axis] -= amount;
+        return;
+      }
+      if (aPinned) {
+        b[axis] -= amount;
+        return;
+      }
+      if (bPinned) {
+        a[axis] += amount;
+        return;
+      }
+      a[axis] += amount / 2;
+      b[axis] -= amount / 2;
+    }
+
     function render() {
+      updateOuterCollision();
       const edgeList = visibleEdges();
       const nodeIds = visibleNodeIds(edgeList);
       const visibleNodes = nodes.filter(node => nodeIds.has(node.id));
@@ -1164,7 +1298,7 @@
       event.sourceEvent.stopPropagation();
       const sim = ensureNestedSimulation(parent);
       if (!event.active) sim.alphaTarget(0.24).restart();
-      const point = nestedPointer(event, parent, groupNode);
+      const point = nestedPointer(event, item, parent, groupNode);
       item.fx = point.x;
       item.fy = point.y;
       selectNestedNode(parent, item);
@@ -1172,11 +1306,12 @@
 
     function nestedDragged(event, item, parent, groupNode) {
       event.sourceEvent.stopPropagation();
-      const point = nestedPointer(event, parent, groupNode);
+      const point = nestedPointer(event, item, parent, groupNode);
       item.fx = point.x;
       item.fy = point.y;
       item.x = point.x;
       item.y = point.y;
+      resolveNestedCollisions(parent);
       render();
     }
 
@@ -1197,9 +1332,9 @@
       selectNestedNode(parent, item);
     }
 
-    function nestedPointer(event, parent, groupNode) {
+    function nestedPointer(event, item, parent, groupNode) {
       const [x, y] = d3.pointer(event.sourceEvent, groupNode);
-      return clampNestedPoint(parent, x, y);
+      return resolveNestedDragPoint(parent, item, x, y);
     }
 
     function stopNestedPointer(event) {
@@ -1334,9 +1469,14 @@
       .force("charge", d3.forceManyBody().strength(-520).distanceMin(140).distanceMax(650))
       .force("x", d3.forceX(node => stageX(node.stage)).strength(0.1))
       .force("y", d3.forceY(height / 2).strength(0.025))
-      .force("collide", d3.forceCollide(160).strength(1))
+      .force("collide", d3.forceCollide(node => nodeCollisionRadius(node)).strength(1).iterations(3))
       .force("link", d3.forceLink(edges).id(node => node.id).distance(360).strength(0.035))
       .on("tick", render);
+
+    function updateOuterCollision() {
+      const collide = simulation.force("collide");
+      if (collide) collide.radius(node => nodeCollisionRadius(node));
+    }
 
     function dragStarted(event, node) {
       if (!event.active) simulation.alphaTarget(0.25).restart();
@@ -1345,14 +1485,21 @@
     }
 
     function dragged(event, node) {
-      node.fx = event.x;
-      node.fy = event.y;
+      const point = resolveOuterDragPoint(node, event.x, event.y);
+      node.fx = point.x;
+      node.fy = point.y;
+      node.x = point.x;
+      node.y = point.y;
+      render();
     }
 
     function dragEnded(event, node) {
       if (!event.active) simulation.alphaTarget(0);
-      node.fx = event.x;
-      node.fy = event.y;
+      const point = resolveOuterDragPoint(node, event.x, event.y);
+      node.fx = point.x;
+      node.fy = point.y;
+      node.x = point.x;
+      node.y = point.y;
       render();
     }
 
