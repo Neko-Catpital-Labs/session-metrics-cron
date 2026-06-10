@@ -450,23 +450,34 @@
     let graph = fallbackGraph;
     let selected = null;
 
+    const roleDefinitions = {
+      "tag:foundation": ["foundation", "Prerequisite structure other actions depend on."],
+      "tag:behavior": ["behavior", "The user-visible or functional behavior change."],
+      "tag:implementation": ["implementation", "The concrete implementation work."],
+      "tag:command-migration": ["command migration", "A command-facing migration that should be split by surface."],
+      "action:capture-evidence": ["evidence", "Capture reproduction, baseline, or failure evidence."],
+      "action:keep-compatibility-contract": ["compatibility", "Preserve API, command, data, or caller compatibility."],
+      "action:run-terminal-verification": ["verification", "Run final checks after implementation."],
+      "action:remove-migrated-cleanup-paths": ["cleanup", "Remove old paths after replacement behavior lands."],
+      "compatibility": ["compatibility", "Work that preserves compatibility with existing contracts, callers, data, or commands."],
+      "release": ["release", "Release, branch, or backport handling after the change is ready."],
+      "behavior/feature-behavior": ["behavior", "Concrete feature or workflow behavior mined from stack examples."],
+      "behavior/config-behavior": ["behavior", "Behavior controlled by configuration, settings, or repository state."],
+      "cleanup/legacy-cleanup": ["cleanup", "Removal of old code paths after replacement behavior is present."],
+      "refactor": ["foundation", "Code restructuring that makes later behavior easier or safer."],
+      "security": ["compatibility", "Security-sensitive compatibility or safety work."],
+      "backport": ["release", "Apply an already-made change onto a release or maintenance branch."],
+      "docs/docs-update": ["docs", "Documentation update for the relevant behavior or interface."]
+    };
+
     function roleDefinition(label) {
-      const definitions = {
-        "tag:foundation": ["foundation", "Prerequisite structure other actions depend on."],
-        "tag:behavior": ["behavior", "The user-visible or functional behavior change."],
-        "tag:implementation": ["implementation", "The concrete implementation work."],
-        "tag:command-migration": ["command migration", "A command-facing migration that should be split by surface."],
-        "action:capture-evidence": ["evidence", "Capture reproduction, baseline, or failure evidence."],
-        "action:keep-compatibility-contract": ["compatibility", "Preserve API, command, data, or caller compatibility."],
-        "action:run-terminal-verification": ["verification", "Run final checks after implementation."],
-        "action:remove-migrated-cleanup-paths": ["cleanup", "Remove old paths after replacement behavior lands."]
-      };
-      return definitions[label] || [label.replace(/^tag:/, "").replace(/^action:/, ""), ""];
+      return roleDefinitions[label] || [label.replace(/^tag:/, "").replace(/^action:/, ""), ""];
     }
 
-    function actionForRuleItem(item, role, rule) {
+    function actionForRuleItem(item, role, rule, options = {}) {
       const [tag, description] = roleDefinition(item);
-      const id = `${role}:${item}`;
+      const idPrefix = options.scope || role;
+      const id = `${idPrefix}:${item}`;
       const titles = {
         "action:capture-evidence": "Capture evidence",
         "action:keep-compatibility-contract": "Keep compatibility contract",
@@ -482,16 +493,20 @@
         title: titles[item] || titleCase(item),
         tags: [tag].filter(Boolean),
         task: taskForTag(tag),
-        description: description || `${titleCase(item)} action inferred from ${rule.id}.`,
-        prompt: `Inferred from ${rule.id}: ${role} side of ${rule.relation || "rule"}.`,
-        sourceItem: item
+        description: options.description || description || `${titleCase(item)} action inferred from ${rule.id}.`,
+        prompt: options.prompt || `Inferred from ${rule.id}: ${role} side of ${rule.relation || "rule"}.`,
+        sourceItem: item,
+        examples: options.examples || [],
+        support: options.support,
+        confidence: options.confidence
       };
     }
 
     function taskForTag(tag) {
       if (tag === "evidence" || tag === "foundation") return "prepare";
-      if (tag === "compatibility" || tag === "command migration") return "protect";
+      if (tag === "compatibility" || tag === "command migration" || tag === "security") return "protect";
       if (tag === "verification" || tag === "cleanup") return "verify-clean";
+      if (tag === "release" || tag === "docs") return "verify-clean";
       return "implement";
     }
 
@@ -513,10 +528,55 @@
       const policies = [];
       const diagnostics = [];
 
-      function ensureAction(item, role, rule) {
-        const candidate = actionForRuleItem(item, role, rule);
+      function ensureAction(item, role, rule, options = {}) {
+        const candidate = actionForRuleItem(item, role, rule, options);
         if (!actions.has(candidate.id)) actions.set(candidate.id, candidate);
         return actions.get(candidate.id);
+      }
+
+      function addRuleEdge(rule, source, target, options = {}) {
+        rules.push({
+          id: options.id || `${rule.id}:${source.id}->${target.id}`,
+          source: source.id,
+          target: target.id,
+          title: options.title || titleCase(rule.id),
+          description: options.description || rule.reason || `${source.title} should precede ${target.title}.`,
+          support: options.support,
+          confidence: options.confidence,
+          raw: options.raw || rule
+        });
+      }
+
+      function addSubruleEdges(rule) {
+        for (const subrule of rule.subrules || []) {
+          if (!subrule.before || !subrule.after) continue;
+          const source = ensureAction(subrule.before, "subrule-before", rule, {
+            scope: `subrule-before:${rule.id}`,
+            description: `${titleCase(subrule.before)} was mined as a concrete predecessor inside ${titleCase(rule.id)}.`,
+            prompt: `Mined subrule: plan ${subrule.before} before ${subrule.after}.`,
+            examples: subrule.examples || [],
+            support: subrule.support,
+            confidence: subrule.confidence
+          });
+          const target = ensureAction(subrule.after, "subrule-after", rule, {
+            scope: `subrule-after:${rule.id}`,
+            description: `${titleCase(subrule.after)} was mined as a concrete successor inside ${titleCase(rule.id)}.`,
+            prompt: `Mined subrule: plan ${subrule.before} before ${subrule.after}.`,
+            examples: subrule.examples || [],
+            support: subrule.support,
+            confidence: subrule.confidence
+          });
+          addRuleEdge(rule, source, target, {
+            id: subrule.id || subrule.candidateId || `${rule.id}:${subrule.before}->${subrule.after}`,
+            title: `${titleCase(subrule.before)} before ${titleCase(subrule.after)}`,
+            description: subrule.rejectedReason
+              ? `Mined candidate (${subrule.decision || "candidate"}): ${subrule.rejectedReason}.`
+              : `${titleCase(subrule.before)} should precede ${titleCase(subrule.after)}.`,
+            support: subrule.support,
+            confidence: subrule.confidence,
+            raw: subrule
+          });
+        }
       }
 
       for (const rule of catalog.rules || []) {
@@ -529,6 +589,7 @@
             description: "Mined candidates whose parent rule is not active in the generated/effective catalog.",
             count: (rule.subrules || []).length
           });
+          addSubruleEdges(rule);
           continue;
         }
         if (rule.relation === "one_surface_sequence" || !after.length) {
@@ -544,16 +605,10 @@
           const source = ensureAction(beforeItem, "before", rule);
           for (const afterItem of after) {
             const target = ensureAction(afterItem, "after", rule);
-            rules.push({
-              id: `${rule.id}:${source.id}->${target.id}`,
-              source: source.id,
-              target: target.id,
-              title: titleCase(rule.id),
-              description: rule.reason || `${source.title} should precede ${target.title}.`,
-              raw: rule
-            });
+            addRuleEdge(rule, source, target);
           }
         }
+        addSubruleEdges(rule);
       }
 
       positionActions(Array.from(actions.values()));
@@ -687,10 +742,12 @@
         <div class="detail-title">${escapeHtml(action.title)}</div>
         <p class="detail-copy">${escapeHtml(action.description)}</p>
         <div class="pill-row">${action.tags.map(tag => `<span class="pill">${escapeHtml(tag)}</span>`).join("")}</div>
+        ${metricPills(action)}
         <div class="detail-section">
           <h3>Prompt meaning</h3>
           <div class="prompt-box">${escapeHtml(action.prompt)}</div>
         </div>
+        ${examplesBlock(action.examples)}
       `;
       render();
     }
@@ -703,6 +760,30 @@
         <div class="pill-row">
           <span class="pill">rule edge</span>
           <span class="pill">${escapeHtml(rule.source)} -> ${escapeHtml(rule.target)}</span>
+        </div>
+        ${metricPills(rule)}
+        ${examplesBlock((rule.raw || {}).examples || [])}
+      `;
+    }
+
+    function metricPills(item) {
+      const pills = [];
+      if (item.support != null) pills.push(`<span class="pill">support ${escapeHtml(item.support)}</span>`);
+      if (item.confidence != null) pills.push(`<span class="pill">confidence ${escapeHtml(item.confidence)}</span>`);
+      return pills.length ? `<div class="pill-row">${pills.join("")}</div>` : "";
+    }
+
+    function examplesBlock(examples) {
+      if (!examples || !examples.length) return "";
+      const links = examples.slice(0, 4).map(example => {
+        const label = `${example.repo || "repo"} #${example.fromPr || "?"} -> #${example.toPr || "?"}`;
+        const href = example.fromUrl || example.toUrl || example.fromCommitUrl || example.toCommitUrl || "#";
+        return `<a class="nav-link" href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`;
+      }).join("");
+      return `
+        <div class="detail-section">
+          <h3>Examples</h3>
+          <div class="pill-row">${links}</div>
         </div>
       `;
     }
