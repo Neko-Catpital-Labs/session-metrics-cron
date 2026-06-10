@@ -818,6 +818,14 @@ def load_subrule_artifacts(workflow_analysis_root: Path, pipeline_run: dict[str,
     }
 
 
+def load_learning_artifact(workflow_analysis_root: Path, pipeline_run: dict[str, Any], key: str) -> dict[str, Any]:
+    path = artifact_path(workflow_analysis_root, pipeline_run, key)
+    payload = read_json_file(path) if path and path.exists() else {}
+    if payload:
+        payload = {**payload, "path": str(path)}
+    return payload
+
+
 def normalize_rule_catalog(
     catalog: dict[str, Any],
     *,
@@ -952,6 +960,8 @@ def rules_response(workflow_analysis_root: Path) -> dict[str, Any]:
     pipeline_run = read_json_file(pipeline_path)
     catalogs = []
     subrule_artifacts = load_subrule_artifacts(workflow_analysis_root, pipeline_run, pipeline_path)
+    role_catalog = load_learning_artifact(workflow_analysis_root, pipeline_run, "roleCatalog")
+    planning_dag = load_learning_artifact(workflow_analysis_root, pipeline_run, "planningDag")
     grouped_subrules = subrule_artifacts.get("byParent") or {}
     generated_path = artifact_path(workflow_analysis_root, pipeline_run, "generatedRuleCatalog")
     if generated_path and generated_path.exists():
@@ -991,6 +1001,8 @@ def rules_response(workflow_analysis_root: Path) -> dict[str, Any]:
             "rulePromotion": (pipeline_run.get("replaySummary") or {}).get("rulePromotion") or {},
         },
         "catalogs": catalogs,
+        "roleCatalog": role_catalog,
+        "planningDag": planning_dag,
         "subrules": {key: value for key, value in subrule_artifacts.items() if key != "byParent"},
     }
 

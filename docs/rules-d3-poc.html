@@ -1131,6 +1131,54 @@
         || { rules: [], kind: "empty", title: "No rules" };
     }
 
+    function graphFromPlanningDag(payload) {
+      const dag = payload.planningDag || {};
+      const dagNodes = dag.nodes || [];
+      const dagEdges = dag.edges || [];
+      if (!dagNodes.length || !dagEdges.length) return null;
+      const graphNodes = dagNodes.map(node => ({
+        id: node.id,
+        label: node.title || graphLabel(node.id),
+        fullLabel: node.id,
+        stage: stageFromLabel(`${node.title || ""} ${(node.matchTerms || []).join(" ")}`),
+        kind: "task",
+        plainEnglish: node.description || "Learned planning node from PR stack clusters.",
+        promptMeaning: [
+          node.description || "",
+          `Support: ${node.support || 0}`,
+          `Repo support: ${node.repoSupport || 0}`,
+          `Confidence: ${node.confidence ?? ""}`,
+          node.matchTerms?.length ? `Match terms: ${node.matchTerms.join(", ")}` : ""
+        ].filter(Boolean).join("\n"),
+        raw: node
+      }));
+      const graphEdges = dagEdges.map(edge => ({
+        id: edge.id,
+        source: edge.before,
+        target: edge.after,
+        kind: "rule",
+        label: `${graphLabel(edge.before)} -> ${graphLabel(edge.after)}`,
+        plainEnglish: "Learned planning rule edge from observed PR-stack precedence.",
+        prompt: [
+          `Plan ${edge.before} before ${edge.after}.`,
+          `Support: ${edge.support || 0}`,
+          `Repo support: ${edge.repoSupport || 0}`,
+          `Confidence: ${edge.confidence ?? ""}`,
+          `Contradictions: ${edge.contradictions || 0}`
+        ].join("\n"),
+        raw: edge
+      }));
+      return {
+        nodes: graphNodes,
+        edges: graphEdges,
+        catalog: { kind: "planningDag", title: "Learned planning DAG" },
+        run: payload.run || {},
+        workflowAnalysisRoot: payload.workflowAnalysisRoot || "",
+        planningDag: dag,
+        roleCatalog: payload.roleCatalog || {}
+      };
+    }
+
     function layoutSubruleGraph(nestedNodes, nestedEdges) {
       const nodeList = Array.from(nestedNodes.values());
       const incoming = new Map(nodeList.map(node => [node.id, []]));
@@ -1196,6 +1244,8 @@
     }
 
     function graphFromRulesPayload(payload) {
+      const planningGraph = graphFromPlanningDag(payload);
+      if (planningGraph) return planningGraph;
       const catalog = productionCatalog(payload);
       const nodeMap = new Map();
       const graphEdges = [];
@@ -2235,6 +2285,7 @@
           <h3>Prompt instruction</h3>
           <div class="prompt-box">${escapeHtml(edge.prompt)}</div>
         </div>
+        ${renderDagEdgeEvidence(edge)}
         <div class="detail-section">
           <h3>Metadata</h3>
           <dl class="kv">
@@ -2245,6 +2296,21 @@
         </div>
       `;
       render();
+    }
+
+    function renderDagEdgeEvidence(edge) {
+      const raw = edge.raw || {};
+      if (raw.support == null && raw.confidence == null && !(raw.examples || []).length) return "";
+      return `<div class="detail-section">
+        <h3>Rule evidence</h3>
+        <div class="pill-row">
+          <span class="pill">support ${formatNumber(raw.support, 0)}</span>
+          <span class="pill">repos ${formatNumber(raw.repoSupport, 0)}</span>
+          <span class="pill">confidence ${formatNumber(raw.confidence, 3)}</span>
+          <span class="pill">contradictions ${formatNumber(raw.contradictions, 0)}</span>
+        </div>
+        ${renderExamples(raw.examples)}
+      </div>`;
     }
 
     function selectNestedNode(parent, item) {

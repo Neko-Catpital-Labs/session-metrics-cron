@@ -632,6 +632,10 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("function releaseNode", html)
         self.assertIn("function renderNestedGraph", html)
         self.assertIn("function graphFromRulesPayload", html)
+        self.assertIn("function graphFromPlanningDag", html)
+        self.assertIn("payload.planningDag", html)
+        self.assertIn("Learned planning DAG", html)
+        self.assertIn("function renderDagEdgeEvidence", html)
         self.assertIn("function loadProductionRules", html)
         self.assertIn("function replaceGraph", html)
         self.assertIn("function graphLabel", html)
@@ -694,6 +698,8 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("Keep compatibility contract", html)
         self.assertIn("Prompt instruction", html)
         self.assertIn("rules-d3-poc.html", app_source)
+        self.assertIn("\"roleCatalog\": role_catalog", app_source)
+        self.assertIn("\"planningDag\": planning_dag", app_source)
 
     def test_action_rule_graph_poc_route_redirects_to_nested_rule_graph(self) -> None:
         app_source = (REPO_ROOT / "scripts" / "splitter_metric_tree_app.py").read_text()
