@@ -690,6 +690,8 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("google-cloud-bigquery", launcher)
         self.assertIn("WORKFLOW_ANALYSIS_SERVICE_ROOT", launcher)
         self.assertIn("scripts/splitter_metric_tree_app.py", launcher)
+        self.assertIn("--rules-static-path docs/rules-d3-poc.html", launcher)
+        self.assertNotIn("--rules-static-path docs/splitter-rules.html", launcher)
         self.assertIn("pgrep -f \"[s]plitter_metric_tree_app.py\"", installer)
         self.assertIn("pkill -9 -f \"[s]plitter_metric_tree_app.py\"", installer)
         self.assertIn("/healthz", installer)

@@ -40,5 +40,5 @@ exec "$PYTHON" scripts/splitter_metric_tree_app.py \
   --host "$SPLITTER_TREE_HOST" \
   --port "$SPLITTER_TREE_PORT" \
   --static-path docs/splitter-metric-tree-mvp.html \
-  --rules-static-path docs/splitter-rules.html \
+  --rules-static-path docs/rules-d3-poc.html \
   --workflow-analysis-root "$WORKFLOW_ANALYSIS_ROOT"
