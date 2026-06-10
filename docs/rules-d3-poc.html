@@ -438,7 +438,7 @@
         <h1>Rule Graph</h1>
         <p class="subhead">Live production view of generated rules, subrules, role labels, and planning prompt metadata.</p>
       </div>
-      <a class="nav-link" href="/rules.html">Back to Rules</a>
+      <a class="nav-link" href="/">Metrics</a>
     </header>
 
     <div class="toolbar" aria-label="Graph controls">
@@ -1244,9 +1244,9 @@
     }
 
     function graphFromRulesPayload(payload) {
-      const planningGraph = graphFromPlanningDag(payload);
-      if (planningGraph) return planningGraph;
       const catalog = productionCatalog(payload);
+      const planningGraph = graphFromPlanningDag(payload);
+      if (!(catalog.rules || []).length && planningGraph) return planningGraph;
       const nodeMap = new Map();
       const graphEdges = [];
 
@@ -1366,7 +1366,9 @@
         edges: graphEdges,
         catalog,
         run: payload.run || {},
-        workflowAnalysisRoot: payload.workflowAnalysisRoot || ""
+        workflowAnalysisRoot: payload.workflowAnalysisRoot || "",
+        planningDag: payload.planningDag || {},
+        roleCatalog: payload.roleCatalog || {}
       };
     }
 

@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_STATIC_PATH = REPO_ROOT / "docs" / "splitter-metric-tree-mvp.html"
-DEFAULT_RULES_STATIC_PATH = REPO_ROOT / "docs" / "splitter-rules.html"
+DEFAULT_RULES_STATIC_PATH = REPO_ROOT / "docs" / "rules-d3-poc.html"
 DEFAULT_RULES_D3_POC_STATIC_PATH = REPO_ROOT / "docs" / "rules-d3-poc.html"
 DEFAULT_WORKFLOW_ANALYSIS_ROOT = Path(
     os.environ.get(
@@ -1149,8 +1149,8 @@ def make_handler(
                 "/healthz",
                 "/readyz",
             }:
-                if parsed.path == "/action-rule-graph-poc.html":
-                    self.send_redirect("/rules-d3-poc.html?demo=nested")
+                if parsed.path in {"/rules-d3-poc.html", "/action-rule-graph-poc.html"}:
+                    self.send_redirect("/rules.html")
                 else:
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Cache-Control", "no-store")
@@ -1167,10 +1167,11 @@ def make_handler(
                 self.send_static(rules_static_path)
                 return
             if parsed.path == "/rules-d3-poc.html":
-                self.send_static(rules_d3_poc_static_path)
+                suffix = f"?{parsed.query}" if parsed.query else ""
+                self.send_redirect(f"/rules.html{suffix}")
                 return
             if parsed.path == "/action-rule-graph-poc.html":
-                self.send_redirect("/rules-d3-poc.html?demo=nested")
+                self.send_redirect("/rules.html?demo=nested")
                 return
             if parsed.path == "/api/splitter-metric-tree":
                 self.send_metric_tree(parse_qs(parsed.query))
