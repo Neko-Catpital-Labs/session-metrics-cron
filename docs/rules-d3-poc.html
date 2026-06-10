@@ -123,6 +123,19 @@
       background: var(--rule);
     }
 
+    .node-swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 4px;
+      border: 1.5px solid #b8c7dc;
+      background: #fff;
+    }
+
+    .node-swatch.rule-node {
+      border-color: var(--rule);
+      background: #eef6ff;
+    }
+
     .canvas-wrap {
       height: 760px;
       overflow: hidden;
@@ -183,7 +196,12 @@
       filter: drop-shadow(0 2px 3px rgba(15, 23, 42, 0.08));
     }
 
-    .node.rule-anchor > rect { fill: #eef6ff; stroke: #8dbcf2; }
+    .node.rule-anchor > rect {
+      fill: #eef6ff;
+      stroke: var(--rule);
+      stroke-width: 2.25;
+    }
+
     .node.task > rect { fill: #fff; }
     .node.model-hint > rect { fill: #f8f5ff; stroke: #c4b5fd; stroke-dasharray: 5 4; }
 
@@ -193,9 +211,36 @@
       font-size: 12px;
     }
 
+    .node .label {
+      font-weight: 700;
+    }
+
     .node .meta {
       fill: var(--muted);
       font-size: 11px;
+    }
+
+    .kind-badge rect {
+      fill: #f8fafc;
+      stroke: #cbd5e1;
+      stroke-width: 1;
+    }
+
+    .kind-badge text {
+      fill: #475569;
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .node.rule-anchor .kind-badge rect {
+      fill: var(--rule);
+      stroke: var(--rule);
+    }
+
+    .node.rule-anchor .kind-badge text {
+      fill: #fff;
     }
 
     .node .nested-graph {
@@ -373,6 +418,8 @@
             <p class="subhead">Drag nodes to pin them. Double-click to release. Zoom into rule nodes to reveal nested force graphs; nested nodes also repel and drag.</p>
           </div>
           <div class="legend">
+            <span><i class="node-swatch"></i>task node</span>
+            <span><i class="node-swatch rule-node"></i>rule node</span>
             <span><i class="swatch" style="background: var(--rule)"></i>rule</span>
             <span><i class="swatch" style="background: var(--subrule)"></i>subrule</span>
             <span><i class="swatch" style="background: var(--candidate)"></i>candidate</span>
@@ -1323,6 +1370,22 @@
       return nodeHeight + (nestedExpansion(node) - 1) * 150;
     }
 
+    function nodeKindLabel(node) {
+      if (node.kind === "rule-anchor") return "RULE";
+      if (node.kind === "model-hint") return "HINT";
+      return "TASK";
+    }
+
+    function nodeKindDescription(node) {
+      if (node.kind === "rule-anchor") return "rule node";
+      if (node.kind === "model-hint") return "model hint";
+      return "task node";
+    }
+
+    function kindBadgeWidth(node) {
+      return nodeKindLabel(node).length * 7 + 20;
+    }
+
     function nodeCollisionRadius(node) {
       return Math.hypot(nodeBoxWidth(node), nodeBoxHeight(node)) / 2 + 18;
     }
@@ -1693,6 +1756,7 @@
               .attr("width", node => nodeBoxWidth(node))
               .attr("height", node => nodeBoxHeight(node));
             group.append("text")
+              .attr("class", "label")
               .attr("x", node => -nodeBoxWidth(node) / 2 + 12)
               .attr("y", node => nodeTitleY(node))
               .text(node => node.label);
@@ -1700,7 +1764,15 @@
               .attr("class", "meta")
               .attr("x", node => -nodeBoxWidth(node) / 2 + 12)
               .attr("y", node => nodeMetaY(node))
-              .text(node => node.nestedGraph ? "rule node with nested subrules" : node.kind.replace("-", " "));
+              .text(node => node.nestedGraph ? "contains nested subrules" : nodeKindDescription(node));
+            const badge = group.append("g")
+              .attr("class", "kind-badge");
+            badge.append("rect")
+              .attr("height", 22)
+              .attr("rx", 11);
+            badge.append("text")
+              .attr("x", 9)
+              .attr("y", 15);
             group.append("g")
               .attr("class", "nested-graph")
               .each(function(node) {
@@ -1727,14 +1799,25 @@
         .attr("width", node => nodeBoxWidth(node))
         .attr("height", node => nodeBoxHeight(node));
 
-      nodeGroups.select("text:not(.meta)")
+      nodeGroups.select("text.label")
         .attr("x", node => -nodeBoxWidth(node) / 2 + 12)
         .attr("y", node => nodeTitleY(node))
         .text(node => node.fullLabel ? graphLabel(node.fullLabel) : node.label);
 
       nodeGroups.select("text.meta")
         .attr("x", node => -nodeBoxWidth(node) / 2 + 12)
-        .attr("y", node => nodeMetaY(node));
+        .attr("y", node => nodeMetaY(node))
+        .text(node => node.nestedGraph ? "contains nested subrules" : nodeKindDescription(node));
+
+      nodeGroups.select("g.kind-badge")
+        .attr("transform", node => {
+          const width = kindBadgeWidth(node);
+          return `translate(${nodeBoxWidth(node) / 2 - width - 12}, ${-nodeBoxHeight(node) / 2 + 12})`;
+        });
+      nodeGroups.select("g.kind-badge rect")
+        .attr("width", node => kindBadgeWidth(node));
+      nodeGroups.select("g.kind-badge text")
+        .text(node => nodeKindLabel(node));
 
       nodeGroups.each(function(parent) {
         renderNestedGraph(d3.select(this).select(".nested-graph"), parent);
