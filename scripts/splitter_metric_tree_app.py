@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, urlparse
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_STATIC_PATH = REPO_ROOT / "docs" / "splitter-metric-tree-mvp.html"
 DEFAULT_RULES_STATIC_PATH = REPO_ROOT / "docs" / "rules-d3-poc.html"
+DEFAULT_STEPS_STATIC_PATH = REPO_ROOT / "docs" / "rules-steps.html"
 DEFAULT_RULES_D3_POC_STATIC_PATH = REPO_ROOT / "docs" / "rules-d3-poc.html"
 DEFAULT_WORKFLOW_ANALYSIS_ROOT = Path(
     os.environ.get(
@@ -145,6 +146,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bigquery-location", default=os.environ.get("SPLITTER_BIGQUERY_LOCATION", DEFAULT_BIGQUERY_LOCATION))
     parser.add_argument("--static-path", type=Path, default=DEFAULT_STATIC_PATH)
     parser.add_argument("--rules-static-path", type=Path, default=DEFAULT_RULES_STATIC_PATH)
+    parser.add_argument("--steps-static-path", type=Path, default=DEFAULT_STEPS_STATIC_PATH)
     parser.add_argument("--rules-d3-poc-static-path", type=Path, default=DEFAULT_RULES_D3_POC_STATIC_PATH)
     parser.add_argument("--workflow-analysis-root", type=Path, default=DEFAULT_WORKFLOW_ANALYSIS_ROOT)
     parser.add_argument("--cache-ttl-seconds", type=int, default=int(os.environ.get("SPLITTER_TREE_CACHE_TTL_SECONDS", str(DEFAULT_CACHE_TTL_SECONDS))))
@@ -699,15 +701,49 @@ def rule_item_label(item: dict[str, Any]) -> str:
     return f"{item_type}:{item_id}" if item_id else str(item_type)
 
 
+LEGACY_PHASE_TO_CHANGE_TYPE = {
+    "foundation": "foundation",
+    "change": "behavior",
+    "surface": "surface",
+    "verification": "verification",
+    "docs": "docs",
+    "cleanup": "cleanup",
+}
+CHANGE_TYPES = {
+    "foundation",
+    "behavior",
+    "surface",
+    "dependency",
+    "refactor",
+    "compatibility",
+    "docs",
+    "cleanup",
+    "verification",
+}
+
+
+def derive_change_type(parsed: dict[str, Any]) -> str:
+    """Single changeType from parsed tags: explicit change-type wins over legacy fields."""
+    explicit = str(parsed.get("changeType") or "")
+    if explicit in CHANGE_TYPES:
+        return explicit
+    task_kind = str(parsed.get("taskKind") or "")
+    if task_kind in CHANGE_TYPES:
+        return task_kind
+    return LEGACY_PHASE_TO_CHANGE_TYPE.get(str(parsed.get("phase") or ""), "")
+
+
 def canonical_tags(tag_list: list[Any] | None) -> dict[str, Any]:
-    """Parse action tags like task-kind:behavior into a canonical-label dict."""
+    """Parse action tags (change-type:behavior, plus legacy task-kind:/phase:) into a label dict."""
     parsed: dict[str, Any] = {"qualifiers": []}
     for tag in tag_list or []:
         text = str(tag)
         if ":" not in text:
             continue
         prefix, value = text.split(":", 1)
-        if prefix == "task-kind":
+        if prefix == "change-type":
+            parsed["changeType"] = value
+        elif prefix == "task-kind":
             parsed["taskKind"] = value
         elif prefix == "behavior-type":
             parsed["behaviorType"] = value
@@ -717,6 +753,7 @@ def canonical_tags(tag_list: list[Any] | None) -> dict[str, Any]:
             parsed["phase"] = value
         elif prefix == "qualifier":
             parsed["qualifiers"].append(value)
+    parsed["changeType"] = derive_change_type(parsed)
     return parsed
 
 
@@ -724,6 +761,58 @@ def dominant_task_key(task_keys: dict[str, Any] | None) -> str:
     if not task_keys:
         return ""
     return sorted(task_keys.items(), key=lambda item: (-int(item[1] or 0), item[0]))[0][0]
+
+
+def normalize_gate(action: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalize a step's verification gate to {state, raw}; None means no gate recorded."""
+    gate = action.get("gate") or action.get("verification")
+    if not gate:
+        return None
+    if not isinstance(gate, dict):
+        return {"state": "passed", "raw": gate}
+    state = str(gate.get("state") or gate.get("status") or "")
+    if not state:
+        if gate.get("hasTests") or gate.get("verifiedBy"):
+            state = "passed"
+        elif gate.get("passed") is True:
+            state = "passed"
+        elif gate.get("passed") is False:
+            state = "failed"
+        else:
+            state = "open"
+    return {"state": state, "raw": gate}
+
+
+def normalize_task_action(action: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **action,
+        "changeType": str(action.get("changeType") or "")
+        or LEGACY_PHASE_TO_CHANGE_TYPE.get(str(action.get("phase") or ""), ""),
+        "gate": normalize_gate(action),
+    }
+
+
+def task_change_type_mix(task: dict[str, Any]) -> dict[str, Any]:
+    mix = task.get("changeTypeMix")
+    if isinstance(mix, dict) and mix:
+        return mix
+    remapped: dict[str, Any] = {}
+    for phase, count in (task.get("phaseMix") or {}).items():
+        change_type = LEGACY_PHASE_TO_CHANGE_TYPE.get(str(phase), str(phase))
+        remapped[change_type] = remapped.get(change_type, 0) + count
+    return remapped
+
+
+def normalize_task(task: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **task,
+        "changeTypeMix": task_change_type_mix(task),
+        "actions": [
+            normalize_task_action(action)
+            for action in task.get("actions") or []
+            if isinstance(action, dict)
+        ],
+    }
 
 
 def action_index(catalog: dict[str, Any], role_catalog: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
@@ -758,10 +847,13 @@ def resolve_rule_item(item: dict[str, Any], actions_by_id: dict[str, dict[str, A
         action = actions_by_id.get(str(item.get("id") or ""))
         if action:
             metadata = action.get("metadata") or {}
+            tags = canonical_tags(action.get("tags"))
             resolved.update(
                 {
                     "title": action.get("title"),
-                    "tags": canonical_tags(action.get("tags")),
+                    "tags": tags,
+                    "changeType": tags.get("changeType")
+                    or str(metadata.get("changeType") or ""),
                     "taskKey": dominant_task_key(metadata.get("taskKeys")),
                     "phase": action.get("phase"),
                     "nodeId": metadata.get("nodeId"),
@@ -1090,7 +1182,11 @@ def rules_response(workflow_analysis_root: Path) -> dict[str, Any]:
     if not tasks_path or not tasks_path.exists():
         fallback = pipeline_path.parent / "corpus" / "tasks.jsonl"
         tasks_path = fallback if fallback.exists() else None
-    tasks = read_jsonl_file(tasks_path, limit=500) if tasks_path else []
+    tasks = (
+        [normalize_task(row) for row in read_jsonl_file(tasks_path, limit=500)]
+        if tasks_path
+        else []
+    )
     return {
         "workflowAnalysisRoot": str(workflow_analysis_root),
         "pipelineRunPath": str(pipeline_path),
@@ -1195,6 +1291,7 @@ def ready_response(
     *,
     static_path: Path,
     rules_static_path: Path,
+    steps_static_path: Path,
     workflow_analysis_root: Path,
     table: str,
     project_id: str,
@@ -1206,6 +1303,7 @@ def ready_response(
     checks = [
         check_result("static_page", static_path.exists(), path=str(static_path)),
         check_result("rules_page", rules_static_path.exists(), path=str(rules_static_path)),
+        check_result("steps_page", steps_static_path.exists(), path=str(steps_static_path)),
     ]
     try:
         checks.append(rules_artifacts_check(workflow_analysis_root))
@@ -1239,6 +1337,7 @@ def ready_response(
 def make_handler(
     static_path: Path,
     rules_static_path: Path,
+    steps_static_path: Path,
     rules_d3_poc_static_path: Path,
     workflow_analysis_root: Path,
     table: str,
@@ -1257,6 +1356,7 @@ def make_handler(
                 "/",
                 "/index.html",
                 "/rules.html",
+                "/steps.html",
                 "/rules-d3-poc.html",
                 "/action-rule-graph-poc.html",
                 "/healthz",
@@ -1279,6 +1379,9 @@ def make_handler(
             if parsed.path == "/rules.html":
                 self.send_static(rules_static_path)
                 return
+            if parsed.path == "/steps.html":
+                self.send_static(steps_static_path)
+                return
             if parsed.path == "/rules-d3-poc.html":
                 suffix = f"?{parsed.query}" if parsed.query else ""
                 self.send_redirect(f"/rules.html{suffix}")
@@ -1299,6 +1402,7 @@ def make_handler(
                 payload, status = ready_response(
                     static_path=static_path,
                     rules_static_path=rules_static_path,
+                    steps_static_path=steps_static_path,
                     workflow_analysis_root=workflow_analysis_root,
                     table=table,
                     project_id=project_id,
@@ -1385,6 +1489,7 @@ def main() -> int:
     handler = make_handler(
         args.static_path,
         args.rules_static_path,
+        args.steps_static_path,
         args.rules_d3_poc_static_path,
         args.workflow_analysis_root,
         args.table,

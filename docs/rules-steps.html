@@ -1,0 +1,1956 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Step Sequences</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --text: #111827;
+      --muted: #53627a;
+      --line: #d8e0ec;
+      --accent: #2563eb;
+      --rule: #2563eb;
+      --subrule: #0f9f6e;
+      --candidate: #8a5cf6;
+      --warn: #b45309;
+      --gate-pass: #0f9f6e;
+      --gate-fail: #dc2626;
+      --gate-open: #94a3b8;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    header, .toolbar, .graph-shell {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    h1, h2, h3, p { margin: 0; }
+
+    h1 { font-size: 24px; }
+
+    .subhead {
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    button, a.nav-link {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      color: var(--text);
+      min-height: 34px;
+      padding: 0 12px;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    button[aria-pressed="true"] {
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 650;
+    }
+
+    .toggle-control {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    .toggle-control input {
+      margin: 0;
+      accent-color: var(--accent);
+    }
+
+    .toolbar {
+      margin: 18px 0 12px;
+      justify-content: flex-start;
+      flex-wrap: wrap;
+    }
+
+    .graph-shell {
+      align-items: stretch;
+    }
+
+    .graph-panel, .detail-panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .graph-panel {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .detail-panel {
+      flex: 0 0 340px;
+      padding: 16px;
+    }
+
+    .graph-head {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .swatch {
+      width: 22px;
+      height: 3px;
+      border-radius: 999px;
+      background: var(--rule);
+    }
+
+    .node-swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 4px;
+      border: 1.5px solid #b8c7dc;
+      background: #fff;
+    }
+
+    .node-swatch.step-node {
+      border-color: var(--subrule);
+      background: #fff;
+    }
+
+    .order-strip {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line);
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .order-strip .pill { cursor: pointer; }
+
+    .order-strip .arrow { color: var(--muted); }
+
+    .order-strip .arrow.prior { color: var(--warn); }
+
+    .canvas-wrap {
+      height: 760px;
+      overflow: hidden;
+      background:
+        linear-gradient(#f0f4fa 1px, transparent 1px),
+        linear-gradient(90deg, #f0f4fa 1px, transparent 1px);
+      background-size: 24px 24px;
+      position: relative;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .column-band rect {
+      fill: rgba(37, 99, 235, 0.035);
+      stroke: #e5ebf5;
+    }
+
+    .column-band text {
+      fill: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .edge {
+      fill: none;
+      stroke-width: 2.5;
+      opacity: 0.9;
+    }
+
+    .edge.rule { stroke: var(--rule); }
+    .edge.subrule { stroke: var(--subrule); stroke-dasharray: 8 5; }
+    .edge.candidate { stroke: var(--candidate); stroke-dasharray: 3 5; }
+
+    .edge-hit {
+      fill: none;
+      stroke: transparent;
+      stroke-width: 22;
+      pointer-events: stroke;
+      cursor: pointer;
+    }
+
+    .edge.is-selected {
+      stroke-width: 4.5;
+      opacity: 1;
+    }
+
+    .node > rect {
+      fill: #fff;
+      stroke: #b8c7dc;
+      stroke-width: 1.5;
+      rx: 8;
+      filter: drop-shadow(0 2px 3px rgba(15, 23, 42, 0.08));
+    }
+
+    .node.action > rect { fill: #fff; stroke: #0f9f6e; stroke-width: 2; }
+    .node.task > rect { fill: #fff; }
+    .node.model-hint > rect { fill: #f8f5ff; stroke: #c4b5fd; stroke-dasharray: 5 4; }
+    .node.diagnostic > rect { fill: #faf8ff; stroke: var(--candidate); stroke-dasharray: 5 4; }
+
+    .pill.tag-chip {
+      background: #ecfdf5;
+      border-color: #6ee7b7;
+      color: #065f46;
+    }
+
+    .pill.tag-chip.muted {
+      background: #f1f5f9;
+      border-color: #cbd5e1;
+      color: #64748b;
+    }
+
+    .node text {
+      pointer-events: none;
+      fill: var(--text);
+      font-size: 12px;
+    }
+
+    .node .label {
+      font-weight: 700;
+    }
+
+    .node .meta {
+      fill: var(--muted);
+      font-size: 11px;
+    }
+
+    .kind-badge rect {
+      fill: #f8fafc;
+      stroke: #cbd5e1;
+      stroke-width: 1;
+    }
+
+    .kind-badge text {
+      fill: #475569;
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .gate-badge circle {
+      stroke-width: 2;
+      fill: #fff;
+    }
+
+    .gate-badge.passed circle { stroke: var(--gate-pass); fill: #ecfdf5; }
+    .gate-badge.failed circle { stroke: var(--gate-fail); fill: #fef2f2; }
+    .gate-badge.mixed circle { stroke: var(--warn); fill: #fffbeb; }
+    .gate-badge.open circle { stroke: var(--gate-open); fill: #fff; }
+
+    .gate-badge text {
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .gate-badge.passed text { fill: var(--gate-pass); }
+    .gate-badge.failed text { fill: var(--gate-fail); }
+    .gate-badge.mixed text { fill: var(--warn); }
+    .gate-badge.open text { fill: var(--gate-open); }
+
+    .node.is-selected > rect,
+    .node:hover > rect {
+      stroke: var(--accent);
+      stroke-width: 2.5;
+      cursor: grab;
+    }
+
+    .node.is-pinned > rect {
+      stroke: var(--warn);
+      stroke-width: 2.25;
+    }
+
+    .strip-wrap {
+      height: 760px;
+      overflow: auto;
+      padding: 14px 16px;
+      display: grid;
+      gap: 14px;
+      align-content: start;
+    }
+
+    .task-strip {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 10px 12px;
+    }
+
+    .task-strip-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: baseline;
+    }
+
+    .task-strip-title {
+      font-weight: 750;
+      overflow-wrap: anywhere;
+    }
+
+    .task-strip-meta {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .task-strip-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 10px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+
+    .step-card {
+      flex: 0 0 auto;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #f8fafc;
+      padding: 6px 10px;
+      max-width: 240px;
+      cursor: pointer;
+    }
+
+    .step-card:hover, .step-card.is-selected {
+      border-color: var(--accent);
+    }
+
+    .step-card.verification-step {
+      border-style: dashed;
+      border-color: var(--subrule);
+    }
+
+    .step-card .step-title {
+      font-size: 12px;
+      font-weight: 650;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 220px;
+    }
+
+    .step-card .step-meta {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .gate-glyph {
+      flex: 0 0 auto;
+      width: 20px;
+      height: 20px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 800;
+      border: 2px solid var(--gate-open);
+      color: var(--gate-open);
+      background: #fff;
+    }
+
+    .gate-glyph.passed { border-color: var(--gate-pass); color: var(--gate-pass); background: #ecfdf5; }
+    .gate-glyph.failed { border-color: var(--gate-fail); color: var(--gate-fail); background: #fef2f2; }
+    .gate-glyph.mixed { border-color: var(--warn); color: var(--warn); background: #fffbeb; }
+
+    .pill-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      padding: 3px 8px;
+      font-size: 12px;
+      background: #fff;
+    }
+
+    .detail-title {
+      font-size: 18px;
+      font-weight: 750;
+      overflow-wrap: anywhere;
+    }
+
+    .detail-copy {
+      margin-top: 8px;
+      color: var(--muted);
+    }
+
+    .detail-section {
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 110px 1fr;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .kv dt {
+      color: var(--muted);
+    }
+
+    .kv dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .prompt-box {
+      margin-top: 10px;
+      padding: 12px;
+      border-radius: 7px;
+      background: #0f172a;
+      color: #e5e7eb;
+      white-space: pre-wrap;
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .evidence-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .evidence-card {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 10px;
+      background: #f8fafc;
+    }
+
+    .evidence-title {
+      font-weight: 750;
+      overflow-wrap: anywhere;
+    }
+
+    .evidence-meta {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    .example-links {
+      display: grid;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .example-links a {
+      color: var(--accent);
+      text-decoration: none;
+      overflow-wrap: anywhere;
+    }
+
+    .example-links a:hover {
+      text-decoration: underline;
+    }
+
+    @media (max-width: 900px) {
+      main { padding: 16px; }
+      header, .graph-shell, .graph-head { display: block; }
+      .detail-panel { margin-top: 14px; }
+      .canvas-wrap, .strip-wrap { height: 620px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Step Sequences</h1>
+        <p class="subhead">Plan, implementation steps, and verification gates: tasks decompose into ordered change-type steps; each step invites a verify gate before the next.</p>
+      </div>
+      <div>
+        <a class="nav-link" href="/rules.html">Classic Graph</a>
+        <a class="nav-link" href="/">Metrics</a>
+      </div>
+    </header>
+
+    <div class="toolbar" aria-label="Graph controls">
+      <button id="view-tasks" type="button" aria-pressed="true">Task Sequences</button>
+      <button id="view-graph" type="button" aria-pressed="false">Step Graph</button>
+      <button id="filter-all" type="button" aria-pressed="true">All Edges</button>
+      <button id="filter-rules" type="button" aria-pressed="false">Rules Only</button>
+      <button id="filter-subrules" type="button" aria-pressed="false">Subrules Only</button>
+      <button id="fit" type="button">Fit</button>
+      <button id="reset" type="button">Reset</button>
+      <button id="show-leaderboard" type="button">Leaderboard</button>
+      <label class="toggle-control">
+        <input id="toggle-uncategorized" type="checkbox">
+        <span>Show uncategorized subrules</span>
+      </label>
+      <label class="toggle-control">
+        <input id="toggle-backoff" type="checkbox" checked>
+        <span>Show backoff priors</span>
+      </label>
+    </div>
+
+    <div class="graph-shell">
+      <section class="graph-panel">
+        <div class="graph-head">
+          <div>
+            <h2>Stack Planning Model</h2>
+            <p class="subhead">Steps flow left to right in learned order; every step shows its verification gate. Drag nodes to nudge them; double-click to release.</p>
+          </div>
+          <div class="legend">
+            <span><i class="node-swatch step-node"></i>step node</span>
+            <span><i class="node-swatch" style="border: 1.5px dashed #8a5cf6; background: #faf8ff;"></i>unplaced</span>
+            <span><i class="swatch" style="background: var(--rule)"></i>rule</span>
+            <span><i class="swatch" style="background: var(--subrule)"></i>subrule</span>
+            <span><i class="swatch" style="background: var(--candidate)"></i>candidate</span>
+            <span><i class="node-swatch" style="border-radius: 999px; border-color: var(--gate-pass); background: #ecfdf5;"></i>gate passed</span>
+            <span><i class="node-swatch" style="border-radius: 999px; border-color: var(--gate-open);"></i>gate open</span>
+          </div>
+        </div>
+        <div id="order-strip" class="order-strip" hidden></div>
+        <div id="task-strips" class="strip-wrap"></div>
+        <div id="canvas-wrap" class="canvas-wrap" hidden>
+          <svg id="graph" role="img" aria-label="Left-to-right step sequence graph with verification gates"></svg>
+        </div>
+      </section>
+
+      <aside id="detail" class="detail-panel" aria-live="polite">
+        <div class="detail-title">Select a step, gate, or edge</div>
+        <p class="detail-copy">Select an item to see its plain-English meaning, why the model uses it, and the exact prompt/hint payload that affects planning.</p>
+      </aside>
+    </div>
+  </main>
+
+  <script>
+    const CHANGE_TYPE_ORDER = [
+      "foundation",
+      "dependency",
+      "compatibility",
+      "refactor",
+      "behavior",
+      "surface",
+      "verification",
+      "docs",
+      "cleanup"
+    ];
+    const LEGACY_PHASE_TO_CHANGE_TYPE = {
+      foundation: "foundation",
+      change: "behavior",
+      surface: "surface",
+      verification: "verification",
+      docs: "docs",
+      cleanup: "cleanup"
+    };
+
+    function changeTypeForPhase(phase) {
+      return LEGACY_PHASE_TO_CHANGE_TYPE[String(phase || "")] || "";
+    }
+
+    function keywordChangeTypeForLabel(label) {
+      const value = String(label || "").toLowerCase();
+      if (value.includes("depend") || value.includes("bump") || value.includes("lockfile")) return "dependency";
+      if (value.includes("compat") || value.includes("migration") || value.includes("contract")) return "compatibility";
+      if (value.includes("refactor") || value.includes("restructure")) return "refactor";
+      if (value.includes("foundation") || value.includes("schema") || value.includes("config") || value.includes("adapter") || value.includes("evidence") || value.includes("repro")) return "foundation";
+      if (value.includes("verify") || value.includes("test") || value.includes("validation")) return "verification";
+      if (value.includes("cleanup") || value.includes("legacy") || value.includes("delete") || value.includes("remove")) return "cleanup";
+      if (value.includes("docs") || value.includes("documentation") || value.includes("readme")) return "docs";
+      if (value.includes("surface") || value.includes("cli") || value.includes("api")) return "surface";
+      return "behavior";
+    }
+
+    function changeTypeForNode(item) {
+      const tags = item.tags || {};
+      return item.changeType
+        || tags.changeType
+        || (CHANGE_TYPE_ORDER.includes(tags.taskKind) ? tags.taskKind : "")
+        || changeTypeForPhase(tags.phase || item.phase)
+        || keywordChangeTypeForLabel(item.title || item.label || item.fullLabel || item.id);
+    }
+
+    const RULE_DEFINITIONS = {
+      "evidence-before-change": {
+        title: "Evidence before change",
+        changeType: "foundation",
+        plainEnglish: "Capture the current behavior, failure, or reproduction before changing implementation.",
+        promptMeaning: "Plan an evidence-gathering PR before any behavior-changing PR."
+      },
+      "foundation-before-behavior": {
+        title: "Foundation before behavior",
+        changeType: "foundation",
+        plainEnglish: "Create supporting structure (models, classes, config) before behavior relies on it.",
+        promptMeaning: "Split prerequisite infrastructure into an earlier PR before behavior PRs consume it."
+      },
+      "compatibility-before-exposure": {
+        title: "Compatibility before exposure",
+        changeType: "compatibility",
+        plainEnglish: "Protect old callers, data, and contracts before exposing new behavior.",
+        promptMeaning: "Plan compatibility/migration work before the PR that turns on new behavior."
+      },
+      "behavior-before-cleanup": {
+        title: "Behavior before cleanup",
+        changeType: "behavior",
+        plainEnglish: "Do not delete legacy code before the replacement behavior exists.",
+        promptMeaning: "Place cleanup/removal work after the behavior workflow."
+      },
+      "terminal-verification-after-implementation": {
+        title: "Verification gates implementation",
+        changeType: "verification",
+        plainEnglish: "Every implementation step invites verification before later steps proceed.",
+        promptMeaning: "Attach verification after implementation workflows."
+      },
+      "behavior-before-surface": {
+        title: "Behavior before surface",
+        changeType: "behavior",
+        plainEnglish: "Implement the core behavior before exposing it through APIs, CLIs, or UI.",
+        promptMeaning: "Plan exposure work after the core behavior change."
+      },
+      "behavior-before-docs": {
+        title: "Behavior before docs",
+        changeType: "behavior",
+        plainEnglish: "Document behavior after the relevant change exists.",
+        promptMeaning: "Ask for docs updates after the relevant behavior or contract change."
+      }
+    };
+
+    function definitionForLabel(label) {
+      return RULE_DEFINITIONS[String(label || "")] || null;
+    }
+
+    function labelTitle(label) {
+      return String(label || "")
+        .replace(/^action:/, "")
+        .replace(/^tag:/, "")
+        .replace(/^change-type:/, "")
+        .split("/")
+        .map(part => part.split("-").filter(Boolean).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" "))
+        .join(" / ");
+    }
+
+    function graphLabel(label) {
+      return definitionForLabel(label)?.title || labelTitle(label);
+    }
+
+    function labelDescription(label) {
+      const definition = definitionForLabel(label);
+      if (definition) return definition.plainEnglish;
+      if (!label) return "";
+      return `${labelTitle(label)} is a learned step label mined from PR stack examples.`;
+    }
+
+    function promptMeaningForLabel(label) {
+      return definitionForLabel(label)?.promptMeaning || `Planner step label: ${label}`;
+    }
+
+    // Demo fallback used when /api/splitter-rules is unreachable.
+    const demoNodes = [
+      {
+        id: "task:add-config-schema",
+        label: "Add config schema",
+        displayTitle: "Add config schema",
+        fullLabel: "add-config-schema",
+        kind: "action",
+        changeType: "foundation",
+        tags: { changeType: "foundation", architectureLayer: "schema-type-model", qualifiers: [] },
+        plainEnglish: "Create the new models/classes later steps will reference.",
+        promptMeaning: "Plan step: Add config schema"
+      },
+      {
+        id: "task:keep-compat-contract",
+        label: "Keep compatibility contract",
+        displayTitle: "Keep compatibility contract",
+        fullLabel: "keep-compat-contract",
+        kind: "action",
+        changeType: "compatibility",
+        tags: { changeType: "compatibility", qualifiers: [] },
+        plainEnglish: "Protect existing callers before exposing new behavior.",
+        promptMeaning: "Plan step: Keep compatibility contract"
+      },
+      {
+        id: "task:implement-config-behavior",
+        label: "Implement config behavior",
+        displayTitle: "Implement config behavior",
+        fullLabel: "implement-config-behavior",
+        kind: "action",
+        changeType: "behavior",
+        tags: { changeType: "behavior", architectureLayer: "core-domain", qualifiers: [] },
+        plainEnglish: "The main functional change: what the product now does differently.",
+        promptMeaning: "Plan step: Implement config behavior"
+      },
+      {
+        id: "task:expose-config-flag",
+        label: "Expose config flag",
+        displayTitle: "Expose config flag",
+        fullLabel: "expose-config-flag",
+        kind: "action",
+        changeType: "surface",
+        tags: { changeType: "surface", architectureLayer: "api-cli-surface", qualifiers: [] },
+        plainEnglish: "Expose the behavior through the CLI/API surface.",
+        promptMeaning: "Plan step: Expose config flag"
+      },
+      {
+        id: "task:add-integration-tests",
+        label: "Add integration tests",
+        displayTitle: "Add integration tests",
+        fullLabel: "add-integration-tests",
+        kind: "action",
+        changeType: "verification",
+        tags: { changeType: "verification", qualifiers: [] },
+        plainEnglish: "A verification-type step whose whole job is strengthening the gate.",
+        promptMeaning: "Plan step: Add integration tests"
+      },
+      {
+        id: "task:remove-legacy-path",
+        label: "Remove legacy path",
+        displayTitle: "Remove legacy path",
+        fullLabel: "remove-legacy-path",
+        kind: "action",
+        changeType: "cleanup",
+        tags: { changeType: "cleanup", qualifiers: [] },
+        plainEnglish: "Eliminate legacy code after the replacement is verified.",
+        promptMeaning: "Plan step: Remove legacy path"
+      }
+    ];
+
+    const demoEdges = [
+      {
+        id: "foundation-before-behavior",
+        source: "task:add-config-schema",
+        target: "task:implement-config-behavior",
+        kind: "rule",
+        label: "Add config schema -> Implement config behavior",
+        plainEnglish: "Supporting structure comes before the step that uses it.",
+        prompt: "Split prerequisite structures into an earlier workflow before behavior workflows consume them."
+      },
+      {
+        id: "compatibility-before-exposure",
+        source: "task:keep-compat-contract",
+        target: "task:expose-config-flag",
+        kind: "rule",
+        label: "Keep compatibility contract -> Expose config flag",
+        plainEnglish: "Protect the old contract before exposing new behavior.",
+        prompt: "Plan compatibility work before behavior exposure."
+      },
+      {
+        id: "behavior-before-surface",
+        source: "task:implement-config-behavior",
+        target: "task:expose-config-flag",
+        kind: "subrule",
+        label: "Implement config behavior -> Expose config flag",
+        plainEnglish: "Implement the core behavior before exposing it.",
+        prompt: "When both appear, plan core behavior before surface exposure."
+      },
+      {
+        id: "verify-before-cleanup",
+        source: "task:add-integration-tests",
+        target: "task:remove-legacy-path",
+        kind: "candidate",
+        label: "Add integration tests -> Remove legacy path",
+        plainEnglish: "Candidate edge: cleanup waits for verification.",
+        prompt: "Candidate only: do not promote unless replay proves it improves held-out stacks."
+      }
+    ];
+
+    const demoTasks = [
+      {
+        stackId: "demo-config-task",
+        split: "train",
+        title: "Add config-driven behavior",
+        repos: ["demo/repo"],
+        changeTypeMix: { foundation: 1, behavior: 1, surface: 1 },
+        actions: [
+          { prNumber: 101, nodeId: "add-config-schema", changeType: "foundation", confidence: 0.9, gate: { state: "passed", raw: { hasTests: true } } },
+          { prNumber: 102, nodeId: "implement-config-behavior", changeType: "behavior", confidence: 0.9, gate: null },
+          { prNumber: 103, nodeId: "expose-config-flag", changeType: "surface", confidence: 0.8, gate: { state: "passed", raw: { verifiedBy: [104] } } }
+        ]
+      },
+      {
+        stackId: "demo-cleanup-task",
+        split: "train",
+        title: "Retire the legacy resolver",
+        repos: ["demo/repo"],
+        changeTypeMix: { verification: 1, cleanup: 1 },
+        actions: [
+          { prNumber: 201, nodeId: "add-integration-tests", changeType: "verification", confidence: 0.85, gate: { state: "passed", raw: { hasTests: true } } },
+          { prNumber: 202, nodeId: "remove-legacy-path", changeType: "cleanup", confidence: 0.8, gate: null }
+        ]
+      }
+    ];
+
+    let nodes = demoNodes.map(node => ({ ...node }));
+    let edges = demoEdges.map(edge => ({ ...edge }));
+    let orderStripRules = [];
+
+    const graphEl = document.getElementById("graph");
+    const detailEl = document.getElementById("detail");
+    const orderStripEl = document.getElementById("order-strip");
+    const taskStripsEl = document.getElementById("task-strips");
+    const canvasWrapEl = document.getElementById("canvas-wrap");
+    const uncategorizedToggle = document.getElementById("toggle-uncategorized");
+    const baseWidth = 1760;
+    let width = baseWidth;
+    let height = 980;
+    const columnGap = 60;
+    const columnTop = 90;
+    const rowGap = 36;
+    const nodeWidth = 240;
+    const nodeMaxWidth = 390;
+    const nodeHeight = 96;
+    let activeFilter = "all";
+    let activeView = "tasks";
+    let selected = null;
+    let productionPayload = null;
+    let showUncategorizedSubrules = false;
+    let showBackoffPriors = true;
+
+    const svg = d3.select(graphEl)
+      .attr("viewBox", [0, 0, width, height])
+      .attr("tabindex", "0");
+
+    const defs = svg.append("defs");
+    for (const kind of ["rule", "subrule", "candidate"]) {
+      defs.append("marker")
+        .attr("id", `arrow-${kind}`)
+        .attr("viewBox", "0 -5 12 10")
+        .attr("refX", 10)
+        .attr("refY", 0)
+        .attr("markerWidth", 9)
+        .attr("markerHeight", 9)
+        .attr("orient", "auto")
+        .append("path")
+        .attr("d", "M0,-5L12,0L0,5")
+        .attr("fill", edgeColor(kind));
+    }
+
+    const viewport = svg.append("g");
+    const columnLayer = viewport.append("g");
+    const edgeLayer = viewport.append("g");
+    const nodeLayer = viewport.append("g");
+
+    const zoom = d3.zoom()
+      .scaleExtent([0.35, 3.2])
+      .on("zoom", event => {
+        viewport.attr("transform", event.transform);
+      });
+    svg.call(zoom);
+
+    function edgeColor(kind) {
+      if (kind === "subrule") return "#0f9f6e";
+      if (kind === "candidate") return "#8a5cf6";
+      return "#2563eb";
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function formatNumber(value, digits = 0) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "";
+      return number.toFixed(digits);
+    }
+
+    function formatDelta(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "";
+      const formatted = number.toFixed(3);
+      return number > 0 ? `+${formatted}` : formatted;
+    }
+
+    function nodeId(value) {
+      return typeof value === "object" && value !== null ? value.id : value;
+    }
+
+    function ruleItem(item) {
+      if (item && typeof item === "object") return item;
+      return { label: String(item || "") };
+    }
+
+    function ruleItemDisplayTitle(item) {
+      const info = ruleItem(item);
+      return info.title || graphLabel(info.label);
+    }
+
+    function productionCatalog(payload) {
+      const catalogs = payload.catalogs || [];
+      return catalogs.find(catalog => catalog.kind === "effective")
+        || catalogs.find(catalog => catalog.kind === "generated")
+        || catalogs[0]
+        || { rules: [], kind: "empty", title: "No rules" };
+    }
+
+    // --- Step-sequence model -------------------------------------------------
+
+    function sequenceFromRulesPayload(payload) {
+      const catalog = productionCatalog(payload);
+      const nodeMap = new Map();
+      const graphEdges = [];
+      const stripRules = [];
+
+      function ensureNode(node) {
+        if (!nodeMap.has(node.id)) nodeMap.set(node.id, node);
+        return nodeMap.get(node.id);
+      }
+
+      function ensureStep(rawItem) {
+        const item = ruleItem(rawItem);
+        const label = item.label || "";
+        const id = `task:${item.id || label}`;
+        const isAction = item.type === "action" && (item.title || item.nodeId);
+        const tags = item.tags || {};
+        return ensureNode({
+          id,
+          label: item.title || graphLabel(label),
+          displayTitle: item.title || "",
+          fullLabel: label,
+          kind: isAction ? "action" : "task",
+          changeType: changeTypeForNode(item),
+          tags,
+          taskKey: item.taskKey || "",
+          plainEnglish: isAction
+            ? `Learned step "${item.title || label}" mined from PR stack clusters.`
+            : labelDescription(label),
+          promptMeaning: isAction
+            ? [
+                `Plan step: ${item.title || label}`,
+                tags.changeType ? `Change type: ${tags.changeType}` : "",
+                tags.behaviorType ? `Behavior type: ${tags.behaviorType}` : "",
+                tags.architectureLayer ? `Architecture layer: ${tags.architectureLayer}` : "",
+                item.taskKey ? `Task key group: ${item.taskKey}` : ""
+              ].filter(Boolean).join("\n")
+            : promptMeaningForLabel(label)
+        });
+      }
+
+      function ensureSubruleStep(label, title) {
+        return ensureStep({ label, id: label, title: title || "", type: title ? "action" : "tag" });
+      }
+
+      for (const rule of catalog.rules || []) {
+        const before = rule.before || [];
+        const after = rule.after || [];
+        const isTagRule = before.concat(after).every(item => ruleItem(item).type === "tag");
+        if (isTagRule) {
+          // Change-type-level rules (including backoff priors) feed the order
+          // strip and column tie-breaking; they are not step edges.
+          stripRules.push(rule);
+          continue;
+        }
+        if (rule.isBackoffPrior && !showBackoffPriors) continue;
+        for (const beforeItem of before) {
+          for (const afterItem of after) {
+            const source = ensureStep(beforeItem);
+            const target = ensureStep(afterItem);
+            if (source.id === target.id) continue;
+            graphEdges.push({
+              id: `${rule.id}:${source.id}->${target.id}`,
+              source: source.id,
+              target: target.id,
+              kind: "rule",
+              label: `${ruleItemDisplayTitle(beforeItem)} -> ${ruleItemDisplayTitle(afterItem)}`,
+              plainEnglish: rule.reason || rule.reasonId || "Learned step-ordering rule.",
+              prompt: `Plan ${ruleItemDisplayTitle(beforeItem)} before ${ruleItemDisplayTitle(afterItem)}.`,
+              raw: rule
+            });
+          }
+        }
+        for (const subrule of rule.subrules || []) {
+          if (!subrule.before || !subrule.after) continue;
+          const source = ensureSubruleStep(subrule.before, subrule.beforeTitle);
+          const target = ensureSubruleStep(subrule.after, subrule.afterTitle);
+          if (source.id === target.id) continue;
+          graphEdges.push({
+            id: subrule.id || subrule.candidateId || `${rule.id}:${subrule.before}->${subrule.after}`,
+            source: source.id,
+            target: target.id,
+            kind: subrule.promoted ? "subrule" : "candidate",
+            label: `${subrule.beforeTitle || graphLabel(subrule.before)} -> ${subrule.afterTitle || graphLabel(subrule.after)}`,
+            plainEnglish: subrule.failureBucket || subrule.rejectedReason || "Mined step-pair candidate.",
+            prompt: `When both appear, plan ${subrule.beforeTitle || subrule.before} before ${subrule.afterTitle || subrule.after}.`,
+            raw: subrule
+          });
+        }
+      }
+
+      if (showUncategorizedSubrules) {
+        for (const parent of (payload.subrules || {}).uncategorizedParents || []) {
+          for (const subrule of parent.subrules || []) {
+            if (!subrule.before || !subrule.after) continue;
+            const source = ensureSubruleStep(subrule.before, subrule.beforeTitle);
+            const target = ensureSubruleStep(subrule.after, subrule.afterTitle);
+            source.diagnostic = true;
+            target.diagnostic = true;
+            if (source.id === target.id) continue;
+            graphEdges.push({
+              id: `diagnostic-parent:${parent.sourceParentRuleId}:${subrule.id || `${subrule.before}->${subrule.after}`}`,
+              source: source.id,
+              target: target.id,
+              kind: "candidate",
+              diagnostic: true,
+              label: `${subrule.beforeTitle || graphLabel(subrule.before)} -> ${subrule.afterTitle || graphLabel(subrule.after)}`,
+              plainEnglish: `Uncategorized candidate mined for missing parent ${parent.sourceParentRuleId}.`,
+              prompt: "Do not treat as an active rule; inspect the replay proof before mapping it to a parent.",
+              raw: subrule
+            });
+          }
+        }
+      }
+
+      const dedupedEdges = [];
+      const seenEdges = new Set();
+      for (const edge of graphEdges) {
+        const key = `${edge.source}->${edge.target}:${edge.kind}`;
+        if (seenEdges.has(key)) continue;
+        seenEdges.add(key);
+        dedupedEdges.push(edge);
+      }
+
+      return {
+        nodes: Array.from(nodeMap.values()),
+        edges: dedupedEdges,
+        stripRules,
+        catalog,
+        run: payload.run || {},
+        workflowAnalysisRoot: payload.workflowAnalysisRoot || ""
+      };
+    }
+
+    function graphFromPlanningDag(payload) {
+      const dag = payload.planningDag || {};
+      const dagNodes = dag.nodes || [];
+      const dagEdges = dag.edges || [];
+      if (!dagNodes.length || !dagEdges.length) return null;
+      const graphNodes = dagNodes.map(node => ({
+        id: node.id,
+        label: node.title || graphLabel(node.id),
+        displayTitle: node.title || "",
+        fullLabel: node.id,
+        kind: "task",
+        changeType: changeTypeForNode(node),
+        plainEnglish: node.description || "Learned planning node from PR stack clusters.",
+        promptMeaning: [
+          node.description || "",
+          `Support: ${node.support || 0}`,
+          `Repo support: ${node.repoSupport || 0}`,
+          `Confidence: ${node.confidence ?? ""}`
+        ].filter(Boolean).join("\n"),
+        raw: node
+      }));
+      const graphEdges = dagEdges.map(edge => ({
+        id: edge.id,
+        source: edge.before,
+        target: edge.after,
+        kind: "rule",
+        label: `${graphLabel(edge.before)} -> ${graphLabel(edge.after)}`,
+        plainEnglish: "Learned change-type ordering edge from observed PR-stack precedence.",
+        prompt: [
+          `Plan ${edge.before} before ${edge.after}.`,
+          `Support: ${edge.support || 0}`,
+          `Confidence: ${edge.confidence ?? ""}`
+        ].join("\n"),
+        raw: edge
+      }));
+      return {
+        nodes: graphNodes,
+        edges: graphEdges,
+        stripRules: [],
+        catalog: { kind: "planningDag", title: "Learned change-type ordering" },
+        run: payload.run || {},
+        workflowAnalysisRoot: payload.workflowAnalysisRoot || ""
+      };
+    }
+
+    // --- Deterministic left-to-right layout ----------------------------------
+
+    function assignTopoColumns(graphNodes, graphEdges) {
+      const columnById = new Map(graphNodes.map(node => [node.id, 0]));
+      const nodeIds = new Set(graphNodes.map(node => node.id));
+      const stepEdges = graphEdges.filter(
+        edge => nodeIds.has(nodeId(edge.source)) && nodeIds.has(nodeId(edge.target))
+      );
+      // Longest-path relaxation with a hop cap as the cycle guard.
+      for (let pass = 0; pass < graphNodes.length + 1; pass += 1) {
+        let changed = false;
+        for (const edge of stepEdges) {
+          const source = nodeId(edge.source);
+          const target = nodeId(edge.target);
+          const candidate = (columnById.get(source) || 0) + 1;
+          if (candidate > (columnById.get(target) || 0) && candidate <= graphNodes.length) {
+            columnById.set(target, candidate);
+            changed = true;
+          }
+        }
+        if (!changed) break;
+      }
+      const constrained = new Set();
+      for (const edge of stepEdges) {
+        constrained.add(nodeId(edge.source));
+        constrained.add(nodeId(edge.target));
+      }
+      const usedTypes = CHANGE_TYPE_ORDER.filter(type =>
+        graphNodes.some(node => !constrained.has(node.id) && node.changeType === type)
+      );
+      let maxColumn = Math.max(0, ...Array.from(columnById.values()));
+      for (const node of graphNodes) {
+        if (!constrained.has(node.id) && !node.diagnostic) {
+          const typeIndex = usedTypes.indexOf(node.changeType);
+          columnById.set(node.id, typeIndex >= 0 ? typeIndex : 0);
+        }
+      }
+      maxColumn = Math.max(0, ...Array.from(columnById.values()));
+      for (const node of graphNodes) {
+        if (node.diagnostic) columnById.set(node.id, maxColumn + 1);
+        node.column = columnById.get(node.id) || 0;
+      }
+      return columnById;
+    }
+
+    function changeTypeRank(changeType) {
+      const index = CHANGE_TYPE_ORDER.indexOf(changeType);
+      return index >= 0 ? index : CHANGE_TYPE_ORDER.length;
+    }
+
+    function columnLayout() {
+      assignTopoColumns(nodes, edges);
+      const byColumn = new Map();
+      for (const node of nodes) {
+        if (!byColumn.has(node.column)) byColumn.set(node.column, []);
+        byColumn.get(node.column).push(node);
+      }
+      const columns = Array.from(byColumn.keys()).sort((a, b) => a - b);
+      let x = 40;
+      let maxBottom = 0;
+      for (const column of columns) {
+        const columnNodes = byColumn.get(column);
+        columnNodes.sort((a, b) =>
+          changeTypeRank(a.changeType) - changeTypeRank(b.changeType)
+          || String(a.label).localeCompare(String(b.label))
+        );
+        const columnWidth = Math.max(nodeWidth, ...columnNodes.map(node => nodeBoxWidth(node)));
+        let y = columnTop + 40;
+        for (const node of columnNodes) {
+          if (node.fx == null) node.x = x + columnWidth / 2;
+          if (node.fy == null) node.y = y + nodeHeight / 2;
+          node.columnX = x;
+          node.columnWidth = columnWidth;
+          y += nodeHeight + rowGap;
+        }
+        maxBottom = Math.max(maxBottom, y);
+        x += columnWidth + columnGap;
+      }
+      width = Math.max(baseWidth, x + 40);
+      height = Math.max(980, maxBottom + 60);
+      svg.attr("viewBox", [0, 0, width, height]);
+      return columns.map(column => ({
+        column,
+        x: (byColumn.get(column)[0] || {}).columnX || 0,
+        width: (byColumn.get(column)[0] || {}).columnWidth || nodeWidth,
+        diagnostic: (byColumn.get(column) || []).every(node => node.diagnostic)
+      }));
+    }
+
+    function nodeBoxWidth(node) {
+      const title = node.displayTitle || node.label || "";
+      return Math.max(nodeWidth, Math.min(nodeMaxWidth, title.length * 7 + 60));
+    }
+
+    function nodeBoxHeight() {
+      return nodeHeight;
+    }
+
+    // --- Gates ----------------------------------------------------------------
+
+    function gateStateForNode(stepNodeId) {
+      const tasks = productionPayload?.tasks || [];
+      const wanted = String(stepNodeId || "").replace(/^task:/, "").replace(/^learned-node-/, "");
+      let passed = 0;
+      let failed = 0;
+      let total = 0;
+      for (const task of tasks) {
+        for (const action of task.actions || []) {
+          if (!action.nodeId || action.nodeId !== wanted) continue;
+          total += 1;
+          const state = action.gate?.state || "open";
+          if (state === "passed") passed += 1;
+          else if (state === "failed") failed += 1;
+        }
+      }
+      if (!total) return { state: "open", passed, failed, total };
+      if (passed && !failed) return { state: "passed", passed, failed, total };
+      if (failed && !passed) return { state: "failed", passed, failed, total };
+      if (passed && failed) return { state: "mixed", passed, failed, total };
+      return { state: "open", passed, failed, total };
+    }
+
+    function gateGlyphChar(state) {
+      if (state === "passed") return "✓";
+      if (state === "failed") return "✗";
+      if (state === "mixed") return "~";
+      return "○";
+    }
+
+    function renderGateGlyph(group, node) {
+      const gate = gateStateForNode(node.fullLabel || node.id);
+      const badge = group.append("g")
+        .attr("class", `gate-badge ${gate.state}`)
+        .attr("transform", `translate(${nodeBoxWidth(node) / 2 + 16}, 0)`);
+      badge.append("circle").attr("r", 11);
+      badge.append("text")
+        .attr("text-anchor", "middle")
+        .attr("dy", 4)
+        .text(gateGlyphChar(gate.state));
+      badge.append("title").text(
+        `verification gate: ${gate.state} (${gate.passed} passed / ${gate.failed} failed / ${gate.total} observed)`
+      );
+    }
+
+    // --- Rendering -------------------------------------------------------------
+
+    function visibleEdges() {
+      if (activeFilter === "rules") return edges.filter(edge => edge.kind === "rule");
+      if (activeFilter === "subrules") return edges.filter(edge => edge.kind !== "rule");
+      return edges;
+    }
+
+    function boundaryPoint(from, to, halfWidth, halfHeight) {
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) return { x: from.x, y: from.y };
+      const xScale = Math.abs(dx) < 0.001 ? Number.POSITIVE_INFINITY : halfWidth / Math.abs(dx);
+      const yScale = Math.abs(dy) < 0.001 ? Number.POSITIVE_INFINITY : halfHeight / Math.abs(dy);
+      const scale = Math.min(xScale, yScale);
+      return { x: from.x + dx * scale, y: from.y + dy * scale };
+    }
+
+    function edgePath(edge) {
+      const source = nodes.find(node => node.id === nodeId(edge.source));
+      const target = nodes.find(node => node.id === nodeId(edge.target));
+      if (!source || !target) return "";
+      const start = boundaryPoint(source, target, nodeBoxWidth(source) / 2 + 8, nodeBoxHeight() / 2 + 8);
+      const end = boundaryPoint(target, source, nodeBoxWidth(target) / 2 + 10, nodeBoxHeight() / 2 + 10);
+      const midX = (start.x + end.x) / 2;
+      return `M${start.x},${start.y} C${midX},${start.y} ${midX},${end.y} ${end.x},${end.y}`;
+    }
+
+    function nodeKindLabel(node) {
+      if (node.diagnostic) return "UNPLACED";
+      if (node.kind === "model-hint") return "HINT";
+      if (node.kind === "action") return "STEP";
+      return "STEP";
+    }
+
+    function nodeMetaText(node) {
+      const gate = gateStateForNode(node.fullLabel || node.id);
+      const parts = [node.changeType || "step"];
+      if (node.tags?.architectureLayer) parts.push(node.tags.architectureLayer);
+      parts.push(`gate ${gate.state}`);
+      return parts.join(" / ");
+    }
+
+    function kindBadgeWidth(node) {
+      return nodeKindLabel(node).length * 7 + 20;
+    }
+
+    function render() {
+      const edgeList = visibleEdges();
+
+      const columnBands = columnLayer.selectAll("g.column-band")
+        .data(columnLayout(), band => band.column)
+        .join(
+          enter => {
+            const group = enter.append("g").attr("class", "column-band");
+            group.append("rect");
+            group.append("text");
+            return group;
+          },
+          update => update,
+          exit => exit.remove()
+        );
+      columnBands.select("rect")
+        .attr("x", band => band.x - 12)
+        .attr("y", 34)
+        .attr("width", band => band.width + 24)
+        .attr("height", height - 70)
+        .attr("rx", 10);
+      columnBands.select("text")
+        .attr("x", band => band.x)
+        .attr("y", 58)
+        .text(band => band.diagnostic ? "Unplaced" : `Step ${band.column + 1}`);
+
+      const edgeGroups = edgeLayer.selectAll("g.edge-group")
+        .data(edgeList, edge => edge.id)
+        .join(
+          enter => {
+            const group = enter.append("g").attr("class", "edge-group");
+            group.append("path")
+              .attr("class", edge => `edge ${edge.kind}`)
+              .attr("marker-end", edge => `url(#arrow-${edge.kind})`);
+            group.append("path")
+              .attr("class", "edge-hit")
+              .on("click", (_event, edge) => selectEdge(edge));
+            group.append("title").text(edge => edge.label);
+            return group;
+          },
+          update => update,
+          exit => exit.remove()
+        );
+      edgeGroups.select("path.edge")
+        .attr("class", edge => `edge ${edge.kind}`)
+        .classed("is-selected", edge => selected?.type === "edge" && selected.id === edge.id)
+        .attr("d", edgePath);
+      edgeGroups.select("path.edge-hit").attr("d", edgePath);
+
+      const nodeGroups = nodeLayer.selectAll("g.node")
+        .data(nodes, node => node.id)
+        .join(
+          enter => {
+            const group = enter.append("g")
+              .attr("class", node => `node ${node.kind}`)
+              .attr("role", "button")
+              .attr("tabindex", "0")
+              .call(d3.drag()
+                .on("drag", (event, node) => {
+                  node.fx = event.x;
+                  node.fy = event.y;
+                  node.x = event.x;
+                  node.y = event.y;
+                  render();
+                }))
+              .on("dblclick", (_event, node) => releaseNode(node))
+              .on("click", (_event, node) => selectNode(node));
+            group.append("rect");
+            group.append("text").attr("class", "label");
+            group.append("text").attr("class", "meta");
+            const badge = group.append("g").attr("class", "kind-badge");
+            badge.append("rect").attr("height", 22).attr("rx", 11);
+            badge.append("text").attr("x", 9).attr("y", 15);
+            group.append("g").attr("class", "gate-slot");
+            group.append("title").text(node => node.plainEnglish);
+            return group;
+          },
+          update => update,
+          exit => exit.remove()
+        );
+
+      nodeGroups
+        .attr("transform", node => `translate(${node.x},${node.y})`)
+        .attr("data-change-type", node => node.changeType)
+        .attr("data-label", node => node.fullLabel || node.label)
+        .classed("diagnostic", node => Boolean(node.diagnostic))
+        .classed("is-selected", node => selected?.type === "node" && selected.id === node.id)
+        .classed("is-pinned", node => node.fx != null || node.fy != null);
+
+      nodeGroups.select("rect")
+        .attr("x", node => -nodeBoxWidth(node) / 2)
+        .attr("y", -nodeBoxHeight() / 2)
+        .attr("width", node => nodeBoxWidth(node))
+        .attr("height", nodeBoxHeight());
+
+      nodeGroups.select("text.label")
+        .attr("x", node => -nodeBoxWidth(node) / 2 + 12)
+        .attr("y", -8)
+        .text(node => node.displayTitle || node.label);
+
+      nodeGroups.select("text.meta")
+        .attr("x", node => -nodeBoxWidth(node) / 2 + 12)
+        .attr("y", 14)
+        .text(nodeMetaText);
+
+      nodeGroups.select("g.kind-badge")
+        .attr("transform", node => {
+          const badgeWidth = kindBadgeWidth(node);
+          return `translate(${nodeBoxWidth(node) / 2 - badgeWidth - 12}, ${-nodeBoxHeight() / 2 + 10})`;
+        });
+      nodeGroups.select("g.kind-badge rect")
+        .attr("width", node => kindBadgeWidth(node));
+      nodeGroups.select("g.kind-badge text")
+        .text(node => nodeKindLabel(node));
+
+      nodeGroups.select("g.gate-slot").each(function(node) {
+        const slot = d3.select(this);
+        slot.selectAll("*").remove();
+        renderGateGlyph(slot, node);
+      });
+    }
+
+    function releaseNode(node) {
+      node.fx = null;
+      node.fy = null;
+      render();
+    }
+
+    function replaceGraph(nextNodes, nextEdges) {
+      nodes = nextNodes;
+      edges = nextEdges;
+      render();
+      fitGraph();
+    }
+
+    function fitGraph() {
+      svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity);
+    }
+
+    function resetGraph() {
+      for (const node of nodes) {
+        node.fx = null;
+        node.fy = null;
+      }
+      render();
+      fitGraph();
+    }
+
+    // --- Order strip -----------------------------------------------------------
+
+    function renderOrderStrip(stripRules) {
+      orderStripRules = stripRules || [];
+      const visible = orderStripRules.filter(rule => showBackoffPriors || !rule.isBackoffPrior);
+      if (!visible.length || activeView !== "graph") {
+        orderStripEl.hidden = true;
+        orderStripEl.innerHTML = "";
+        return;
+      }
+      orderStripEl.hidden = false;
+      orderStripEl.innerHTML = `<span>Change-type order priors:</span>` + visible.map((rule, index) => {
+        const before = ruleItem((rule.before || [])[0]);
+        const after = ruleItem((rule.after || [])[0]);
+        const beforeName = before.changeType || labelTitle(before.label);
+        const afterName = after.changeType || labelTitle(after.label);
+        return `
+          <span class="pill tag-chip" data-strip-rule="${escapeHtml(index)}">${escapeHtml(beforeName)}</span>
+          <span class="arrow ${rule.isBackoffPrior ? "prior" : ""}">→</span>
+          <span class="pill tag-chip" data-strip-rule="${escapeHtml(index)}">${escapeHtml(afterName)}</span>
+          <span class="arrow">·</span>
+        `;
+      }).join("");
+      orderStripEl.querySelectorAll("[data-strip-rule]").forEach(element => {
+        element.addEventListener("click", () => {
+          const rule = visible[Number(element.getAttribute("data-strip-rule"))];
+          if (rule) selectStripRule(rule);
+        });
+      });
+    }
+
+    function selectStripRule(rule) {
+      selected = { type: "strip-rule", id: rule.id };
+      detailEl.innerHTML = `
+        <div class="detail-title">${escapeHtml(graphLabel(rule.id))}</div>
+        <p class="detail-copy">${escapeHtml(rule.reason || "Change-type-level ordering prior.")}</p>
+        <div class="pill-row">
+          <span class="pill">${escapeHtml(rule.isBackoffPrior ? `backoff prior L${rule.backoffLevel}` : "rule")}</span>
+          <span class="pill">priority ${escapeHtml(rule.priority ?? "")}</span>
+        </div>
+        ${renderTriggerTerms(rule)}
+        <div class="detail-section">
+          <h3>Selectors</h3>
+          <dl class="kv">
+            <dt>Before</dt><dd>${escapeHtml((rule.before || []).map(item => ruleItem(item).label).join(", "))}</dd>
+            <dt>After</dt><dd>${escapeHtml((rule.after || []).map(item => ruleItem(item).label).join(", "))}</dd>
+          </dl>
+        </div>
+      `;
+    }
+
+    // --- Task strips (default view) ---------------------------------------------
+
+    function roleNodeIndex() {
+      const index = new Map();
+      for (const node of (productionPayload?.roleCatalog || {}).nodes || []) {
+        if (node && node.id) index.set(node.id, node);
+      }
+      return index;
+    }
+
+    function taskStepTitle(action, nodeIndex) {
+      const node = action.nodeId ? nodeIndex.get(action.nodeId) : null;
+      return node?.title
+        || (action.nodeId ? labelTitle(action.nodeId) : "")
+        || (action.taskKey ? graphLabel(action.taskKey) : "")
+        || `PR #${action.prNumber ?? "?"}`;
+    }
+
+    function gateGlyphHtml(gate) {
+      const state = gate?.state || "open";
+      const title = gate
+        ? `verification gate: ${state}`
+        : "no verification gate recorded for this step";
+      return `<span class="gate-glyph ${escapeHtml(state)}" title="${escapeHtml(title)}">${escapeHtml(gateGlyphChar(state))}</span>`;
+    }
+
+    function renderTaskStrips() {
+      const tasks = productionPayload?.tasks || [];
+      if (!tasks.length) {
+        taskStripsEl.innerHTML = `<p class="detail-copy">No task decompositions (corpus/tasks.jsonl) were emitted by the latest run.</p>`;
+        return;
+      }
+      const nodeIndex = roleNodeIndex();
+      const strips = tasks.slice(0, 100).map((task, taskIndex) => {
+        const mix = Object.entries(task.changeTypeMix || {})
+          .map(([type, count]) => `${type}:${count}`)
+          .join(" ");
+        const row = (task.actions || []).map((action, actionIndex) => {
+          const title = taskStepTitle(action, nodeIndex);
+          const isVerification = (action.changeType || "") === "verification";
+          return `
+            <div class="step-card ${isVerification ? "verification-step" : ""}" data-task="${taskIndex}" data-action="${actionIndex}">
+              <div class="step-title">${escapeHtml(title)}</div>
+              <div class="step-meta">${escapeHtml(action.changeType || "unknown")} · PR #${escapeHtml(action.prNumber ?? "?")}</div>
+            </div>
+            ${gateGlyphHtml(action.gate)}
+          `;
+        }).join(`<span class="arrow">→</span>`);
+        return `
+          <article class="task-strip" data-task="${taskIndex}">
+            <div class="task-strip-head">
+              <div class="task-strip-title">${escapeHtml(task.title || task.stackId || "")}</div>
+              <div class="task-strip-meta">${escapeHtml((task.repos || []).join(", "))}${task.split ? ` · ${escapeHtml(task.split)}` : ""}${mix ? ` · ${escapeHtml(mix)}` : ""}</div>
+            </div>
+            <div class="task-strip-row">${row}</div>
+          </article>
+        `;
+      }).join("");
+      taskStripsEl.innerHTML = strips + (tasks.length > 100
+        ? `<p class="detail-copy">Showing 100 of ${escapeHtml(tasks.length)} tasks.</p>`
+        : "");
+      taskStripsEl.querySelectorAll(".step-card").forEach(card => {
+        card.addEventListener("click", () => {
+          const task = tasks[Number(card.getAttribute("data-task"))];
+          const action = (task?.actions || [])[Number(card.getAttribute("data-action"))];
+          if (task && action) selectTaskStep(task, action, card);
+        });
+      });
+    }
+
+    function selectTaskStep(task, action, card) {
+      taskStripsEl.querySelectorAll(".step-card.is-selected").forEach(el => el.classList.remove("is-selected"));
+      if (card) card.classList.add("is-selected");
+      const nodeIndex = roleNodeIndex();
+      const node = action.nodeId ? nodeIndex.get(action.nodeId) : null;
+      const tags = node ? (node.tags || []) : [];
+      const gate = action.gate;
+      const prUrl = task.repos && task.repos[0] && action.prNumber != null
+        ? `https://github.com/${task.repos[0]}/pull/${action.prNumber}`
+        : "";
+      detailEl.innerHTML = `
+        <div class="detail-title">${escapeHtml(taskStepTitle(action, nodeIndex))}</div>
+        <p class="detail-copy">Step in task "${escapeHtml(task.title || task.stackId || "")}".</p>
+        <div class="pill-row">
+          <span class="pill tag-chip">change: ${escapeHtml(action.changeType || "unknown")}</span>
+          ${action.taskKey ? `<span class="pill tag-chip muted">group: ${escapeHtml(action.taskKey)}</span>` : ""}
+          ${action.confidence == null ? "" : `<span class="pill">confidence ${formatNumber(action.confidence, 3)}</span>`}
+        </div>
+        <div class="detail-section">
+          <h3>Verification gate</h3>
+          <div class="pill-row">
+            <span class="pill">${escapeHtml(gate?.state || "open")}</span>
+          </div>
+          <div class="prompt-box">${escapeHtml(JSON.stringify(gate?.raw ?? "no gate recorded", null, 1))}</div>
+        </div>
+        <div class="detail-section">
+          <h3>Metadata</h3>
+          <dl class="kv">
+            <dt>Step node</dt><dd>${escapeHtml(action.nodeId || "(unassigned)")}</dd>
+            <dt>PR</dt><dd>${prUrl ? `<a href="${escapeHtml(prUrl)}" target="_blank" rel="noopener noreferrer">#${escapeHtml(action.prNumber)}</a>` : escapeHtml(action.prNumber ?? "")}</dd>
+            <dt>Node tags</dt><dd>${escapeHtml(tags.join(", "))}</dd>
+          </dl>
+        </div>
+      `;
+    }
+
+    // --- Detail panels -----------------------------------------------------------
+
+    function tagChips(node) {
+      const tags = node.tags || {};
+      const chips = [
+        node.changeType ? `<span class="pill tag-chip">change: ${escapeHtml(node.changeType)}</span>` : "",
+        tags.behaviorType ? `<span class="pill tag-chip">behavior: ${escapeHtml(tags.behaviorType)}</span>` : "",
+        tags.architectureLayer ? `<span class="pill tag-chip">layer: ${escapeHtml(tags.architectureLayer)}</span>` : "",
+        ...(tags.qualifiers || []).map(qualifier => `<span class="pill tag-chip">qualifier: ${escapeHtml(qualifier)}</span>`),
+        node.taskKey ? `<span class="pill tag-chip muted">group: ${escapeHtml(node.taskKey)}</span>` : "",
+        !node.changeType && tags.phase ? `<span class="pill tag-chip muted">legacy phase: ${escapeHtml(tags.phase)}</span>` : ""
+      ].filter(Boolean);
+      return chips.length ? `<div class="pill-row">${chips.join("")}</div>` : "";
+    }
+
+    function nodePills(node) {
+      const gate = gateStateForNode(node.fullLabel || node.id);
+      return `<div class="pill-row">
+        <span class="pill">${escapeHtml(nodeKindLabel(node))}</span>
+        <span class="pill">column ${escapeHtml((node.column ?? 0) + 1)}</span>
+        <span class="pill">gate ${escapeHtml(gate.state)}</span>
+      </div>${tagChips(node)}`;
+    }
+
+    function selectNode(node) {
+      selected = { type: "node", id: node.id };
+      detailEl.innerHTML = `
+        <div class="detail-title">${escapeHtml(node.displayTitle || node.fullLabel || node.label)}</div>
+        <p class="detail-copy">${escapeHtml(node.plainEnglish)}</p>
+        ${nodePills(node)}
+        <div class="detail-section">
+          <h3>What the AI should hear</h3>
+          <div class="prompt-box">${escapeHtml(node.promptMeaning)}</div>
+        </div>
+      `;
+      render();
+    }
+
+    function selectEdge(edge) {
+      selected = { type: "edge", id: edge.id };
+      detailEl.innerHTML = `
+        <div class="detail-title">${escapeHtml(edge.label)}</div>
+        <p class="detail-copy">${escapeHtml(edge.plainEnglish)}</p>
+        <div class="pill-row">
+          <span class="pill">${escapeHtml(edge.kind)}</span>
+          <span class="pill">${escapeHtml(nodeId(edge.source))} -> ${escapeHtml(nodeId(edge.target))}</span>
+        </div>
+        <div class="detail-section">
+          <h3>Prompt instruction</h3>
+          <div class="prompt-box">${escapeHtml(edge.prompt)}</div>
+        </div>
+        ${renderEdgeEvidence(edge)}
+      `;
+      render();
+    }
+
+    function renderEdgeEvidence(edge) {
+      const raw = edge.raw || {};
+      if (raw.candidateId || raw.ruleId || raw.validation || raw.test) {
+        return `<div class="detail-section"><h3>Proof</h3><div class="evidence-list">${renderSubruleProof(raw)}</div></div>`;
+      }
+      if (raw.id && (raw.before || raw.after) && Array.isArray(raw.before)) {
+        return `
+          <div class="detail-section">
+            <h3>Rule evidence</h3>
+            <dl class="kv">
+              <dt>Rule id</dt><dd>${escapeHtml(raw.id)}</dd>
+              <dt>Relation</dt><dd>${escapeHtml(raw.relation || "")}</dd>
+              <dt>Priority</dt><dd>${escapeHtml(raw.priority ?? "")}</dd>
+            </dl>
+            ${renderTriggerTerms(raw)}
+            ${renderSubruleProofs(raw.subrules || [])}
+          </div>
+        `;
+      }
+      if (raw.support == null && raw.confidence == null && !(raw.examples || []).length) return "";
+      return `<div class="detail-section">
+        <h3>Rule evidence</h3>
+        <div class="pill-row">
+          <span class="pill">support ${formatNumber(raw.support, 0)}</span>
+          <span class="pill">repos ${formatNumber(raw.repoSupport, 0)}</span>
+          <span class="pill">confidence ${formatNumber(raw.confidence, 3)}</span>
+        </div>
+        ${renderExamples(raw.examples)}
+      </div>`;
+    }
+
+    function renderTriggerTerms(rule) {
+      const terms = (rule.triggerTerms || []).slice(0, 10);
+      if (!terms.length) return "";
+      return `<div class="pill-row">${terms.map(term => `
+        <span class="pill">${escapeHtml(term.text || "")}${term.weight == null ? "" : ` w${escapeHtml(term.weight)}`}</span>
+      `).join("")}</div>`;
+    }
+
+    function renderSubruleProofs(subrules) {
+      if (!subrules.length) {
+        return `<p class="detail-copy">No mined subrule PR evidence was emitted for this rule.</p>`;
+      }
+      return `<div class="evidence-list">
+        ${subrules.slice(0, 8).map(renderSubruleProof).join("")}
+        ${subrules.length > 8 ? `<p class="detail-copy">Showing 8 of ${escapeHtml(subrules.length)} subrules.</p>` : ""}
+      </div>`;
+    }
+
+    function renderSubruleProof(subrule) {
+      const validation = subrule.validation || {};
+      const test = subrule.test || {};
+      const reason = subrule.failureBucket || subrule.rejectedReason || "";
+      const beforeName = subrule.beforeTitle || graphLabel(subrule.before);
+      const afterName = subrule.afterTitle || graphLabel(subrule.after);
+      const backoffLevel = subrule.backoffLevel ?? validation.backoffLevel;
+      return `<article class="evidence-card">
+        <div class="evidence-title">${escapeHtml(beforeName)} -> ${escapeHtml(afterName)}</div>
+        <div class="evidence-meta">${escapeHtml(subrule.decision || (subrule.promoted ? "promoted" : "candidate"))}${reason ? `: ${escapeHtml(reason)}` : ""}</div>
+        <div class="pill-row">
+          <span class="pill">confidence ${formatNumber(subrule.confidence, 3)}</span>
+          <span class="pill">support ${formatNumber(subrule.support, 0)}</span>
+          <span class="pill">repos ${formatNumber(subrule.repoSupport, 0)}</span>
+          ${backoffLevel == null ? "" : `<span class="pill">backoff L${escapeHtml(backoffLevel)}</span>`}
+          ${validation.weightedSupport == null ? "" : `<span class="pill">weighted ${formatNumber(validation.weightedSupport, 2)}</span>`}
+          ${renderRepoPills(subrule.repos)}
+        </div>
+        <dl class="kv">
+          <dt>Validation</dt><dd>${proofSummary(validation)}</dd>
+          <dt>Test</dt><dd>${proofSummary(test)}</dd>
+        </dl>
+        ${renderExamples(subrule.examples)}
+      </article>`;
+    }
+
+    function renderRepoPills(repos) {
+      return (repos || []).slice(0, 3).map(repo => `<span class="pill">${escapeHtml(repo)}</span>`).join("");
+    }
+
+    function proofSummary(proof) {
+      if (!proof || Object.values(proof).every(value => value == null || value === "")) return "not emitted";
+      return [
+        proof.pairedCount == null ? "" : `paired ${formatNumber(proof.pairedCount, 0)}`,
+        proof.stackLinkDelta == null ? "" : `stack delta ${formatDelta(proof.stackLinkDelta)}`,
+        proof.regressionCount == null ? "" : `regressions ${formatNumber(proof.regressionCount, 0)}`
+      ].filter(Boolean).join(", ") || "not emitted";
+    }
+
+    function renderExamples(examples) {
+      if (!examples || !examples.length) return "";
+      return `<div class="example-links">
+        ${examples.slice(0, 5).map(example => `
+          <div>
+            <strong>${escapeHtml(example.repo || "")}</strong>
+            ${exampleLink(example, "from")} -> ${exampleLink(example, "to")}
+          </div>
+        `).join("")}
+      </div>`;
+    }
+
+    function fallbackPrUrl(example, key) {
+      const repo = example.repo || "";
+      const number = example[key];
+      if (!repo || number == null || number === "") return "";
+      return `https://github.com/${encodeURIComponent(repo).replace("%2F", "/")}/pull/${encodeURIComponent(number)}`;
+    }
+
+    function exampleLink(example, side) {
+      const prefix = side === "from" ? "from" : "to";
+      const number = example[`${prefix}Pr`];
+      const commitUrl = side === "from" ? example.fromCommitUrl : example.toCommitUrl;
+      const prUrl = side === "from" ? example.fromUrl : example.toUrl;
+      const url = commitUrl || prUrl || fallbackPrUrl(example, `${prefix}Pr`);
+      const title = example[`${prefix}Title`] || "";
+      const label = `#${number ?? "?"}`;
+      if (!url) return `<span>${escapeHtml(label)}</span>`;
+      return `<a href="${escapeHtml(url)}" title="${escapeHtml(title)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
+    }
+
+    // --- Summary, leaderboard, views ---------------------------------------------
+
+    function splitSummaryPills() {
+      const splitSummary = productionPayload?.splitSummary || {};
+      return ["train", "validation", "test"]
+        .filter(split => splitSummary[split])
+        .map(split => `<span class="pill">${escapeHtml(split)}: ${escapeHtml(splitSummary[split].stackCount ?? 0)} stacks</span>`)
+        .join("");
+    }
+
+    function renderProductionSummary(graph) {
+      const promotedCount = productionPayload?.subrules?.promotedCount ?? 0;
+      const tasks = productionPayload?.tasks || [];
+      const gatedSteps = tasks.reduce(
+        (sum, task) => sum + (task.actions || []).filter(action => action.gate?.state === "passed").length,
+        0
+      );
+      const totalSteps = tasks.reduce((sum, task) => sum + (task.actions || []).length, 0);
+      detailEl.innerHTML = `
+        <div class="detail-title">Production planning model</div>
+        <p class="detail-copy">Loaded ${escapeHtml(graph.catalog.title || graph.catalog.kind || "rule catalog")} from the latest learning run.</p>
+        <div class="pill-row">
+          <span class="pill">${escapeHtml(tasks.length)} tasks</span>
+          <span class="pill">${escapeHtml(graph.nodes.length)} steps</span>
+          <span class="pill">${escapeHtml(graph.edges.length)} edges</span>
+          <span class="pill">${escapeHtml(promotedCount)} promoted subrules</span>
+          ${totalSteps ? `<span class="pill">gates passed ${escapeHtml(gatedSteps)}/${escapeHtml(totalSteps)}</span>` : ""}
+          <span class="pill">${escapeHtml((graph.run || {}).shortSha || "no sha")}</span>
+        </div>
+        <div class="pill-row">${splitSummaryPills()}</div>
+        <div class="detail-section">
+          <h3>Run</h3>
+          <dl class="kv">
+            <dt>Run id</dt><dd>${escapeHtml((graph.run || {}).runId || "")}</dd>
+            <dt>Branch</dt><dd>${escapeHtml((graph.run || {}).branch || "")}</dd>
+            <dt>SHA</dt><dd>${escapeHtml((graph.run || {}).headSha || "")}</dd>
+          </dl>
+        </div>
+      `;
+    }
+
+    function renderLeaderboardPanel() {
+      const leaderboard = productionPayload?.leaderboard || {};
+      const leaderboardStages = leaderboard.stages || [];
+      if (!leaderboardStages.length) {
+        detailEl.innerHTML = `<div class="detail-title">Experiment leaderboard</div><p class="detail-copy">No experiments/leaderboard.json was emitted by the latest run.</p>`;
+        return;
+      }
+      const sections = leaderboardStages.map(stage => {
+        const rows = (stage.experiments || []).map(entry => {
+          const gate = entry.gate || {};
+          const validationMetrics = ((entry.splits || {}).validation || {}).metrics || {};
+          const primary = gate.primaryMetric && validationMetrics[gate.primaryMetric] != null
+            ? `${gate.primaryMetric}=${formatNumber(validationMetrics[gate.primaryMetric], 3)}`
+            : "";
+          return `<article class="evidence-card">
+            <div class="evidence-title">${escapeHtml(entry.id || "")}</div>
+            <div class="evidence-meta">${escapeHtml(entry.decision || "")}${entry.failureBucket ? `: ${escapeHtml(entry.failureBucket)}` : ""}${primary ? ` · ${escapeHtml(primary)}` : ""}</div>
+          </article>`;
+        }).join("");
+        return `<div class="detail-section">
+          <h3>${escapeHtml(stage.stage || "")} ${stage.winner ? `· winner: ${escapeHtml(stage.winner)}` : ""}</h3>
+          <div class="evidence-list">${rows}</div>
+        </div>`;
+      }).join("");
+      detailEl.innerHTML = `
+        <div class="detail-title">Experiment leaderboard</div>
+        <p class="detail-copy">Per-stage experiments evaluated on held-out splits; at most ${escapeHtml(leaderboard.maxPromotionsPerStage ?? 1)} promotion per stage.</p>
+        ${sections}
+      `;
+    }
+
+    function setView(next) {
+      activeView = next;
+      document.getElementById("view-tasks").setAttribute("aria-pressed", String(next === "tasks"));
+      document.getElementById("view-graph").setAttribute("aria-pressed", String(next === "graph"));
+      taskStripsEl.hidden = next !== "tasks";
+      canvasWrapEl.hidden = next !== "graph";
+      renderOrderStrip(orderStripRules);
+      if (next === "tasks") renderTaskStrips();
+      else render();
+    }
+
+    function setFilter(next) {
+      activeFilter = next;
+      for (const id of ["filter-all", "filter-rules", "filter-subrules"]) {
+        document.getElementById(id).setAttribute("aria-pressed", String(id === `filter-${next}` || (next === "all" && id === "filter-all")));
+      }
+      render();
+    }
+
+    function renderProductionGraph() {
+      if (!productionPayload) return;
+      let graph = sequenceFromRulesPayload(productionPayload);
+      if (!graph.nodes.length || !graph.edges.length) {
+        const dagGraph = graphFromPlanningDag(productionPayload);
+        if (dagGraph) graph = dagGraph;
+      }
+      if (!graph.nodes.length) throw new Error("No production rules were available to graph.");
+      replaceGraph(graph.nodes, graph.edges);
+      renderOrderStrip(graph.stripRules);
+      renderProductionSummary(graph);
+      renderTaskStrips();
+    }
+
+    async function loadProductionRules() {
+      detailEl.innerHTML = `<div class="detail-title">Loading rules</div><p class="detail-copy">Fetching latest model rules from /api/splitter-rules...</p>`;
+      try {
+        const response = await fetch("/api/splitter-rules", { cache: "no-store" });
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || `HTTP ${response.status}`);
+        productionPayload = payload;
+        renderProductionGraph();
+        const requestedView = new URLSearchParams(window.location.search).get("view");
+        setView(requestedView === "graph" ? "graph" : "tasks");
+      } catch (error) {
+        detailEl.innerHTML = `
+          <div class="detail-title">Using fallback demo</div>
+          <p class="detail-copy">${escapeHtml(error.message || error)}</p>
+        `;
+        productionPayload = { tasks: demoTasks, roleCatalog: { nodes: [] }, subrules: {}, run: {} };
+        replaceGraph(demoNodes.map(node => ({ ...node })), demoEdges.map(edge => ({ ...edge })));
+        renderOrderStrip([]);
+        setView("tasks");
+      }
+    }
+
+    document.getElementById("view-tasks").addEventListener("click", () => setView("tasks"));
+    document.getElementById("view-graph").addEventListener("click", () => setView("graph"));
+    document.getElementById("filter-all").addEventListener("click", () => setFilter("all"));
+    document.getElementById("filter-rules").addEventListener("click", () => setFilter("rules"));
+    document.getElementById("filter-subrules").addEventListener("click", () => setFilter("subrules"));
+    document.getElementById("fit").addEventListener("click", fitGraph);
+    document.getElementById("reset").addEventListener("click", resetGraph);
+    document.getElementById("show-leaderboard").addEventListener("click", renderLeaderboardPanel);
+    uncategorizedToggle.addEventListener("change", event => {
+      showUncategorizedSubrules = event.currentTarget.checked;
+      try {
+        renderProductionGraph();
+      } catch (error) {
+        detailEl.innerHTML = `
+          <div class="detail-title">Unable to rebuild graph</div>
+          <p class="detail-copy">${escapeHtml(error.message || error)}</p>
+        `;
+      }
+    });
+    document.getElementById("toggle-backoff").addEventListener("change", event => {
+      showBackoffPriors = event.currentTarget.checked;
+      try {
+        renderProductionGraph();
+      } catch (error) {
+        detailEl.innerHTML = `
+          <div class="detail-title">Unable to rebuild graph</div>
+          <p class="detail-copy">${escapeHtml(error.message || error)}</p>
+        `;
+      }
+    });
+
+    loadProductionRules();
+  </script>
+</body>
+</html>

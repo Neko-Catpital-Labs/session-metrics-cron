@@ -519,6 +519,8 @@
       <button id="reset" type="button">Reset</button>
       <button id="show-tasks" type="button">Tasks</button>
       <button id="show-leaderboard" type="button">Leaderboard</button>
+      <a class="nav-link" href="/steps.html">Task Sequences</a>
+      <a class="nav-link" href="/steps.html?view=graph">Step Graph</a>
       <label class="toggle-control">
         <input id="toggle-uncategorized" type="checkbox">
         <span>Show uncategorized subrules</span>
@@ -559,20 +561,23 @@
 
   <script>
     const stages = [
-      { id: "evidence", label: "Evidence", x: 150, width: 280, left: 10, right: 290 },
-      { id: "foundation", label: "Foundation", x: 430, width: 280, left: 290, right: 570 },
+      { id: "foundation", label: "Foundation", x: 150, width: 280, left: 10, right: 290 },
+      { id: "dependency", label: "Dependency", x: 430, width: 280, left: 290, right: 570 },
       { id: "compatibility", label: "Compatibility", x: 710, width: 280, left: 570, right: 850 },
-      { id: "behavior", label: "Behavior", x: 990, width: 280, left: 850, right: 1130 },
-      { id: "verification", label: "Verification", x: 1270, width: 280, left: 1130, right: 1410 },
-      { id: "cleanup", label: "Cleanup", x: 1550, width: 280, left: 1410, right: 1690 },
-      { id: "diagnostics", label: "Diagnostics", x: 1830, width: 280, left: 1690, right: 1970 }
+      { id: "refactor", label: "Refactor", x: 990, width: 280, left: 850, right: 1130 },
+      { id: "behavior", label: "Behavior", x: 1270, width: 280, left: 1130, right: 1410 },
+      { id: "surface", label: "Surface", x: 1550, width: 280, left: 1410, right: 1690 },
+      { id: "verification", label: "Verification", x: 1830, width: 280, left: 1690, right: 1970 },
+      { id: "docs", label: "Docs", x: 2110, width: 280, left: 1970, right: 2250 },
+      { id: "cleanup", label: "Cleanup", x: 2390, width: 280, left: 2250, right: 2530 },
+      { id: "diagnostics", label: "Diagnostics", x: 2670, width: 280, left: 2530, right: 2810 }
     ];
 
     let nodes = [
       {
         id: "capture-evidence",
         label: "Capture evidence",
-        stage: "evidence",
+        stage: "foundation",
         kind: "task",
         plainEnglish: "Start by proving what is broken or what behavior exists today before changing code.",
         promptMeaning: "Ask the AI to add a workflow step that gathers reproduction details, current behavior, logs, screenshots, or failing tests first."
@@ -611,7 +616,7 @@
               fullLabel: "typed config model",
               x: 148,
               y: 0,
-              plainEnglish: "Convert raw config into the model the implementation will consume.",
+              plainEnglish: "Convert raw config into the model later steps will consume.",
               promptMeaning: "Ask for adapter/model work before behavior reads the values."
             },
             {
@@ -630,7 +635,7 @@
               x: 148,
               y: 32,
               plainEnglish: "Use the configured value only after reader, schema, model, and validation are present.",
-              promptMeaning: "Ask for behavior implementation after the foundation graph is in place."
+              promptMeaning: "Ask for the behavior change after the foundation graph is in place."
             }
           ],
           edges: [
@@ -782,8 +787,8 @@
         label: "Verify terminally",
         stage: "verification",
         kind: "task",
-        plainEnglish: "Run or add verification after implementation exists, so proof matches the final behavior.",
-        promptMeaning: "Ask the AI to include a final verification workflow after the implementation workflow."
+        plainEnglish: "Run or add verification after the change steps exist, so proof matches the final behavior.",
+        promptMeaning: "Ask the AI to include a final verification workflow after the change workflows."
       },
       {
         id: "cleanup",
@@ -818,8 +823,8 @@
         target: "behavior",
         kind: "rule",
         label: "evidence before behavior",
-        plainEnglish: "Do not start implementation until the current state or failure is captured.",
-        prompt: "Plan evidence-gathering before implementation when the request mentions reproduction, failing behavior, regression, or observed symptoms."
+        plainEnglish: "Do not start the change until the current state or failure is captured.",
+        prompt: "Plan evidence-gathering before the change when the request mentions reproduction, failing behavior, regression, or observed symptoms."
       },
       {
         id: "foundation-before-behavior",
@@ -845,8 +850,8 @@
         target: "verification",
         kind: "rule",
         label: "behavior before verification",
-        plainEnglish: "Verify after the implementation exists, not before.",
-        prompt: "Place terminal verification after the implementation workflow."
+        plainEnglish: "Verify after the change exists, not before.",
+        prompt: "Place terminal verification after the change workflow."
       },
       {
         id: "behavior-before-cleanup",
@@ -982,8 +987,8 @@
     const RULE_DEFINITIONS = {
       "evidence-before-change": {
         title: "Evidence before change",
-        stage: "evidence",
-        plainEnglish: "Capture the current behavior, failure, or reproduction before changing implementation.",
+        stage: "foundation",
+        plainEnglish: "Capture the current behavior, failure, or reproduction before making the change.",
         promptMeaning: "Plan an evidence-gathering PR before any behavior-changing PR."
       },
       "foundation-before-behavior": {
@@ -1011,17 +1016,17 @@
         promptMeaning: "Plan separate PRs for each command, API, or user-facing surface instead of bundling them."
       },
       "terminal-verification-after-implementation": {
-        title: "Terminal verification after implementation",
+        title: "Verification gates the change steps",
         stage: "verification",
-        plainEnglish: "Run final verification after the implementation exists so proof matches the finished behavior.",
-        promptMeaning: "Plan terminal or end-to-end verification after implementation PRs."
+        plainEnglish: "Run final verification after the change steps exist so proof matches the finished behavior.",
+        promptMeaning: "Plan terminal or end-to-end verification after the change steps."
       }
     };
 
     const ROLE_DEFINITIONS = {
       "action:capture-evidence": {
         title: "Capture evidence",
-        stage: "evidence",
+        stage: "foundation",
         plainEnglish: "Gather proof of the current behavior, failure, reproduction, or baseline.",
         promptMeaning: "Ask for a PR that captures evidence before code changes."
       },
@@ -1034,7 +1039,7 @@
       "tag:behavior": {
         title: "Behavior",
         stage: "behavior",
-        plainEnglish: "The implementation PR that changes product, workflow, command, API, or user-visible behavior.",
+        plainEnglish: "The PR that changes product, workflow, command, API, or user-visible behavior.",
         promptMeaning: "Ask for behavior work after prerequisite evidence, foundation, or compatibility PRs."
       },
       "action:keep-compatibility-contract": {
@@ -1050,16 +1055,16 @@
         promptMeaning: "Ask for one migrated command surface per PR."
       },
       "tag:implementation": {
-        title: "Implementation",
+        title: "Change steps",
         stage: "behavior",
-        plainEnglish: "The code change that implements the intended behavior after prerequisites are ready.",
-        promptMeaning: "Ask for implementation before terminal verification."
+        plainEnglish: "The change steps that realize the intended behavior after prerequisites are ready.",
+        promptMeaning: "Ask for the change steps before terminal verification."
       },
       "action:run-terminal-verification": {
         title: "Run terminal verification",
         stage: "verification",
-        plainEnglish: "Run final checks against the completed implementation.",
-        promptMeaning: "Ask for terminal or end-to-end verification after implementation PRs."
+        plainEnglish: "Run final checks against the completed change.",
+        promptMeaning: "Ask for terminal or end-to-end verification after the change steps."
       },
       "action:remove-migrated-cleanup-paths": {
         title: "Remove migrated cleanup paths",
@@ -1099,7 +1104,7 @@
       },
       "refactor": {
         title: "Refactor",
-        stage: "foundation",
+        stage: "refactor",
         plainEnglish: "Restructure code to make a later behavior change easier or safer.",
         promptMeaning: "Ask for refactoring before the behavior that relies on it."
       },
@@ -1117,7 +1122,7 @@
       },
       "docs/docs-update": {
         title: "Docs update",
-        stage: "cleanup",
+        stage: "docs",
         plainEnglish: "Update documentation after the behavior or interface being documented is known.",
         promptMeaning: "Ask for docs updates after the relevant behavior or contract change."
       }
@@ -1131,8 +1136,11 @@
     function keywordStageForLabel(label) {
       const value = String(label || "").toLowerCase();
       if (value.includes("diagnostic") || value.includes("unmapped") || value.includes("candidate subrule")) return "diagnostics";
-      if (value.includes("evidence") || value.includes("repro")) return "evidence";
-      if (value.includes("foundation") || value.includes("schema") || value.includes("config") || value.includes("adapter")) return "foundation";
+      if (value.includes("depend") || value.includes("bump") || value.includes("lockfile")) return "dependency";
+      if (value.includes("refactor") || value.includes("restructure")) return "refactor";
+      if (value.includes("docs") || value.includes("documentation") || value.includes("readme")) return "docs";
+      if (value.includes("evidence") || value.includes("repro") || value.includes("foundation") || value.includes("schema") || value.includes("config") || value.includes("adapter")) return "foundation";
+      if (value.includes("surface") || value.includes("cli")) return "surface";
       if (value.includes("compat") || value.includes("migration") || value.includes("api") || value.includes("contract")) return "compatibility";
       if (value.includes("verify") || value.includes("test") || value.includes("validation")) return "verification";
       if (value.includes("cleanup") || value.includes("legacy") || value.includes("delete") || value.includes("remove")) return "cleanup";
@@ -1143,13 +1151,19 @@
       return definitionForLabel(label)?.stage || keywordStageForLabel(label);
     }
 
+    function stageForChangeType(changeType) {
+      const value = String(changeType || "");
+      const laneIds = ["foundation", "dependency", "compatibility", "refactor", "behavior", "surface", "verification", "docs", "cleanup"];
+      return laneIds.includes(value) ? value : "";
+    }
+
     function stageForPhase(phase) {
       const mapping = {
         foundation: "foundation",
         change: "behavior",
-        surface: "compatibility",
+        surface: "surface",
         verification: "verification",
-        docs: "cleanup",
+        docs: "docs",
         cleanup: "cleanup"
       };
       return mapping[String(phase || "")] || "";
@@ -1172,6 +1186,7 @@
     function stageForRule(rule) {
       const firstItem = ruleItem(rule.before?.[0] || rule.after?.[0] || "");
       return RULE_DEFINITIONS[rule.id]?.stage
+        || stageForChangeType(firstItem.changeType || firstItem.tags?.changeType)
         || stageForPhase(firstItem.tags?.phase || firstItem.phase)
         || stageForRoleLabel(firstItem.label);
     }
@@ -1201,7 +1216,7 @@
         "behavior/config-behavior": "Implement behavior controlled by configuration or repository settings.",
         "behavior/feature-behavior": "Implement the main product or workflow behavior.",
         "behavior/test-fixture": "Add fixtures or harness support needed to verify behavior.",
-        "verification/terminal-tests": "Run or add terminal-level verification after implementation is present.",
+        "verification/terminal-tests": "Run or add terminal-level verification after the change steps are present.",
         "cleanup/legacy-cleanup": "Remove legacy code after the replacement behavior is in place."
       };
       if (descriptions[value]) return descriptions[value];
@@ -1437,8 +1452,11 @@
           id,
           label: item.title || graphLabel(label),
           displayTitle: item.title || "",
+          changeType: item.changeType || tags.changeType || "",
           fullLabel: label,
-          stage: stageForPhase(tags.phase || item.phase) || stageForRoleLabel(label),
+          stage: stageForChangeType(item.changeType || tags.changeType)
+            || stageForPhase(tags.phase || item.phase)
+            || stageForRoleLabel(label),
           kind: isAction ? "action" : "task",
           tags,
           taskKey: item.taskKey || "",
@@ -2393,8 +2411,10 @@
 
     function tagChips(node) {
       const tags = node.tags || {};
+      const changeType = node.changeType || tags.changeType || "";
       const chips = [
-        tags.taskKind ? `<span class="pill tag-chip">task-kind: ${escapeHtml(tags.taskKind)}</span>` : "",
+        changeType ? `<span class="pill tag-chip">change: ${escapeHtml(changeType)}</span>` : "",
+        !changeType && tags.taskKind ? `<span class="pill tag-chip">task-kind: ${escapeHtml(tags.taskKind)}</span>` : "",
         tags.behaviorType ? `<span class="pill tag-chip">behavior: ${escapeHtml(tags.behaviorType)}</span>` : "",
         tags.architectureLayer ? `<span class="pill tag-chip">layer: ${escapeHtml(tags.architectureLayer)}</span>` : "",
         tags.phase ? `<span class="pill tag-chip">phase: ${escapeHtml(tags.phase)}</span>` : "",

@@ -307,6 +307,7 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
                 payload, status = app.ready_response(
                     static_path=static_path,
                     rules_static_path=rules_static_path,
+                    steps_static_path=app.DEFAULT_STEPS_STATIC_PATH,
                     workflow_analysis_root=root,
                     table="project.dataset.table",
                     project_id="project",
@@ -406,6 +407,64 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("data-label=\"Score Trend\"", html)
         self.assertIn("table,\n      tbody", html)
         self.assertIn("min-width: 0", html)
+
+    def test_canonical_tags_parses_both_vocabularies(self) -> None:
+        new_style = app.canonical_tags(["change-type:behavior", "layer:core-domain", "qualifier:risky"])
+        self.assertEqual(new_style["changeType"], "behavior")
+        self.assertEqual(new_style["architectureLayer"], "core-domain")
+        self.assertEqual(new_style["qualifiers"], ["risky"])
+
+        legacy = app.canonical_tags(["task-kind:foundation", "phase:foundation"])
+        self.assertEqual(legacy["changeType"], "foundation")
+        self.assertEqual(legacy["taskKind"], "foundation")
+        self.assertEqual(legacy["phase"], "foundation")
+
+        # Explicit change-type wins over legacy fields.
+        mixed = app.canonical_tags(["change-type:surface", "task-kind:behavior"])
+        self.assertEqual(mixed["changeType"], "surface")
+
+        # Legacy phase "change" maps to the behavior change type.
+        self.assertEqual(app.canonical_tags(["phase:change"])["changeType"], "behavior")
+        self.assertEqual(app.canonical_tags(["phase:surface"])["changeType"], "surface")
+
+    def test_normalize_task_passes_gates_and_change_type_mix(self) -> None:
+        new_shape = app.normalize_task(
+            {
+                "stackId": "stack-1",
+                "changeTypeMix": {"foundation": 1, "behavior": 1},
+                "actions": [
+                    {
+                        "prNumber": 1,
+                        "nodeId": "add-config-schema",
+                        "changeType": "foundation",
+                        "gate": {"hasTests": True, "scope": "local", "verifiedBy": [3]},
+                    },
+                    {
+                        "prNumber": 2,
+                        "nodeId": "wire-behavior",
+                        "changeType": "behavior",
+                        "gate": {"hasTests": False, "scope": "none", "verifiedBy": []},
+                    },
+                ],
+            }
+        )
+        self.assertEqual(new_shape["changeTypeMix"], {"foundation": 1, "behavior": 1})
+        self.assertEqual(new_shape["actions"][0]["gate"]["state"], "passed")
+        self.assertEqual(new_shape["actions"][0]["gate"]["raw"]["scope"], "local")
+        self.assertEqual(new_shape["actions"][1]["gate"]["state"], "open")
+
+        old_shape = app.normalize_task(
+            {
+                "stackId": "stack-2",
+                "phaseMix": {"foundation": 1, "change": 1},
+                "actions": [{"prNumber": 1, "nodeId": "n1", "phase": "change"}],
+            }
+        )
+        self.assertEqual(old_shape["changeTypeMix"], {"foundation": 1, "behavior": 1})
+        self.assertEqual(old_shape["actions"][0]["changeType"], "behavior")
+        self.assertIsNone(old_shape["actions"][0]["gate"])
+        # The old run stays renderable: phaseMix is preserved alongside.
+        self.assertEqual(old_shape["phaseMix"], {"foundation": 1, "change": 1})
 
     def test_rules_response_attaches_parent_scoped_subrules(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -625,6 +684,8 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertFalse(action_rule["isBackoffPrior"])
         self.assertEqual(action_rule["before"][0]["title"], "Add config reader")
         self.assertEqual(action_rule["before"][0]["tags"]["taskKind"], "foundation")
+        # Old-vocabulary tags still resolve a changeType (backward compatibility).
+        self.assertEqual(action_rule["before"][0]["changeType"], "foundation")
         self.assertEqual(action_rule["before"][0]["taskKey"], "foundation/config-input/input-config-reader")
 
         backoff_rule = next(
@@ -682,158 +743,101 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("diagnostic-parent:", html)
         self.assertIn("Drag nodes to pin them", html)
         self.assertIn("nested nodes also repel and drag", html)
+        self.assertIn("function stageForChangeType", html)
+        # Nine changeType lanes plus diagnostics; the evidence lane is retired.
+        for lane in ["foundation", "dependency", "compatibility", "refactor", "behavior", "surface", "verification", "docs", "cleanup", "diagnostics"]:
+            self.assertIn(f'id: "{lane}", label: "{lane.title()}"', html)
+        self.assertNotIn('id: "evidence", label: "Evidence"', html)
+        self.assertNotIn('stage: "evidence"', html)
+        # "implementation" never renders: only machine-id keys may contain it.
+        for line in html.splitlines():
+            if "implementation" in line.lower():
+                self.assertTrue(
+                    "terminal-verification-after-implementation" in line or '"tag:implementation"' in line,
+                    f"unexpected implementation wording: {line.strip()[:120]}",
+                )
+        self.assertIn("stageForChangeType(item.changeType || tags.changeType)", html)
+        self.assertIn("change: ${escapeHtml(changeType)}", html)
+        self.assertIn("href=\"/steps.html\"", html)
+        self.assertIn("href=\"/steps.html?view=graph\"", html)
         self.assertIn("DEFAULT_RULES_STATIC_PATH = REPO_ROOT / \"docs\" / \"rules-d3-poc.html\"", app_source)
 
-    def test_static_rules_d3_poc_page_is_interactive_demo(self) -> None:
-        html = (REPO_ROOT / "docs" / "rules-d3-poc.html").read_text()
+    def test_static_rules_steps_page_is_step_sequence_view(self) -> None:
+        html = (REPO_ROOT / "docs" / "rules-steps.html").read_text()
         app_source = (REPO_ROOT / "scripts" / "splitter_metric_tree_app.py").read_text()
 
-        self.assertIn("<title>Rule Graph</title>", html)
-        self.assertIn("Live production view of generated rules", html)
+        self.assertIn("<title>Step Sequences</title>", html)
+        self.assertIn("href=\"/rules.html\"", html)
+        self.assertIn("requestedView === \"graph\"", html)
+        self.assertIn("DEFAULT_STEPS_STATIC_PATH = REPO_ROOT / \"docs\" / \"rules-steps.html\"", app_source)
+        self.assertIn("if parsed.path == \"/steps.html\":", app_source)
         self.assertIn("https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js", html)
-        self.assertIn("d3.forceSimulation", html)
-        self.assertIn("d3.forceManyBody().strength(-520)", html)
-        self.assertIn("d3.forceCollide(node => nodeCollisionRadius(node))", html)
-        self.assertIn("function stageBand", html)
-        self.assertIn("id: \"diagnostics\", label: \"Diagnostics\"", html)
-        self.assertIn("const RULE_DEFINITIONS", html)
-        self.assertIn("const ROLE_DEFINITIONS", html)
-        self.assertIn("\"compatibility-before-exposure\"", html)
-        self.assertIn("stage: \"compatibility\"", html)
-        self.assertIn("\"terminal-verification-after-implementation\"", html)
-        self.assertIn("stage: \"verification\"", html)
-        self.assertIn("stage: \"diagnostics\"", html)
-        self.assertIn("function stageForRule", html)
-        self.assertIn("function stageForRoleLabel", html)
-        self.assertIn("RULE_DEFINITIONS[rule.id]?.stage", html)
-        self.assertNotIn("function midpointStage", html)
-        self.assertIn("Prerequisite structure that later PRs depend on", html)
-        self.assertIn("Protect existing callers, stored data, command behavior", html)
-        self.assertNotIn("\"uncategorized-subrules\"", html)
-        self.assertNotIn("unmapped mined parent rules", html)
-        self.assertNotIn("candidate subrules", html)
-        self.assertIn("const baseWidth = 1760", html)
-        self.assertIn("let width = baseWidth", html)
-        self.assertIn("const stageHorizontalPadding", html)
-        self.assertIn("function layoutStageColumns", html)
-        self.assertIn("function nodeMaxBoxWidth", html)
-        self.assertIn("stage.width = Math.max(stageMinWidth", html)
-        self.assertIn("svg.attr(\"viewBox\", [0, 0, width, height])", html)
-        self.assertIn(".attr(\"width\", stage => stage.width)", html)
-        self.assertIn("function clampOuterX", html)
-        self.assertIn("function clampOuterPoint", html)
-        self.assertIn("function containOuterNodes", html)
-        self.assertIn(".attr(\"data-stage\", node => node.stage)", html)
-        self.assertIn(".attr(\"data-label\", node => node.fullLabel || node.label)", html)
-        self.assertIn("containOuterNodes();", html)
-        self.assertIn("simulation.stop()", html)
-        self.assertNotIn("render();\n    fitGraph();\n    loadProductionRules();", html)
-        self.assertIn("function resolveOuterDragPoint", html)
-        self.assertIn("function resolveNestedDragPoint", html)
-        self.assertIn("function resolveNestedCollisions", html)
-        self.assertIn("function updateOuterCollision", html)
-        self.assertIn("function clampNestedPoint", html)
-        self.assertIn("function nestedCanFit", html)
-        self.assertIn("function nestedIsRequested", html)
-        self.assertIn("function updateNestedClip", html)
-        self.assertIn("clipPathUnits", html)
-        self.assertIn("clip-path", html)
-        self.assertIn("scaleExtent([0.35, 3.2])", html)
-        self.assertIn("d3.zoom", html)
-        self.assertIn("d3.drag", html)
-        self.assertIn("function releaseNode", html)
-        self.assertIn("function renderNestedGraph", html)
-        self.assertIn("function graphFromRulesPayload", html)
-        self.assertIn("function nestedGraphFromSubrules", html)
-        self.assertIn("function diagnosticParents", html)
-        self.assertIn("function graphFromPlanningDag", html)
-        self.assertIn("payload.planningDag", html)
-        self.assertIn("Learned planning DAG", html)
-        self.assertIn("function renderDagEdgeEvidence", html)
-        self.assertIn("function loadProductionRules", html)
-        self.assertIn("function replaceGraph", html)
-        self.assertIn("function graphLabel", html)
-        self.assertIn("function straightRectPath", html)
-        self.assertIn("function layoutSubruleGraph", html)
-        self.assertIn("function neighborOrderScore", html)
-        self.assertIn("layoutSubruleGraph(nestedNodes, nestedEdges)", html)
-        self.assertIn("layerNodes.sort", html)
-        self.assertIn("node.fullLabel ? graphLabel(node.fullLabel) : node.label", html)
-        self.assertIn("return `M${source.x},${source.y} L${target.x},${target.y}`", html)
-        self.assertNotIn("C${sx + bend}", html)
-        self.assertIn("task node", html)
-        self.assertIn("rule node", html)
-        self.assertIn("node-swatch rule-node", html)
-        self.assertIn("kind-badge", html)
-        self.assertIn("subrule-indicator", html)
-        self.assertIn("subrule-indicators", html)
-        self.assertIn("function nodeKindLabel", html)
-        self.assertIn("function kindBadgeWidth", html)
-        self.assertIn("function nodeSubruleCount", html)
-        self.assertIn("function categorizedSubruleCount", html)
-        self.assertIn("function uncategorizedSubruleCount", html)
-        self.assertIn("function subruleIndicatorItems", html)
-        self.assertIn("function subruleIndicatorLayout", html)
-        self.assertIn("function subruleIndicatorWidth", html)
-        self.assertIn("function backoffSubruleCounts", html)
-        self.assertIn("A ${backoff.actionLevel}", html)
-        self.assertIn("B ${backoff.backoffLevel}", html)
-        self.assertIn("U ${uncategorizedSubruleCount(node)}", html)
-        self.assertIn("subrules with action-level (backoff level 0) held-out support", html)
-        self.assertIn("uncategorized subrules from this missing source parent", html)
-        self.assertIn("nested subrules", html)
-        self.assertIn("function renderRuleEvidence", html)
-        self.assertIn("Rule evidence", html)
-        self.assertIn("Parent rules do not currently emit their own confidence", html)
-        self.assertIn("function ruleConfidencePills", html)
-        self.assertIn("avg confidence", html)
+
+        # The single changeType vocabulary drives lanes, chips, and ordering.
+        self.assertIn("const CHANGE_TYPE_ORDER", html)
+        self.assertIn("const LEGACY_PHASE_TO_CHANGE_TYPE", html)
+        self.assertIn("function changeTypeForPhase", html)
+        self.assertIn("function keywordChangeTypeForLabel", html)
+        self.assertIn("function changeTypeForNode", html)
+        self.assertIn("change: ${", html)
+        self.assertIn("changeTypeMix", html)
+
+        # Left-to-right deterministic step layout replaces lanes + force simulation.
+        self.assertIn("function assignTopoColumns", html)
+        self.assertIn("function columnLayout", html)
+        self.assertIn("column-band", html)
+        self.assertIn("Step ${band.column + 1}", html)
+        self.assertNotIn("const stages = [", html)
+        self.assertNotIn("d3.forceSimulation", html)
+        self.assertNotIn("function stageForPhase", html)
+        self.assertNotIn("function stageForRoleLabel", html)
+        self.assertNotIn("function layoutStageColumns", html)
+
+        # Rules and subrules are edges between steps; the nested subsystem is gone.
+        self.assertIn("function sequenceFromRulesPayload", html)
+        self.assertNotIn("function nestedGraphFromSubrules", html)
+        self.assertNotIn("function renderNestedGraph", html)
+        self.assertNotIn("nestedSimulations", html)
+        self.assertNotIn("function zoomNestedNode", html)
+        self.assertIn("function selectEdge", html)
+        self.assertIn("function renderEdgeEvidence", html)
         self.assertIn("function renderSubruleProof", html)
         self.assertIn("function proofSummary", html)
         self.assertIn("function exampleLink", html)
         self.assertIn("fromCommitUrl", html)
         self.assertIn("target=\"_blank\"", html)
-        self.assertIn("fetch(\"/api/splitter-rules\"", html)
-        self.assertIn("id=\"toggle-uncategorized\"", html)
-        self.assertIn("Show uncategorized subrules", html)
-        self.assertIn("uncategorizedParents", html)
-        self.assertIn("diagnostic-parent:", html)
-        self.assertIn("alwaysVisible", html)
-        self.assertIn("showUncategorizedSubrules", html)
-        self.assertIn("uncategorizedToggle.addEventListener(\"change\"", html)
-        self.assertIn("production rule graph", html.lower())
-        self.assertIn("function nestedExpansion", html)
-        self.assertIn("function nestedIsFocused", html)
-        self.assertIn("const nestedSimulations = new Map()", html)
-        self.assertIn("function ensureNestedSimulation", html)
-        self.assertIn("function nestedDragStarted", html)
-        self.assertIn("function nestedDragged", html)
-        self.assertIn("function releaseNestedNode", html)
-        self.assertIn("function stopNestedPointer", html)
-        self.assertIn("pointer-events: all;", html)
-        self.assertNotIn("force layout ${expansion.toFixed(1)}x", html)
-        self.assertNotIn("nested-title", html)
-        self.assertIn("function zoomNestedNode", html)
-        self.assertIn("function selectNestedNode", html)
-        self.assertIn("function selectNestedEdge", html)
-        self.assertIn("Zoom Node Detail", html)
-        self.assertIn("nestedGraph", html)
-        self.assertIn("reader-to-schema", html)
-        self.assertIn("schema-to-model", html)
-        self.assertIn("tests-to-behavior", html)
-        self.assertIn("nested-edge-hit", html)
-        self.assertIn("nested-node-hit", html)
-        self.assertIn("nested-node-body", html)
-        self.assertIn(".node.is-selected > rect", html)
-        self.assertIn("nested subrule", html)
-        self.assertIn("new URLSearchParams(window.location.search).get(\"demo\") === \"nested\"", html)
-        self.assertIn("contains nested subrules", html)
-        self.assertIn(".on(\"dblclick\"", html)
-        self.assertIn("const point = resolveOuterDragPoint(node, event.x, event.y)", html)
+        self.assertIn("backoff L", html)
+
+        # Verification gates render on steps and between task-strip steps.
+        self.assertIn("function gateStateForNode", html)
+        self.assertIn("function renderGateGlyph", html)
+        self.assertIn("function gateGlyphHtml", html)
+        self.assertIn("gate-badge", html)
+        self.assertIn("gate-glyph", html)
+        self.assertIn("no verification gate recorded", html)
+
+        # Task strips are the default view.
+        self.assertIn("function renderTaskStrips", html)
+        self.assertIn("function taskStepTitle", html)
+        self.assertIn("function selectTaskStep", html)
+        self.assertIn("let activeView = \"tasks\"", html)
+        self.assertIn("function setView", html)
+        self.assertIn("task-strip-row", html)
+
+        # Change-type order strip for tag-level priors.
+        self.assertIn("function renderOrderStrip", html)
+        self.assertIn("Change-type order priors", html)
+        self.assertIn("showBackoffPriors", html)
+
+        # Demo fallback exercises the new model offline.
+        self.assertIn("const demoTasks", html)
+        self.assertIn("const demoNodes", html)
+        self.assertNotIn("nestedGraph:", html)
+        self.assertIn("Add config-driven behavior", html)
+
         self.assertIn("function selectNode", html)
-        self.assertIn("function selectEdge", html)
-        self.assertIn("Keep compatibility contract", html)
         self.assertIn("Prompt instruction", html)
-        self.assertIn("rules-d3-poc.html", app_source)
+        self.assertIn("production planning model", html.lower())
         self.assertIn("\"roleCatalog\": role_catalog", app_source)
         self.assertIn("\"planningDag\": planning_dag", app_source)
 
