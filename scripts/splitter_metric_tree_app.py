@@ -23,7 +23,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_STATIC_PATH = REPO_ROOT / "docs" / "splitter-metric-tree-mvp.html"
 DEFAULT_RULES_STATIC_PATH = REPO_ROOT / "docs" / "splitter-rules.html"
 DEFAULT_RULES_D3_POC_STATIC_PATH = REPO_ROOT / "docs" / "rules-d3-poc.html"
-DEFAULT_ACTION_RULE_GRAPH_POC_STATIC_PATH = REPO_ROOT / "docs" / "action-rule-graph-poc.html"
 DEFAULT_WORKFLOW_ANALYSIS_ROOT = Path(
     os.environ.get(
         "WORKFLOW_ANALYSIS_SERVICE_ROOT",
@@ -148,7 +147,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--static-path", type=Path, default=DEFAULT_STATIC_PATH)
     parser.add_argument("--rules-static-path", type=Path, default=DEFAULT_RULES_STATIC_PATH)
     parser.add_argument("--rules-d3-poc-static-path", type=Path, default=DEFAULT_RULES_D3_POC_STATIC_PATH)
-    parser.add_argument("--action-rule-graph-poc-static-path", type=Path, default=DEFAULT_ACTION_RULE_GRAPH_POC_STATIC_PATH)
     parser.add_argument("--workflow-analysis-root", type=Path, default=DEFAULT_WORKFLOW_ANALYSIS_ROOT)
     parser.add_argument("--cache-ttl-seconds", type=int, default=int(os.environ.get("SPLITTER_TREE_CACHE_TTL_SECONDS", str(DEFAULT_CACHE_TTL_SECONDS))))
     return parser.parse_args()
@@ -1117,7 +1115,6 @@ def make_handler(
     static_path: Path,
     rules_static_path: Path,
     rules_d3_poc_static_path: Path,
-    action_rule_graph_poc_static_path: Path,
     workflow_analysis_root: Path,
     table: str,
     project_id: str,
@@ -1140,9 +1137,12 @@ def make_handler(
                 "/healthz",
                 "/readyz",
             }:
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
+                if parsed.path == "/action-rule-graph-poc.html":
+                    self.send_redirect("/rules-d3-poc.html?demo=nested")
+                else:
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -1158,7 +1158,7 @@ def make_handler(
                 self.send_static(rules_d3_poc_static_path)
                 return
             if parsed.path == "/action-rule-graph-poc.html":
-                self.send_static(action_rule_graph_poc_static_path)
+                self.send_redirect("/rules-d3-poc.html?demo=nested")
                 return
             if parsed.path == "/api/splitter-metric-tree":
                 self.send_metric_tree(parse_qs(parsed.query))
@@ -1193,6 +1193,12 @@ def make_handler(
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def send_redirect(self, location: str) -> None:
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", location)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
 
         def send_metric_tree(self, params: dict[str, list[str]]) -> None:
             try:
@@ -1254,7 +1260,6 @@ def main() -> int:
         args.static_path,
         args.rules_static_path,
         args.rules_d3_poc_static_path,
-        args.action_rule_graph_poc_static_path,
         args.workflow_analysis_root,
         args.table,
         args.project_id,
