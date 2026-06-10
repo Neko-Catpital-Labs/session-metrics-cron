@@ -659,6 +659,24 @@ def read_json_file(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def read_jsonl_file(path: Path, limit: int | None = None) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                rows.append(value)
+            if limit is not None and len(rows) >= limit:
+                break
+    return rows
+
+
 def latest_learning_run_path(workflow_analysis_root: Path) -> Path:
     runs_dir = workflow_analysis_root / "target" / "stack-learning" / "runs"
     paths = sorted(runs_dir.glob("*/pipeline-run.json"))
@@ -679,6 +697,77 @@ def rule_item_label(item: dict[str, Any]) -> str:
     item_type = item.get("type") or "item"
     item_id = item.get("id") or ""
     return f"{item_type}:{item_id}" if item_id else str(item_type)
+
+
+def canonical_tags(tag_list: list[Any] | None) -> dict[str, Any]:
+    """Parse action tags like task-kind:behavior into a canonical-label dict."""
+    parsed: dict[str, Any] = {"qualifiers": []}
+    for tag in tag_list or []:
+        text = str(tag)
+        if ":" not in text:
+            continue
+        prefix, value = text.split(":", 1)
+        if prefix == "task-kind":
+            parsed["taskKind"] = value
+        elif prefix == "behavior-type":
+            parsed["behaviorType"] = value
+        elif prefix == "layer":
+            parsed["architectureLayer"] = value
+        elif prefix == "phase":
+            parsed["phase"] = value
+        elif prefix == "qualifier":
+            parsed["qualifiers"].append(value)
+    return parsed
+
+
+def dominant_task_key(task_keys: dict[str, Any] | None) -> str:
+    if not task_keys:
+        return ""
+    return sorted(task_keys.items(), key=lambda item: (-int(item[1] or 0), item[0]))[0][0]
+
+
+def action_index(catalog: dict[str, Any], role_catalog: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Index resolvable actions by id from the catalog plus learned role-catalog nodes."""
+    index: dict[str, dict[str, Any]] = {}
+    for action in catalog.get("actions") or []:
+        if isinstance(action, dict) and action.get("id"):
+            index[str(action["id"])] = action
+    for node in (role_catalog or {}).get("nodes") or []:
+        if not isinstance(node, dict) or not node.get("id"):
+            continue
+        node_action_id = f"learned-node-{node['id']}"
+        if node_action_id not in index:
+            index[node_action_id] = {
+                "id": node_action_id,
+                "title": node.get("title"),
+                "tags": node.get("tags") or [],
+                "phase": node.get("phase"),
+                "metadata": {"nodeId": node["id"], "taskKeys": node.get("taskKeys") or {}},
+            }
+    return index
+
+
+def resolve_rule_item(item: dict[str, Any], actions_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Resolve a rule selector to a display object; label is kept for older renderers."""
+    resolved: dict[str, Any] = {
+        "label": rule_item_label(item),
+        "type": item.get("type"),
+        "id": item.get("id"),
+    }
+    if item.get("type") == "action":
+        action = actions_by_id.get(str(item.get("id") or ""))
+        if action:
+            metadata = action.get("metadata") or {}
+            resolved.update(
+                {
+                    "title": action.get("title"),
+                    "tags": canonical_tags(action.get("tags")),
+                    "taskKey": dominant_task_key(metadata.get("taskKeys")),
+                    "phase": action.get("phase"),
+                    "nodeId": metadata.get("nodeId"),
+                }
+            )
+    return resolved
 
 
 def subrule_identity(item: dict[str, Any]) -> str:
@@ -716,9 +805,15 @@ def normalize_subrule(item: dict[str, Any]) -> dict[str, Any]:
         "decision": item.get("decision") or ("promoted" if item.get("promoted") else "candidate"),
         "rejectedReason": item.get("rejectedReason"),
         "failureBucket": item.get("failureBucket"),
+        "beforeTitle": item.get("beforeTitle"),
+        "afterTitle": item.get("afterTitle"),
+        "backoffLevel": (item.get("validationSupport") or {}).get("backoffLevel"),
+        "metadata": item.get("metadata") or {},
         "validation": {
             "support": (item.get("validationSupport") or {}).get("support"),
             "repoSupport": (item.get("validationSupport") or {}).get("repoSupport"),
+            "weightedSupport": (item.get("validationSupport") or {}).get("weightedSupport"),
+            "backoffLevel": (item.get("validationSupport") or {}).get("backoffLevel"),
             "pairedCount": validation_delta.get("pairedCount"),
             "stackLinkDelta": validation_delta.get("averagePlannedStackLinkCorrectnessDelta"),
             "collapseDelta": validation_delta.get("averageWorkItemCollapseRateDelta"),
@@ -797,11 +892,27 @@ def load_subrule_artifacts(workflow_analysis_root: Path, pipeline_run: dict[str,
     else:
         merged = generated.get("subrules") if isinstance(generated.get("subrules"), list) else []
     grouped = subrules_by_parent(merged)
+    split_summary = next(
+        (
+            payload.get("splitSummary")
+            for payload in (candidates, generated, report)
+            if isinstance(payload.get("splitSummary"), dict) and payload.get("splitSummary")
+        ),
+        {},
+    )
+    by_backoff_level: dict[str, int] = {}
+    for items in grouped.values():
+        for subrule in items:
+            level = subrule.get("backoffLevel")
+            key = str(level) if level is not None else "none"
+            by_backoff_level[key] = by_backoff_level.get(key, 0) + 1
     return {
         "path": str(generated_path) if generated_path else "",
         "candidatePath": str(candidate_path) if candidate_path else "",
         "reportPath": str(report_json_path) if report_json_path else "",
         "status": report.get("status") or "",
+        "splitSummary": split_summary,
+        "candidatesByBackoffLevel": by_backoff_level,
         "count": len(merged),
         "promotedCount": sum(1 for item in grouped.values() for subrule in item if subrule.get("promoted")),
         "parents": [
@@ -832,6 +943,7 @@ def normalize_rule_catalog(
     title: str,
     path: Path | None,
     subrules: dict[str, list[dict[str, Any]]] | None = None,
+    role_catalog: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     rules = catalog.get("rules") if isinstance(catalog.get("rules"), list) else []
     actions = catalog.get("actions") if isinstance(catalog.get("actions"), list) else []
@@ -841,11 +953,14 @@ def normalize_rule_catalog(
         for reason in reasons
         if isinstance(reason, dict)
     }
+    actions_by_id = action_index(catalog, role_catalog)
     normalized_rules: list[dict[str, Any]] = []
     for rule in rules:
         if not isinstance(rule, dict):
             continue
         reason_id = str(rule.get("reasonId") or "")
+        metadata = rule.get("metadata") if isinstance(rule.get("metadata"), dict) else {}
+        backoff_level = metadata.get("backoffLevel")
         normalized_rules.append(
             {
                 "id": rule.get("id"),
@@ -854,13 +969,16 @@ def normalize_rule_catalog(
                 "reasonId": reason_id,
                 "reason": reason_messages.get(reason_id, ""),
                 "triggerThreshold": rule.get("triggerThreshold"),
+                "backoffLevel": backoff_level,
+                "isBackoffPrior": bool(backoff_level is not None and int(backoff_level) >= 1),
+                "source": metadata.get("source") or "",
                 "before": [
-                    rule_item_label(item)
+                    resolve_rule_item(item, actions_by_id)
                     for item in rule.get("before") or []
                     if isinstance(item, dict)
                 ],
                 "after": [
-                    rule_item_label(item)
+                    resolve_rule_item(item, actions_by_id)
                     for item in rule.get("after") or []
                     if isinstance(item, dict)
                 ],
@@ -945,6 +1063,7 @@ def rules_response(workflow_analysis_root: Path) -> dict[str, Any]:
                 title="Generated candidate rules",
                 path=generated_path,
                 subrules=grouped_subrules,
+                role_catalog=role_catalog,
             )
         )
     effective_path = artifact_path(workflow_analysis_root, pipeline_run, "effectiveRuleCatalog")
@@ -956,14 +1075,28 @@ def rules_response(workflow_analysis_root: Path) -> dict[str, Any]:
                 title="Effective rules after promotion gate",
                 path=effective_path,
                 subrules=grouped_subrules,
+                role_catalog=role_catalog,
             )
         )
     uncategorized_parents = uncategorized_subrule_parents(catalogs, grouped_subrules)
     visible_subrule_artifacts = {key: value for key, value in subrule_artifacts.items() if key != "byParent"}
     visible_subrule_artifacts["uncategorizedParents"] = uncategorized_parents
+    leaderboard_path = artifact_path(workflow_analysis_root, pipeline_run, "experimentLeaderboard")
+    if not leaderboard_path or not leaderboard_path.exists():
+        fallback = pipeline_path.parent / "experiments" / "leaderboard.json"
+        leaderboard_path = fallback if fallback.exists() else None
+    leaderboard = read_json_file(leaderboard_path) if leaderboard_path else {}
+    tasks_path = artifact_path(workflow_analysis_root, pipeline_run, "tasksCorpus")
+    if not tasks_path or not tasks_path.exists():
+        fallback = pipeline_path.parent / "corpus" / "tasks.jsonl"
+        tasks_path = fallback if fallback.exists() else None
+    tasks = read_jsonl_file(tasks_path, limit=500) if tasks_path else []
     return {
         "workflowAnalysisRoot": str(workflow_analysis_root),
         "pipelineRunPath": str(pipeline_path),
+        "splitSummary": subrule_artifacts.get("splitSummary") or {},
+        "leaderboard": leaderboard,
+        "tasks": tasks,
         "run": {
             "runId": pipeline_run.get("runId"),
             "collectedAt": pipeline_run.get("collectedAt"),
@@ -1043,6 +1176,9 @@ def rules_artifacts_check(workflow_analysis_root: Path) -> dict[str, Any]:
     pipeline_path = latest_learning_run_path(workflow_analysis_root)
     pipeline_run = read_json_file(pipeline_path)
     subrule_artifacts = load_subrule_artifacts(workflow_analysis_root, pipeline_run, pipeline_path)
+    leaderboard_path = artifact_path(workflow_analysis_root, pipeline_run, "experimentLeaderboard")
+    if not leaderboard_path:
+        leaderboard_path = pipeline_path.parent / "experiments" / "leaderboard.json"
     return check_result(
         "rules_artifacts",
         True,
@@ -1050,6 +1186,8 @@ def rules_artifacts_check(workflow_analysis_root: Path) -> dict[str, Any]:
         runId=pipeline_run.get("runId"),
         headSha=pipeline_run.get("headSha"),
         subruleCount=subrule_artifacts.get("count", 0),
+        splitSummaryPresent=bool(subrule_artifacts.get("splitSummary")),
+        leaderboardPresent=bool(leaderboard_path and leaderboard_path.exists()),
     )
 
 

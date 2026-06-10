@@ -221,7 +221,31 @@
     }
 
     .node.task > rect { fill: #fff; }
+    .node.action > rect { fill: #fff; stroke: #0f9f6e; stroke-width: 2; }
     .node.model-hint > rect { fill: #f8f5ff; stroke: #c4b5fd; stroke-dasharray: 5 4; }
+
+    .node.backoff-prior > rect {
+      fill: #fffaf0;
+      stroke: #d97706;
+      stroke-dasharray: 6 4;
+    }
+
+    .node.backoff-prior .kind-badge rect {
+      fill: #d97706;
+      stroke: #d97706;
+    }
+
+    .pill.tag-chip {
+      background: #ecfdf5;
+      border-color: #6ee7b7;
+      color: #065f46;
+    }
+
+    .pill.tag-chip.muted {
+      background: #f1f5f9;
+      border-color: #cbd5e1;
+      color: #64748b;
+    }
 
     .node text {
       pointer-events: none;
@@ -493,9 +517,15 @@
       <button id="zoom-nested" type="button">Zoom Node Detail</button>
       <button id="fit" type="button">Fit</button>
       <button id="reset" type="button">Reset</button>
+      <button id="show-tasks" type="button">Tasks</button>
+      <button id="show-leaderboard" type="button">Leaderboard</button>
       <label class="toggle-control">
         <input id="toggle-uncategorized" type="checkbox">
         <span>Show uncategorized subrules</span>
+      </label>
+      <label class="toggle-control">
+        <input id="toggle-backoff" type="checkbox" checked>
+        <span>Show backoff priors</span>
       </label>
     </div>
 
@@ -507,8 +537,9 @@
             <p class="subhead">Drag nodes to pin them. Double-click to release. Zoom into rule nodes to reveal nested force graphs; nested nodes also repel and drag.</p>
           </div>
           <div class="legend">
-            <span><i class="node-swatch"></i>task node</span>
+            <span><i class="node-swatch"></i>action node</span>
             <span><i class="node-swatch rule-node"></i>rule node</span>
+            <span><i class="node-swatch" style="border: 1.5px dashed #d97706; background: #fffaf0;"></i>backoff prior</span>
             <span><i class="swatch" style="background: var(--rule)"></i>rule</span>
             <span><i class="swatch" style="background: var(--subrule)"></i>subrule</span>
             <span><i class="swatch" style="background: var(--candidate)"></i>candidate</span>
@@ -877,6 +908,7 @@
     let currentZoom = 1;
     let productionPayload = null;
     let showUncategorizedSubrules = false;
+    let showBackoffPriors = true;
     const nestedSimulations = new Map();
 
     const svg = d3.select(graphEl)
@@ -1111,12 +1143,37 @@
       return definitionForLabel(label)?.stage || keywordStageForLabel(label);
     }
 
+    function stageForPhase(phase) {
+      const mapping = {
+        foundation: "foundation",
+        change: "behavior",
+        surface: "compatibility",
+        verification: "verification",
+        docs: "cleanup",
+        cleanup: "cleanup"
+      };
+      return mapping[String(phase || "")] || "";
+    }
+
+    function ruleItem(item) {
+      if (item && typeof item === "object") return item;
+      return { label: String(item || "") };
+    }
+
+    function ruleItemDisplayTitle(item) {
+      const info = ruleItem(item);
+      return info.title || graphLabel(info.label);
+    }
+
     function stageFromLabel(label) {
       return stageForRoleLabel(label);
     }
 
     function stageForRule(rule) {
-      return RULE_DEFINITIONS[rule.id]?.stage || stageForRoleLabel(rule.before?.[0] || rule.after?.[0] || "");
+      const firstItem = ruleItem(rule.before?.[0] || rule.after?.[0] || "");
+      return RULE_DEFINITIONS[rule.id]?.stage
+        || stageForPhase(firstItem.tags?.phase || firstItem.phase)
+        || stageForRoleLabel(firstItem.label);
     }
 
     function labelTitle(label) {
@@ -1281,18 +1338,18 @@
       const nestedNodes = new Map();
       const laneCounts = new Map();
 
-      function nestedNode(label) {
+      function nestedNode(label, title) {
         if (nestedNodes.has(label)) return nestedNodes.get(label);
         const lane = laneCounts.get("default") || 0;
         laneCounts.set("default", lane + 1);
         const item = {
           id: label,
-          label: graphLabel(label),
+          label: title || graphLabel(label),
           fullLabel: label,
           x: 0,
           y: lane * 34,
-          plainEnglish: labelDescription(label),
-          promptMeaning: promptMeaningForLabel(label)
+          plainEnglish: title ? `Learned action node "${title}".` : labelDescription(label),
+          promptMeaning: title ? `Plan step: ${title}` : promptMeaningForLabel(label)
         };
         nestedNodes.set(label, item);
         return item;
@@ -1301,15 +1358,17 @@
       const nestedEdges = subrules
         .filter(subrule => subrule.before && subrule.after)
         .map(subrule => {
-          const source = nestedNode(subrule.before);
-          const target = nestedNode(subrule.after);
+          const source = nestedNode(subrule.before, subrule.beforeTitle);
+          const target = nestedNode(subrule.after, subrule.afterTitle);
+          const beforeName = subrule.beforeTitle || graphLabel(subrule.before);
+          const afterName = subrule.afterTitle || graphLabel(subrule.after);
           return {
             id: subrule.id || subrule.candidateId || `${parentId}:${subrule.before}->${subrule.after}`,
-            label: `${graphLabel(subrule.before)} -> ${graphLabel(subrule.after)}`,
+            label: `${beforeName} -> ${afterName}`,
             source: source.id,
             target: target.id,
-            plainEnglish: subrule.failureBucket || subrule.rejectedReason || `${labelTitle(subrule.before)} should precede ${labelTitle(subrule.after)}.`,
-            prompt: `When both appear, plan ${subrule.before} before ${subrule.after}.`,
+            plainEnglish: subrule.failureBucket || subrule.rejectedReason || `${beforeName} should precede ${afterName}.`,
+            prompt: `When both appear, plan ${beforeName} before ${afterName}.`,
             raw: subrule
           };
         });
@@ -1368,20 +1427,39 @@
         return nodeMap.get(node.id);
       }
 
-      function ensureTask(label) {
-        const id = `task:${label}`;
+      function ensureTask(rawItem) {
+        const item = ruleItem(rawItem);
+        const label = item.label || "";
+        const id = `task:${item.id || label}`;
+        const isAction = item.type === "action" && (item.title || item.nodeId);
+        const tags = item.tags || {};
         return ensureNode({
           id,
-          label: graphLabel(label),
+          label: item.title || graphLabel(label),
+          displayTitle: item.title || "",
           fullLabel: label,
-          stage: stageForRoleLabel(label),
-          kind: "task",
-          plainEnglish: labelDescription(label),
-          promptMeaning: promptMeaningForLabel(label)
+          stage: stageForPhase(tags.phase || item.phase) || stageForRoleLabel(label),
+          kind: isAction ? "action" : "task",
+          tags,
+          taskKey: item.taskKey || "",
+          plainEnglish: isAction
+            ? `Learned action node "${item.title || label}" mined from PR stack clusters.`
+            : labelDescription(label),
+          promptMeaning: isAction
+            ? [
+                `Plan step: ${item.title || label}`,
+                tags.taskKind ? `Task kind: ${tags.taskKind}` : "",
+                tags.behaviorType ? `Behavior type: ${tags.behaviorType}` : "",
+                tags.architectureLayer ? `Architecture layer: ${tags.architectureLayer}` : "",
+                tags.phase ? `Phase: ${tags.phase}` : "",
+                item.taskKey ? `Task key group: ${item.taskKey}` : ""
+              ].filter(Boolean).join("\n")
+            : promptMeaningForLabel(label)
         });
       }
 
-      for (const rule of catalog.rules || []) {
+      const visibleRules = (catalog.rules || []).filter(rule => showBackoffPriors || !rule.isBackoffPrior);
+      for (const rule of visibleRules) {
         const before = rule.before || [];
         const after = rule.after || [];
         const ruleDefinition = RULE_DEFINITIONS[rule.id] || {};
@@ -1391,38 +1469,44 @@
           fullLabel: rule.id,
           stage: stageForRule(rule),
           kind: "rule-anchor",
-          plainEnglish: ruleDefinition.plainEnglish || rule.reason || rule.reasonId || "Generated planning rule.",
+          backoffPrior: Boolean(rule.isBackoffPrior),
+          backoffLevel: rule.backoffLevel,
+          plainEnglish: (rule.isBackoffPrior ? "Backoff prior (phase-level ordering evidence, not an action-level rule). " : "")
+            + (ruleDefinition.plainEnglish || rule.reason || rule.reasonId || "Generated planning rule."),
           promptMeaning: [
             ruleDefinition.promptMeaning || "",
             `Relation: ${rule.relation || "rule"}`,
+            rule.isBackoffPrior ? `Backoff level: ${rule.backoffLevel}` : "",
             rule.triggerThreshold ? `Trigger threshold: ${rule.triggerThreshold}` : "",
             rule.triggerTerms?.length ? `Trigger terms: ${rule.triggerTerms.map(term => term.text).filter(Boolean).join(", ")}` : ""
           ].filter(Boolean).join("\n"),
           nestedGraph: nestedGraphFromSubrules(rule.id, rule.subrules || []),
           raw: rule
         });
-        for (const label of before) {
-          const task = ensureTask(label);
+        for (const rawItem of before) {
+          const item = ruleItem(rawItem);
+          const task = ensureTask(rawItem);
           graphEdges.push({
-            id: `${rule.id}:input:${label}`,
+            id: `${rule.id}:input:${item.label}`,
             source: task.id,
             target: ruleNode.id,
             kind: "rule",
-            label: `${graphLabel(label)} -> ${graphLabel(rule.id)}`,
+            label: `${ruleItemDisplayTitle(rawItem)} -> ${graphLabel(rule.id)}`,
             plainEnglish: rule.reason || `Input role for ${rule.id}.`,
-            prompt: `Rule ${rule.id} applies after ${label}.`
+            prompt: `Rule ${rule.id} applies after ${item.label}.`
           });
         }
-        for (const label of after) {
-          const task = ensureTask(label);
+        for (const rawItem of after) {
+          const item = ruleItem(rawItem);
+          const task = ensureTask(rawItem);
           graphEdges.push({
-            id: `${rule.id}:output:${label}`,
+            id: `${rule.id}:output:${item.label}`,
             source: ruleNode.id,
             target: task.id,
             kind: "rule",
-            label: `${graphLabel(rule.id)} -> ${graphLabel(label)}`,
+            label: `${graphLabel(rule.id)} -> ${ruleItemDisplayTitle(rawItem)}`,
             plainEnglish: rule.reason || `Output role for ${rule.id}.`,
-            prompt: `Rule ${rule.id} plans before ${label}.`
+            prompt: `Rule ${rule.id} plans before ${item.label}.`
           });
         }
       }
@@ -1535,15 +1619,24 @@
     }
 
     function nodeKindLabel(node) {
-      if (node.kind === "rule-anchor") return "RULE";
+      if (node.kind === "rule-anchor") {
+        return node.backoffPrior ? `PRIOR L${node.backoffLevel ?? 1}` : "RULE";
+      }
       if (node.kind === "model-hint") return "HINT";
+      if (node.kind === "action") return "ACTION";
       return "TASK";
     }
 
     function nodeKindDescription(node) {
-      if (node.kind === "rule-anchor") return "rule node";
+      if (node.kind === "rule-anchor") return node.backoffPrior ? "phase backoff prior" : "rule node";
       if (node.kind === "model-hint") return "model hint";
+      if (node.kind === "action") return nodeActionMeta(node);
       return "task node";
+    }
+
+    function nodeActionMeta(node) {
+      const tags = node.tags || {};
+      return [tags.phase, tags.taskKind].filter(Boolean).join(" / ") || "learned action";
     }
 
     function kindBadgeWidth(node) {
@@ -1566,13 +1659,40 @@
       return nodeSubruleCount(node);
     }
 
+    function backoffSubruleCounts(node) {
+      const subrules = ((node.raw || {}).subrules || []);
+      let actionLevel = 0;
+      let backoffLevel = 0;
+      for (const subrule of subrules) {
+        const level = subrule.backoffLevel ?? subrule.validation?.backoffLevel;
+        if (level == null) continue;
+        if (Number(level) === 0) actionLevel += 1;
+        else backoffLevel += 1;
+      }
+      return { actionLevel, backoffLevel };
+    }
+
     function subruleIndicatorItems(node) {
+      const backoff = backoffSubruleCounts(node);
+      const plainCount = categorizedSubruleCount(node) - backoff.actionLevel - backoff.backoffLevel;
       return [
         {
+          kind: "action-level",
+          label: `A ${backoff.actionLevel}`,
+          count: backoff.actionLevel,
+          title: `${backoff.actionLevel} subrules with action-level (backoff level 0) held-out support`
+        },
+        {
+          kind: "backoff-level",
+          label: `B ${backoff.backoffLevel}`,
+          count: backoff.backoffLevel,
+          title: `${backoff.backoffLevel} subrules supported only at a coarser backoff level`
+        },
+        {
           kind: "categorized",
-          label: `C ${categorizedSubruleCount(node)}`,
-          count: categorizedSubruleCount(node),
-          title: `${categorizedSubruleCount(node)} categorized subrules attached to this active rule`
+          label: `C ${plainCount}`,
+          count: plainCount,
+          title: `${plainCount} categorized subrules without held-out backoff evidence`
         },
         {
           kind: "uncategorized",
@@ -2011,6 +2131,7 @@
         .attr("data-label", node => node.fullLabel || node.label)
         .classed("is-selected", node => selected?.type === "node" && selected.id === node.id || selected?.parentId === node.id)
         .classed("is-pinned", node => node.fx != null || node.fy != null)
+        .classed("backoff-prior", node => Boolean(node.backoffPrior))
         .classed("show-nested", node => nestedIsVisible(node));
 
       nodeGroups.select("rect")
@@ -2022,7 +2143,7 @@
       nodeGroups.select("text.label")
         .attr("x", node => -nodeBoxWidth(node) / 2 + 12)
         .attr("y", node => nodeTitleY(node))
-        .text(node => node.fullLabel ? graphLabel(node.fullLabel) : node.label);
+        .text(node => node.displayTitle || (node.fullLabel ? graphLabel(node.fullLabel) : node.label));
 
       nodeGroups.select("text.meta")
         .attr("x", node => -nodeBoxWidth(node) / 2 + 12)
@@ -2270,13 +2391,26 @@
       render();
     }
 
+    function tagChips(node) {
+      const tags = node.tags || {};
+      const chips = [
+        tags.taskKind ? `<span class="pill tag-chip">task-kind: ${escapeHtml(tags.taskKind)}</span>` : "",
+        tags.behaviorType ? `<span class="pill tag-chip">behavior: ${escapeHtml(tags.behaviorType)}</span>` : "",
+        tags.architectureLayer ? `<span class="pill tag-chip">layer: ${escapeHtml(tags.architectureLayer)}</span>` : "",
+        tags.phase ? `<span class="pill tag-chip">phase: ${escapeHtml(tags.phase)}</span>` : "",
+        ...(tags.qualifiers || []).map(qualifier => `<span class="pill tag-chip">qualifier: ${escapeHtml(qualifier)}</span>`),
+        node.taskKey ? `<span class="pill tag-chip muted">group: ${escapeHtml(node.taskKey)}</span>` : ""
+      ].filter(Boolean);
+      return chips.length ? `<div class="pill-row">${chips.join("")}</div>` : "";
+    }
+
     function nodePills(node) {
       return `<div class="pill-row">
         <span class="pill">${escapeHtml(nodeKindLabel(node))}</span>
         <span class="pill">${escapeHtml(node.stage)}</span>
         <span class="pill">${escapeHtml(node.kind)}</span>
         ${ruleConfidencePills(node)}
-      </div>`;
+      </div>${tagChips(node)}`;
     }
 
     function ruleConfidencePills(node) {
@@ -2342,13 +2476,18 @@
       const validation = subrule.validation || {};
       const test = subrule.test || {};
       const reason = subrule.failureBucket || subrule.rejectedReason || "";
+      const beforeName = subrule.beforeTitle || graphLabel(subrule.before);
+      const afterName = subrule.afterTitle || graphLabel(subrule.after);
+      const backoffLevel = subrule.backoffLevel ?? validation.backoffLevel;
       return `<article class="evidence-card">
-        <div class="evidence-title">${escapeHtml(graphLabel(subrule.before))} -> ${escapeHtml(graphLabel(subrule.after))}</div>
+        <div class="evidence-title">${escapeHtml(beforeName)} -> ${escapeHtml(afterName)}</div>
         <div class="evidence-meta">${escapeHtml(subrule.decision || (subrule.promoted ? "promoted" : "candidate"))}${reason ? `: ${escapeHtml(reason)}` : ""}</div>
         <div class="pill-row">
           <span class="pill">confidence ${formatNumber(subrule.confidence, 3)}</span>
           <span class="pill">support ${formatNumber(subrule.support, 0)}</span>
           <span class="pill">repos ${formatNumber(subrule.repoSupport, 0)}</span>
+          ${backoffLevel == null ? "" : `<span class="pill">backoff L${escapeHtml(backoffLevel)}</span>`}
+          ${validation.weightedSupport == null ? "" : `<span class="pill">weighted ${formatNumber(validation.weightedSupport, 2)}</span>`}
           ${renderRepoPills(subrule.repos)}
         </div>
         <dl class="kv">
@@ -2671,9 +2810,19 @@
       svg.transition().duration(350).call(zoom.transform, d3.zoomIdentity);
     }
 
+    function splitSummaryPills() {
+      const splitSummary = productionPayload?.splitSummary || {};
+      return ["train", "validation", "test"]
+        .filter(split => splitSummary[split])
+        .map(split => `<span class="pill">${escapeHtml(split)}: ${escapeHtml(splitSummary[split].stackCount ?? 0)} stacks</span>`)
+        .join("");
+    }
+
     function renderProductionSummary(graph) {
       const diagnosticCount = (productionPayload?.subrules?.uncategorizedParents || [])
         .reduce((sum, parent) => sum + ((parent.subrules || []).length), 0);
+      const promotedCount = productionPayload?.subrules?.promotedCount ?? 0;
+      const taskCount = (productionPayload?.tasks || []).length;
       detailEl.innerHTML = `
         <div class="detail-title">Production rule graph</div>
         <p class="detail-copy">Loaded ${escapeHtml(graph.catalog.title || graph.catalog.kind || "rule catalog")} from the latest learning run.</p>
@@ -2681,8 +2830,11 @@
           <span class="pill">${escapeHtml(graph.nodes.length)} nodes</span>
           <span class="pill">${escapeHtml(graph.edges.length)} edges</span>
           <span class="pill">${escapeHtml((graph.run || {}).shortSha || "no sha")}</span>
+          <span class="pill">${escapeHtml(promotedCount)} promoted subrules</span>
+          ${taskCount ? `<span class="pill">${escapeHtml(taskCount)} tasks</span>` : ""}
           ${diagnosticCount ? `<span class="pill">${escapeHtml(diagnosticCount)} ${showUncategorizedSubrules ? "shown" : "hidden"} uncategorized subrules</span>` : ""}
         </div>
+        <div class="pill-row">${splitSummaryPills()}</div>
         <div class="detail-section">
           <h3>Run</h3>
           <dl class="kv">
@@ -2691,6 +2843,64 @@
             <dt>SHA</dt><dd>${escapeHtml((graph.run || {}).headSha || "")}</dd>
           </dl>
         </div>
+      `;
+    }
+
+    function renderTasksPanel() {
+      const tasks = productionPayload?.tasks || [];
+      if (!tasks.length) {
+        detailEl.innerHTML = `<div class="detail-title">Tasks</div><p class="detail-copy">No task decompositions (corpus/tasks.jsonl) were emitted by the latest run.</p>`;
+        return;
+      }
+      const items = tasks.slice(0, 40).map(task => {
+        const actionChips = (task.actions || [])
+          .map(action => `<span class="pill ${action.nodeId ? "tag-chip" : "tag-chip muted"}">${escapeHtml(action.nodeId || `PR ${action.prNumber}`)}</span>`)
+          .join("");
+        const phaseMix = Object.entries(task.phaseMix || {})
+          .map(([phase, count]) => `${phase}:${count}`)
+          .join(" ");
+        return `<article class="evidence-card">
+          <div class="evidence-title">${escapeHtml(task.title || task.stackId || "")}</div>
+          <div class="evidence-meta">${escapeHtml((task.repos || []).join(", "))}${task.split ? ` · ${escapeHtml(task.split)}` : ""}${phaseMix ? ` · ${escapeHtml(phaseMix)}` : ""}</div>
+          <div class="pill-row">${actionChips}</div>
+        </article>`;
+      }).join("");
+      detailEl.innerHTML = `
+        <div class="detail-title">Tasks</div>
+        <p class="detail-copy">Each task is a stack-level goal decomposed into the ordered learned actions its PRs realized (Task contains Actions).</p>
+        <div class="evidence-list">${items}</div>
+        ${tasks.length > 40 ? `<p class="detail-copy">Showing 40 of ${escapeHtml(tasks.length)} tasks.</p>` : ""}
+      `;
+    }
+
+    function renderLeaderboardPanel() {
+      const leaderboard = productionPayload?.leaderboard || {};
+      const stages = leaderboard.stages || [];
+      if (!stages.length) {
+        detailEl.innerHTML = `<div class="detail-title">Experiment leaderboard</div><p class="detail-copy">No experiments/leaderboard.json was emitted by the latest run.</p>`;
+        return;
+      }
+      const sections = stages.map(stage => {
+        const rows = (stage.experiments || []).map(entry => {
+          const gate = entry.gate || {};
+          const validationMetrics = ((entry.splits || {}).validation || {}).metrics || {};
+          const primary = gate.primaryMetric && validationMetrics[gate.primaryMetric] != null
+            ? `${gate.primaryMetric}=${formatNumber(validationMetrics[gate.primaryMetric], 3)}`
+            : "";
+          return `<article class="evidence-card">
+            <div class="evidence-title">${escapeHtml(entry.id || "")}</div>
+            <div class="evidence-meta">${escapeHtml(entry.decision || "")}${entry.failureBucket ? `: ${escapeHtml(entry.failureBucket)}` : ""}${primary ? ` · ${escapeHtml(primary)}` : ""}</div>
+          </article>`;
+        }).join("");
+        return `<div class="detail-section">
+          <h3>${escapeHtml(stage.stage || "")} ${stage.winner ? `· winner: ${escapeHtml(stage.winner)}` : ""}</h3>
+          <div class="evidence-list">${rows}</div>
+        </div>`;
+      }).join("");
+      detailEl.innerHTML = `
+        <div class="detail-title">Experiment leaderboard</div>
+        <p class="detail-copy">Per-stage experiments evaluated on held-out splits; at most ${escapeHtml(leaderboard.maxPromotionsPerStage ?? 1)} promotion per stage.</p>
+        ${sections}
       `;
     }
 
@@ -2730,8 +2940,21 @@
     document.getElementById("zoom-nested").addEventListener("click", zoomNestedNode);
     document.getElementById("fit").addEventListener("click", fitGraph);
     document.getElementById("reset").addEventListener("click", resetGraph);
+    document.getElementById("show-tasks").addEventListener("click", renderTasksPanel);
+    document.getElementById("show-leaderboard").addEventListener("click", renderLeaderboardPanel);
     uncategorizedToggle.addEventListener("change", event => {
       showUncategorizedSubrules = event.currentTarget.checked;
+      try {
+        renderProductionGraph();
+      } catch (error) {
+        detailEl.innerHTML = `
+          <div class="detail-title">Unable to rebuild graph</div>
+          <p class="detail-copy">${escapeHtml(error.message || error)}</p>
+        `;
+      }
+    });
+    document.getElementById("toggle-backoff").addEventListener("change", event => {
+      showBackoffPriors = event.currentTarget.checked;
       try {
         renderProductionGraph();
       } catch (error) {

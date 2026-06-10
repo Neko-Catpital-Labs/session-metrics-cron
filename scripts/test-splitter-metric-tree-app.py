@@ -415,6 +415,10 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
             reports_dir = run_dir / "reports"
             guidance_dir.mkdir(parents=True)
             reports_dir.mkdir(parents=True)
+            experiments_dir = run_dir / "experiments"
+            corpus_dir = run_dir / "corpus"
+            experiments_dir.mkdir(parents=True)
+            corpus_dir.mkdir(parents=True)
             (run_dir / "pipeline-run.json").write_text(
                 json.dumps(
                     {
@@ -425,6 +429,9 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
                             "subrulesModel": "target/stack-learning/runs/20260608T000000Z/guidance/subrules.json",
                             "subruleCandidates": "target/stack-learning/runs/20260608T000000Z/guidance/subrule-candidates.json",
                             "subruleInvestigationReport": "target/stack-learning/runs/20260608T000000Z/reports/subrule-investigation.md",
+                            "roleCatalog": "target/stack-learning/runs/20260608T000000Z/guidance/role-catalog.json",
+                            "experimentLeaderboard": "target/stack-learning/runs/20260608T000000Z/experiments/leaderboard.json",
+                            "tasksCorpus": "target/stack-learning/runs/20260608T000000Z/corpus/tasks.jsonl",
                         },
                     }
                 )
@@ -432,6 +439,22 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
             catalog = {
                 "version": 1,
                 "reasons": [{"id": "foundation-before-behavior", "message": "Foundation before behavior."}],
+                "actions": [
+                    {
+                        "id": "learned-node-add-config-reader",
+                        "title": "Add config reader",
+                        "tags": ["task-kind:foundation", "behavior-type:config-input", "layer:input-config-reader", "phase:foundation"],
+                        "phase": "foundation",
+                        "metadata": {"nodeId": "add-config-reader", "taskKeys": {"foundation/config-input/input-config-reader": 4}},
+                    },
+                    {
+                        "id": "learned-node-implement-config-behavior",
+                        "title": "Implement config behavior",
+                        "tags": ["task-kind:behavior", "behavior-type:config-input", "layer:core-domain", "phase:change"],
+                        "phase": "change",
+                        "metadata": {"nodeId": "implement-config-behavior", "taskKeys": {"behavior/config-input/core-domain": 4}},
+                    },
+                ],
                 "rules": [
                     {
                         "id": "foundation-before-behavior",
@@ -440,9 +463,73 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
                         "reasonId": "foundation-before-behavior",
                         "before": [{"type": "tag", "id": "foundation"}],
                         "after": [{"type": "tag", "id": "behavior"}],
-                    }
+                    },
+                    {
+                        "id": "learned-action-add-config-reader-before-implement-config-behavior",
+                        "priority": 55,
+                        "relation": "precedes",
+                        "reasonId": "foundation-before-behavior",
+                        "before": [{"type": "action", "id": "learned-node-add-config-reader"}],
+                        "after": [{"type": "action", "id": "learned-node-implement-config-behavior"}],
+                        "metadata": {"source": "learned-action-pairs", "backoffLevel": 0},
+                    },
+                    {
+                        "id": "learned-foundation-before-change",
+                        "priority": 40,
+                        "relation": "precedes",
+                        "reasonId": "foundation-before-behavior",
+                        "before": [{"type": "tag", "id": "foundation"}],
+                        "after": [{"type": "tag", "id": "behavior"}],
+                        "metadata": {"source": "role-labeling", "kind": "phase-backoff-prior", "backoffLevel": 1},
+                    },
                 ],
             }
+            (guidance_dir / "role-catalog.json").write_text(
+                json.dumps(
+                    {
+                        "nodes": [
+                            {
+                                "id": "add-config-reader",
+                                "title": "Add config reader",
+                                "tags": ["task-kind:foundation", "phase:foundation"],
+                                "phase": "foundation",
+                                "taskKeys": {"foundation/config-input/input-config-reader": 4},
+                            }
+                        ]
+                    }
+                )
+            )
+            (experiments_dir / "leaderboard.json").write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "artifactType": "experiment-leaderboard",
+                        "stages": [
+                            {
+                                "stage": "action-extraction",
+                                "winner": "sim-070",
+                                "promotions": ["sim-070"],
+                                "experiments": [
+                                    {"id": "baseline", "decision": "baseline"},
+                                    {"id": "sim-070", "decision": "promoted"},
+                                ],
+                            }
+                        ],
+                    }
+                )
+            )
+            (corpus_dir / "tasks.jsonl").write_text(
+                json.dumps(
+                    {
+                        "stackId": "stack-1",
+                        "split": "train",
+                        "title": "Add config-driven behavior",
+                        "actionIds": ["add-config-reader", "implement-config-behavior"],
+                        "phaseMix": {"foundation": 1, "change": 1},
+                    }
+                )
+                + "\n"
+            )
             (guidance_dir / "rule-catalog.json").write_text(json.dumps(catalog))
             rules_dir = root / "rules"
             rules_dir.mkdir()
@@ -469,15 +556,24 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
             (guidance_dir / "subrule-candidates.json").write_text(
                 json.dumps(
                     {
+                        "splitSummary": {
+                            "train": {"stackCount": 21, "prCount": 64, "repoCount": 9, "repos": ["bazelbuild/bazel"]},
+                            "validation": {"stackCount": 5, "prCount": 12, "repoCount": 2, "repos": ["apache/flink"]},
+                            "test": {"stackCount": 0, "prCount": 0, "repoCount": 0, "repos": []},
+                        },
                         "subrules": [
                             {
                                 "candidateId": "foundation-before-behavior__foundation-config-reader__before__behavior-config-behavior",
                                 "ruleId": "learned-subrule-foundation-config-reader-before-behavior-config-behavior",
                                 "parentRuleId": "foundation-before-behavior",
-                                "before": "foundation/config-reader",
-                                "after": "behavior/config-behavior",
+                                "before": "add-config-reader",
+                                "after": "implement-config-behavior",
+                                "beforeTitle": "Add config reader",
+                                "afterTitle": "Implement config behavior",
                                 "decision": "promoted",
                                 "failureBucket": "",
+                                "metadata": {"backoffLevel": 0},
+                                "validationSupport": {"support": 2, "weightedSupport": 1.4, "backoffLevel": 1},
                                 "validationSummary": {
                                     "subruleProof": {
                                         "hintsRulesVsHints": {
@@ -499,7 +595,7 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
                                 "decision": "skipped",
                                 "failureBucket": "unsupported_selector",
                             },
-                        ]
+                        ],
                     }
                 )
             )
@@ -509,11 +605,40 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
 
         self.assertEqual(response["subrules"]["count"], 2)
         generated = next(catalog for catalog in response["catalogs"] if catalog["kind"] == "generated")
-        self.assertEqual(generated["counts"]["rules"], 1)
+        self.assertEqual(generated["counts"]["rules"], 3)
         rule = next(rule for rule in generated["rules"] if rule["id"] == "foundation-before-behavior")
         self.assertEqual(rule["subrules"][0]["parentRuleId"], "foundation-before-behavior")
         self.assertEqual(rule["subrules"][0]["decision"], "promoted")
         self.assertEqual(rule["subrules"][0]["validation"]["stackLinkDelta"], 0.12)
+        self.assertEqual(rule["subrules"][0]["validation"]["weightedSupport"], 1.4)
+        self.assertEqual(rule["subrules"][0]["backoffLevel"], 1)
+        self.assertEqual(rule["subrules"][0]["beforeTitle"], "Add config reader")
+        # Hand-written base rules keep label fallbacks; selectors resolve to objects.
+        self.assertEqual(rule["before"][0]["label"], "tag:foundation")
+        self.assertFalse(rule["isBackoffPrior"])
+
+        action_rule = next(
+            rule for rule in generated["rules"]
+            if rule["id"] == "learned-action-add-config-reader-before-implement-config-behavior"
+        )
+        self.assertEqual(action_rule["backoffLevel"], 0)
+        self.assertFalse(action_rule["isBackoffPrior"])
+        self.assertEqual(action_rule["before"][0]["title"], "Add config reader")
+        self.assertEqual(action_rule["before"][0]["tags"]["taskKind"], "foundation")
+        self.assertEqual(action_rule["before"][0]["taskKey"], "foundation/config-input/input-config-reader")
+
+        backoff_rule = next(
+            rule for rule in generated["rules"] if rule["id"] == "learned-foundation-before-change"
+        )
+        self.assertTrue(backoff_rule["isBackoffPrior"])
+        self.assertEqual(backoff_rule["backoffLevel"], 1)
+
+        self.assertEqual(response["splitSummary"]["validation"]["stackCount"], 5)
+        self.assertEqual(response["subrules"]["candidatesByBackoffLevel"], {"1": 1, "none": 1})
+        self.assertEqual(response["leaderboard"]["stages"][0]["winner"], "sim-070")
+        self.assertEqual(len(response["tasks"]), 1)
+        self.assertEqual(response["tasks"][0]["actionIds"], ["add-config-reader", "implement-config-behavior"])
+
         self.assertFalse(any(rule["id"] == "uncategorized-subrules" for rule in generated["rules"]))
         uncategorized = response["subrules"]["uncategorizedParents"]
         self.assertEqual(len(uncategorized), 1)
@@ -547,6 +672,13 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("Show uncategorized subrules", html)
         self.assertIn("showUncategorizedSubrules", html)
         self.assertIn("uncategorizedParents", html)
+        self.assertIn("id=\"toggle-backoff\"", html)
+        self.assertIn("Show backoff priors", html)
+        self.assertIn("function tagChips", html)
+        self.assertIn("backoff-prior", html)
+        self.assertIn("function renderTasksPanel", html)
+        self.assertIn("function renderLeaderboardPanel", html)
+        self.assertIn("function stageForPhase", html)
         self.assertIn("diagnostic-parent:", html)
         self.assertIn("Drag nodes to pin them", html)
         self.assertIn("nested nodes also repel and drag", html)
@@ -643,9 +775,11 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("function subruleIndicatorItems", html)
         self.assertIn("function subruleIndicatorLayout", html)
         self.assertIn("function subruleIndicatorWidth", html)
-        self.assertIn("C ${categorizedSubruleCount(node)}", html)
+        self.assertIn("function backoffSubruleCounts", html)
+        self.assertIn("A ${backoff.actionLevel}", html)
+        self.assertIn("B ${backoff.backoffLevel}", html)
         self.assertIn("U ${uncategorizedSubruleCount(node)}", html)
-        self.assertIn("categorized subrules attached to this active rule", html)
+        self.assertIn("subrules with action-level (backoff level 0) held-out support", html)
         self.assertIn("uncategorized subrules from this missing source parent", html)
         self.assertIn("nested subrules", html)
         self.assertIn("function renderRuleEvidence", html)
