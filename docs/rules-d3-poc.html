@@ -383,6 +383,46 @@
       font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
 
+    .evidence-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .evidence-card {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 10px;
+      background: #f8fafc;
+    }
+
+    .evidence-title {
+      font-weight: 750;
+      overflow-wrap: anywhere;
+    }
+
+    .evidence-meta {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    .example-links {
+      display: grid;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .example-links a {
+      color: var(--accent);
+      text-decoration: none;
+      overflow-wrap: anywhere;
+    }
+
+    .example-links a:hover {
+      text-decoration: underline;
+    }
+
     @media (max-width: 900px) {
       main { padding: 16px; }
       header, .graph-shell, .graph-head { display: block; }
@@ -2004,17 +2044,182 @@
       detailEl.innerHTML = `
         <div class="detail-title">${escapeHtml(node.fullLabel || node.label)}</div>
         <p class="detail-copy">${escapeHtml(node.plainEnglish)}</p>
-        <div class="pill-row">
-          <span class="pill">${escapeHtml(node.stage)}</span>
-          <span class="pill">${escapeHtml(node.kind)}</span>
-        </div>
+        ${nodePills(node)}
         <div class="detail-section">
           <h3>What the AI should hear</h3>
           <div class="prompt-box">${escapeHtml(node.promptMeaning)}</div>
         </div>
+        ${renderRuleEvidence(node)}
         ${node.nestedGraph ? `<div class="detail-section"><h3>Nested subrule graph</h3><p class="detail-copy">Zoom into this node to see the subrules rendered inside it.</p></div>` : ""}
       `;
       render();
+    }
+
+    function nodePills(node) {
+      return `<div class="pill-row">
+        <span class="pill">${escapeHtml(nodeKindLabel(node))}</span>
+        <span class="pill">${escapeHtml(node.stage)}</span>
+        <span class="pill">${escapeHtml(node.kind)}</span>
+        ${ruleConfidencePills(node)}
+      </div>`;
+    }
+
+    function ruleConfidencePills(node) {
+      if (node.kind !== "rule-anchor") return "";
+      const rule = node.raw || {};
+      const subrules = ruleSubrules(node);
+      const support = sumNumbers(subrules.map(item => item.support));
+      const repoCount = new Set(subrules.flatMap(item => item.repos || [])).size;
+      const avgConfidence = averageNumbers(subrules.map(item => item.confidence));
+      const maxConfidence = maxNumber(subrules.map(item => item.confidence));
+      return [
+        rule.confidence == null ? "" : `<span class="pill">rule confidence ${formatNumber(rule.confidence, 3)}</span>`,
+        subrules.length ? `<span class="pill">${subrules.length} subrules</span>` : "",
+        support ? `<span class="pill">support ${formatNumber(support, 0)}</span>` : "",
+        repoCount ? `<span class="pill">${formatNumber(repoCount, 0)} repos</span>` : "",
+        avgConfidence == null ? "" : `<span class="pill">avg confidence ${formatNumber(avgConfidence, 3)}</span>`,
+        maxConfidence == null ? "" : `<span class="pill">max confidence ${formatNumber(maxConfidence, 3)}</span>`
+      ].filter(Boolean).join("");
+    }
+
+    function renderRuleEvidence(node) {
+      if (node.kind !== "rule-anchor") return "";
+      const rule = node.raw || {};
+      const subrules = ruleSubrules(node);
+      const confidenceNote = rule.confidence == null && subrules.length
+        ? `<p class="detail-copy">Parent rules do not currently emit their own confidence. The confidence below is rolled up from mined subrules and their replay proof.</p>`
+        : "";
+      return `
+        <div class="detail-section">
+          <h3>Rule evidence</h3>
+          ${confidenceNote}
+          <dl class="kv">
+            <dt>Rule id</dt><dd>${escapeHtml(rule.id || node.fullLabel || node.id)}</dd>
+            <dt>Relation</dt><dd>${escapeHtml(rule.relation || "")}</dd>
+            <dt>Priority</dt><dd>${escapeHtml(rule.priority ?? "")}</dd>
+            <dt>Threshold</dt><dd>${escapeHtml(rule.triggerThreshold ?? "")}</dd>
+          </dl>
+          ${renderTriggerTerms(rule)}
+          ${renderSubruleProofs(subrules)}
+        </div>
+      `;
+    }
+
+    function renderTriggerTerms(rule) {
+      const terms = (rule.triggerTerms || []).slice(0, 10);
+      if (!terms.length) return "";
+      return `<div class="pill-row">${terms.map(term => `
+        <span class="pill">${escapeHtml(term.text || "")}${term.weight == null ? "" : ` w${escapeHtml(term.weight)}`}</span>
+      `).join("")}</div>`;
+    }
+
+    function renderSubruleProofs(subrules) {
+      if (!subrules.length) {
+        return `<p class="detail-copy">No mined subrule PR evidence was emitted for this parent rule.</p>`;
+      }
+      return `<div class="evidence-list">
+        ${subrules.slice(0, 8).map(renderSubruleProof).join("")}
+        ${subrules.length > 8 ? `<p class="detail-copy">Showing 8 of ${escapeHtml(subrules.length)} subrules.</p>` : ""}
+      </div>`;
+    }
+
+    function renderSubruleProof(subrule) {
+      const validation = subrule.validation || {};
+      const test = subrule.test || {};
+      const reason = subrule.failureBucket || subrule.rejectedReason || "";
+      return `<article class="evidence-card">
+        <div class="evidence-title">${escapeHtml(graphLabel(subrule.before))} -> ${escapeHtml(graphLabel(subrule.after))}</div>
+        <div class="evidence-meta">${escapeHtml(subrule.decision || (subrule.promoted ? "promoted" : "candidate"))}${reason ? `: ${escapeHtml(reason)}` : ""}</div>
+        <div class="pill-row">
+          <span class="pill">confidence ${formatNumber(subrule.confidence, 3)}</span>
+          <span class="pill">support ${formatNumber(subrule.support, 0)}</span>
+          <span class="pill">repos ${formatNumber(subrule.repoSupport, 0)}</span>
+          ${renderRepoPills(subrule.repos)}
+        </div>
+        <dl class="kv">
+          <dt>Validation</dt><dd>${proofSummary(validation)}</dd>
+          <dt>Test</dt><dd>${proofSummary(test)}</dd>
+        </dl>
+        ${renderExamples(subrule.examples)}
+      </article>`;
+    }
+
+    function renderRepoPills(repos) {
+      return (repos || []).slice(0, 3).map(repo => `<span class="pill">${escapeHtml(repo)}</span>`).join("");
+    }
+
+    function proofSummary(proof) {
+      if (!proof || Object.values(proof).every(value => value == null || value === "")) return "not emitted";
+      return [
+        proof.pairedCount == null ? "" : `paired ${formatNumber(proof.pairedCount, 0)}`,
+        proof.stackLinkDelta == null ? "" : `stack delta ${formatDelta(proof.stackLinkDelta)}`,
+        proof.regressionCount == null ? "" : `regressions ${formatNumber(proof.regressionCount, 0)}`
+      ].filter(Boolean).join(", ") || "not emitted";
+    }
+
+    function renderExamples(examples) {
+      if (!examples || !examples.length) return "";
+      return `<div class="example-links">
+        ${examples.slice(0, 5).map(example => `
+          <div>
+            <strong>${escapeHtml(example.repo || "")}</strong>
+            ${exampleLink(example, "from")} -> ${exampleLink(example, "to")}
+          </div>
+        `).join("")}
+      </div>`;
+    }
+
+    function fallbackPrUrl(example, key) {
+      const repo = example.repo || "";
+      const number = example[key];
+      if (!repo || number == null || number === "") return "";
+      return `https://github.com/${encodeURIComponent(repo).replace("%2F", "/")}/pull/${encodeURIComponent(number)}`;
+    }
+
+    function exampleLink(example, side) {
+      const prefix = side === "from" ? "from" : "to";
+      const number = example[`${prefix}Pr`];
+      const commitUrl = side === "from" ? example.fromCommitUrl : example.toCommitUrl;
+      const prUrl = side === "from" ? example.fromUrl : example.toUrl;
+      const url = commitUrl || prUrl || fallbackPrUrl(example, `${prefix}Pr`);
+      const title = example[`${prefix}Title`] || "";
+      const label = `#${number ?? "?"}`;
+      if (!url) return `<span>${escapeHtml(label)}</span>`;
+      return `<a href="${escapeHtml(url)}" title="${escapeHtml(title)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
+    }
+
+    function ruleSubrules(node) {
+      const rawSubrules = (node.raw || {}).subrules || [];
+      if (rawSubrules.length) return rawSubrules;
+      return ((node.nestedGraph || {}).edges || []).map(edge => edge.raw).filter(Boolean);
+    }
+
+    function sumNumbers(values) {
+      return values.map(Number).filter(Number.isFinite).reduce((sum, value) => sum + value, 0);
+    }
+
+    function averageNumbers(values) {
+      const numbers = values.map(Number).filter(Number.isFinite);
+      if (!numbers.length) return null;
+      return numbers.reduce((sum, value) => sum + value, 0) / numbers.length;
+    }
+
+    function maxNumber(values) {
+      const numbers = values.map(Number).filter(Number.isFinite);
+      return numbers.length ? Math.max(...numbers) : null;
+    }
+
+    function formatNumber(value, digits = 0) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "";
+      return number.toFixed(digits);
+    }
+
+    function formatDelta(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "";
+      const formatted = number.toFixed(3);
+      return number > 0 ? `+${formatted}` : formatted;
     }
 
     function selectEdge(edge) {
@@ -2089,6 +2294,7 @@
             <dt>Target</dt><dd>${escapeHtml(nestedNodeLabel(nestedNodes, edge.target))}</dd>
           </dl>
         </div>
+        ${edge.raw ? `<div class="detail-section"><h3>Proof</h3><div class="evidence-list">${renderSubruleProof(edge.raw)}</div></div>` : ""}
       `;
       render();
     }
