@@ -261,14 +261,27 @@
       fill: #fff;
     }
 
-    .subrule-indicator rect {
+    .subrule-indicator.categorized rect {
       fill: #ecfdf5;
       stroke: var(--subrule);
       stroke-width: 1.2;
     }
 
-    .subrule-indicator text {
+    .subrule-indicator.categorized text {
       fill: #047857;
+    }
+
+    .subrule-indicator.uncategorized rect {
+      fill: #f5f3ff;
+      stroke: var(--candidate);
+      stroke-width: 1.2;
+    }
+
+    .subrule-indicator.uncategorized text {
+      fill: #6d28d9;
+    }
+
+    .subrule-indicator text {
       font-size: 9px;
       font-weight: 800;
       letter-spacing: 0;
@@ -1543,13 +1556,52 @@
       return ((node.nestedGraph || {}).edges || []).length;
     }
 
-    function subruleIndicatorLabel(node) {
-      const count = nodeSubruleCount(node);
-      return `${count} ${count === 1 ? "SUBRULE" : "SUBRULES"}`;
+    function categorizedSubruleCount(node) {
+      if (node.diagnostic) return 0;
+      return nodeSubruleCount(node);
     }
 
-    function subruleIndicatorWidth(node) {
-      return subruleIndicatorLabel(node).length * 6.4 + 20;
+    function uncategorizedSubruleCount(node) {
+      if (!node.diagnostic) return 0;
+      return nodeSubruleCount(node);
+    }
+
+    function subruleIndicatorItems(node) {
+      return [
+        {
+          kind: "categorized",
+          label: `C ${categorizedSubruleCount(node)}`,
+          count: categorizedSubruleCount(node),
+          title: `${categorizedSubruleCount(node)} categorized subrules attached to this active rule`
+        },
+        {
+          kind: "uncategorized",
+          label: `U ${uncategorizedSubruleCount(node)}`,
+          count: uncategorizedSubruleCount(node),
+          title: `${uncategorizedSubruleCount(node)} uncategorized subrules from this missing source parent`
+        }
+      ].filter(item => item.count > 0);
+    }
+
+    function subruleIndicatorWidth(item) {
+      return item.label.length * 6.4 + 20;
+    }
+
+    function subruleIndicatorLayout(node) {
+      let x = 0;
+      return subruleIndicatorItems(node).map(item => {
+        const width = subruleIndicatorWidth(item);
+        const positioned = { ...item, x, width };
+        x += width + 6;
+        return positioned;
+      });
+    }
+
+    function subruleIndicatorTotalWidth(node) {
+      const items = subruleIndicatorLayout(node);
+      if (!items.length) return 0;
+      const last = items[items.length - 1];
+      return last.x + last.width;
     }
 
     function nodeCollisionRadius(node) {
@@ -1939,15 +1991,8 @@
             badge.append("text")
               .attr("x", 9)
               .attr("y", 15);
-            const subruleBadge = group.append("g")
-              .attr("class", "subrule-indicator");
-            subruleBadge.append("rect")
-              .attr("height", 22)
-              .attr("rx", 11);
-            subruleBadge.append("text")
-              .attr("x", 9)
-              .attr("y", 15);
-            subruleBadge.append("title");
+            group.append("g")
+              .attr("class", "subrule-indicators");
             group.append("g")
               .attr("class", "nested-graph")
               .each(function(node) {
@@ -1994,18 +2039,40 @@
       nodeGroups.select("g.kind-badge text")
         .text(node => nodeKindLabel(node));
 
-      nodeGroups.select("g.subrule-indicator")
-        .attr("display", node => node.nestedGraph ? null : "none")
+      const indicatorRows = nodeGroups.select("g.subrule-indicators")
+        .attr("display", node => subruleIndicatorItems(node).length ? null : "none")
         .attr("transform", node => {
-          const width = subruleIndicatorWidth(node);
+          const width = subruleIndicatorTotalWidth(node);
           return `translate(${nodeBoxWidth(node) / 2 - width - 12}, ${-nodeBoxHeight(node) / 2 + 40})`;
         });
-      nodeGroups.select("g.subrule-indicator rect")
-        .attr("width", node => subruleIndicatorWidth(node));
-      nodeGroups.select("g.subrule-indicator text")
-        .text(node => subruleIndicatorLabel(node));
-      nodeGroups.select("g.subrule-indicator title")
-        .text(node => `${nodeSubruleCount(node)} nested subrules`);
+
+      const indicatorBadges = indicatorRows.selectAll("g.subrule-indicator")
+        .data(node => subruleIndicatorLayout(node), item => item.kind)
+        .join(
+          enter => {
+            const group = enter.append("g")
+              .attr("class", item => `subrule-indicator ${item.kind}`);
+            group.append("rect")
+              .attr("height", 22)
+              .attr("rx", 11);
+            group.append("text")
+              .attr("x", 9)
+              .attr("y", 15);
+            group.append("title");
+            return group;
+          },
+          update => update,
+          exit => exit.remove()
+        );
+      indicatorBadges
+        .attr("class", item => `subrule-indicator ${item.kind}`)
+        .attr("transform", item => `translate(${item.x},0)`);
+      indicatorBadges.select("rect")
+        .attr("width", item => item.width);
+      indicatorBadges.select("text")
+        .text(item => item.label);
+      indicatorBadges.select("title")
+        .text(item => item.title);
 
       nodeGroups.each(function(parent) {
         renderNestedGraph(d3.select(this).select(".nested-graph"), parent);
