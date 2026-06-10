@@ -39,7 +39,6 @@ MAX_METRIC_PATH_LENGTH = 512
 DEFAULT_CACHE_TTL_SECONDS = 60
 DEFAULT_METABASE_DATABASE_ID = 2
 DEFAULT_BIGQUERY_LOCATION = "US"
-UNCATEGORIZED_SUBRULES_ID = "uncategorized-subrules"
 DIAGNOSTIC_SCORE_PARENTS = {
     "correctStackLinkCount": "correctStackLinksScore",
     "extraStackLinkCount": "noExtraStackLinksScore",
@@ -900,59 +899,33 @@ def normalize_rule_catalog(
     }
 
 
-def uncategorized_subrule_bucket(catalogs: list[dict[str, Any]], grouped_subrules: dict[str, list[dict[str, Any]]]) -> dict[str, Any] | None:
+def uncategorized_subrule_parents(catalogs: list[dict[str, Any]], grouped_subrules: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
     visible_rule_ids = {
         str(rule.get("id") or "")
         for catalog in catalogs
         for rule in catalog.get("rules") or []
     }
-    uncategorized = []
+    parents = []
     for parent_id, items in sorted(grouped_subrules.items()):
         if parent_id in visible_rule_ids:
             continue
-        for item in items:
-            uncategorized.append(
-                {
-                    **item,
-                    "displayParentRuleId": UNCATEGORIZED_SUBRULES_ID,
-                    "sourceParentRuleId": parent_id,
-                }
-            )
-    if not uncategorized:
-        return None
-    return {
-        "id": UNCATEGORIZED_SUBRULES_ID,
-        "priority": 0,
-        "relation": "candidate_bucket",
-        "reasonId": UNCATEGORIZED_SUBRULES_ID,
-        "reason": "Subrule candidates whose mined parent rule is not present in the generated or effective rule catalog.",
-        "triggerThreshold": "",
-        "before": ["unmapped mined parent rules"],
-        "after": ["candidate subrules"],
-        "triggerTerms": [],
-        "subrules": uncategorized,
-        "raw": {
-            "id": UNCATEGORIZED_SUBRULES_ID,
-            "relation": "candidate_bucket",
-            "sourceParentRuleIds": sorted(
-                {
-                    str(item.get("sourceParentRuleId") or "")
-                    for item in uncategorized
-                    if item.get("sourceParentRuleId")
-                }
-            ),
-        },
-    }
-
-
-def attach_uncategorized_subrule_bucket(catalogs: list[dict[str, Any]], grouped_subrules: dict[str, list[dict[str, Any]]]) -> None:
-    bucket = uncategorized_subrule_bucket(catalogs, grouped_subrules)
-    if not bucket:
-        return
-    for catalog in catalogs:
-        catalog.setdefault("rules", []).append(bucket)
-        counts = catalog.setdefault("counts", {})
-        counts["rules"] = len(catalog["rules"])
+        subrules = [
+            {
+                **item,
+                "displayParentRuleId": parent_id,
+                "sourceParentRuleId": parent_id,
+            }
+            for item in items
+        ]
+        parents.append(
+            {
+                "sourceParentRuleId": parent_id,
+                "candidateCount": len(subrules),
+                "promotedCount": sum(1 for item in subrules if item.get("promoted")),
+                "subrules": subrules,
+            }
+        )
+    return parents
 
 
 def rules_response(workflow_analysis_root: Path) -> dict[str, Any]:
@@ -985,7 +958,9 @@ def rules_response(workflow_analysis_root: Path) -> dict[str, Any]:
                 subrules=grouped_subrules,
             )
         )
-    attach_uncategorized_subrule_bucket(catalogs, grouped_subrules)
+    uncategorized_parents = uncategorized_subrule_parents(catalogs, grouped_subrules)
+    visible_subrule_artifacts = {key: value for key, value in subrule_artifacts.items() if key != "byParent"}
+    visible_subrule_artifacts["uncategorizedParents"] = uncategorized_parents
     return {
         "workflowAnalysisRoot": str(workflow_analysis_root),
         "pipelineRunPath": str(pipeline_path),
@@ -1003,7 +978,7 @@ def rules_response(workflow_analysis_root: Path) -> dict[str, Any]:
         "catalogs": catalogs,
         "roleCatalog": role_catalog,
         "planningDag": planning_dag,
-        "subrules": {key: value for key, value in subrule_artifacts.items() if key != "byParent"},
+        "subrules": visible_subrule_artifacts,
     }
 
 

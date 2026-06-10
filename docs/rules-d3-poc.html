@@ -67,6 +67,24 @@
       font-weight: 650;
     }
 
+    .toggle-control {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    .toggle-control input {
+      margin: 0;
+      accent-color: var(--accent);
+    }
+
     .toolbar {
       margin: 18px 0 12px;
       justify-content: flex-start;
@@ -448,6 +466,10 @@
       <button id="zoom-nested" type="button">Zoom Node Detail</button>
       <button id="fit" type="button">Fit</button>
       <button id="reset" type="button">Reset</button>
+      <label class="toggle-control">
+        <input id="toggle-uncategorized" type="checkbox">
+        <span>Show uncategorized subrules</span>
+      </label>
     </div>
 
     <div class="graph-shell">
@@ -808,6 +830,7 @@
 
     const graphEl = document.getElementById("graph");
     const detailEl = document.getElementById("detail");
+    const uncategorizedToggle = document.getElementById("toggle-uncategorized");
     const baseWidth = 1760;
     let width = baseWidth;
     const height = 980;
@@ -825,6 +848,8 @@
     let activeFilter = "all";
     let selected = null;
     let currentZoom = 1;
+    let productionPayload = null;
+    let showUncategorizedSubrules = false;
     const nestedSimulations = new Map();
 
     const svg = d3.select(graphEl)
@@ -931,12 +956,6 @@
         stage: "verification",
         plainEnglish: "Run final verification after the implementation exists so proof matches the finished behavior.",
         promptMeaning: "Plan terminal or end-to-end verification after implementation PRs."
-      },
-      "uncategorized-subrules": {
-        title: "Uncategorized subrules",
-        stage: "diagnostics",
-        plainEnglish: "Show mined subrule candidates whose parent rule is not present in the active catalog.",
-        promptMeaning: "Use this as diagnostic model data, not as a normal workflow-planning rule."
       }
     };
 
@@ -988,18 +1007,6 @@
         stage: "cleanup",
         plainEnglish: "Delete or simplify old paths after replacement behavior has landed.",
         promptMeaning: "Ask for cleanup only after the behavior migration is complete."
-      },
-      "unmapped mined parent rules": {
-        title: "Unmapped mined parent rules",
-        stage: "diagnostics",
-        plainEnglish: "Mined subrule candidates whose parent rule id is not in the current generated or effective catalog.",
-        promptMeaning: "Treat this as diagnostic learning output, not a normal planning step."
-      },
-      "candidate subrules": {
-        title: "Candidate subrules",
-        stage: "diagnostics",
-        plainEnglish: "Potential subrules produced by mining that have not been promoted into active planning rules.",
-        promptMeaning: "Use these for model review and investigation before promotion."
       },
       "compatibility": {
         title: "Compatibility",
@@ -1103,7 +1110,6 @@
       const definition = definitionForLabel(value);
       if (definition) return definition.plainEnglish;
       const descriptions = {
-        "uncategorized-subrules": "Subrule candidates whose mined parent rule is not present in the generated or effective rule catalog.",
         "foundation/config-reader": "Add the configuration reader or lookup layer before behavior depends on it.",
         "foundation/schema-types": "Introduce schemas, types, or data models before wiring behavior through them.",
         "foundation/adapter-wrapper": "Add adapter or wrapper structure before using it for feature behavior.",
@@ -1243,6 +1249,86 @@
       return neighbors.reduce((sum, value) => sum + value, 0) / neighbors.length;
     }
 
+    function nestedGraphFromSubrules(parentId, subrules) {
+      if (!subrules.length) return null;
+      const nestedNodes = new Map();
+      const laneCounts = new Map();
+
+      function nestedNode(label) {
+        if (nestedNodes.has(label)) return nestedNodes.get(label);
+        const lane = laneCounts.get("default") || 0;
+        laneCounts.set("default", lane + 1);
+        const item = {
+          id: label,
+          label: graphLabel(label),
+          fullLabel: label,
+          x: 0,
+          y: lane * 34,
+          plainEnglish: labelDescription(label),
+          promptMeaning: promptMeaningForLabel(label)
+        };
+        nestedNodes.set(label, item);
+        return item;
+      }
+
+      const nestedEdges = subrules
+        .filter(subrule => subrule.before && subrule.after)
+        .map(subrule => {
+          const source = nestedNode(subrule.before);
+          const target = nestedNode(subrule.after);
+          return {
+            id: subrule.id || subrule.candidateId || `${parentId}:${subrule.before}->${subrule.after}`,
+            label: `${graphLabel(subrule.before)} -> ${graphLabel(subrule.after)}`,
+            source: source.id,
+            target: target.id,
+            plainEnglish: subrule.failureBucket || subrule.rejectedReason || `${labelTitle(subrule.before)} should precede ${labelTitle(subrule.after)}.`,
+            prompt: `When both appear, plan ${subrule.before} before ${subrule.after}.`,
+            raw: subrule
+          };
+        });
+      if (!nestedEdges.length) return null;
+      layoutSubruleGraph(nestedNodes, nestedEdges);
+      return {
+        title: `${subrules.length} subrules`,
+        nodes: Array.from(nestedNodes.values()),
+        edges: nestedEdges
+      };
+    }
+
+    function diagnosticParents(payload) {
+      return ((payload.subrules || {}).uncategorizedParents || [])
+        .filter(parent => (parent.subrules || []).length)
+        .map(parent => {
+          const sourceParentRuleId = parent.sourceParentRuleId || "unknown-parent";
+          const subrules = parent.subrules || [];
+          return {
+            id: `diagnostic-parent:${sourceParentRuleId}`,
+            label: graphLabel(sourceParentRuleId),
+            fullLabel: sourceParentRuleId,
+            stage: "diagnostics",
+            kind: "rule-anchor",
+            diagnostic: true,
+            alwaysVisible: true,
+            plainEnglish: `Diagnostic parent for ${sourceParentRuleId}: these subrules were mined for that parent, but the parent rule is not present in the active catalog.`,
+            promptMeaning: [
+              "Do not treat this as an active planning rule.",
+              `Source parent rule: ${sourceParentRuleId}`,
+              "Inspect the nested subrules and replay proof before promoting or mapping them to a real parent rule."
+            ].join("\n"),
+            nestedGraph: nestedGraphFromSubrules(sourceParentRuleId, subrules),
+            raw: {
+              id: sourceParentRuleId,
+              relation: "diagnostic_parent",
+              reason: "Parent rule is not present in the active catalog.",
+              sourceParentRuleId,
+              candidateCount: parent.candidateCount,
+              promotedCount: parent.promotedCount,
+              subrules
+            }
+          };
+        });
+    }
+
     function graphFromRulesPayload(payload) {
       const catalog = productionCatalog(payload);
       const planningGraph = graphFromPlanningDag(payload);
@@ -1268,53 +1354,6 @@
         });
       }
 
-      function nestedGraphForRule(rule) {
-        const subrules = rule.subrules || [];
-        if (!subrules.length) return null;
-        const nestedNodes = new Map();
-        const laneCounts = new Map();
-
-        function nestedNode(label) {
-          if (nestedNodes.has(label)) return nestedNodes.get(label);
-          const lane = laneCounts.get("default") || 0;
-          laneCounts.set("default", lane + 1);
-          const item = {
-            id: label,
-            label: graphLabel(label),
-            fullLabel: label,
-            x: 0,
-            y: lane * 34,
-            plainEnglish: labelDescription(label),
-            promptMeaning: promptMeaningForLabel(label)
-          };
-          nestedNodes.set(label, item);
-          return item;
-        }
-
-        const nestedEdges = subrules
-          .filter(subrule => subrule.before && subrule.after)
-          .map(subrule => {
-            const source = nestedNode(subrule.before);
-            const target = nestedNode(subrule.after);
-            return {
-              id: subrule.id || subrule.candidateId || `${rule.id}:${subrule.before}->${subrule.after}`,
-              label: `${graphLabel(subrule.before)} -> ${graphLabel(subrule.after)}`,
-              source: source.id,
-              target: target.id,
-              plainEnglish: subrule.failureBucket || subrule.rejectedReason || `${labelTitle(subrule.before)} should precede ${labelTitle(subrule.after)}.`,
-              prompt: `When both appear, plan ${subrule.before} before ${subrule.after}.`,
-              raw: subrule
-            };
-          });
-        if (!nestedEdges.length) return null;
-        layoutSubruleGraph(nestedNodes, nestedEdges);
-        return {
-          title: `${subrules.length} subrules`,
-          nodes: Array.from(nestedNodes.values()),
-          edges: nestedEdges
-        };
-      }
-
       for (const rule of catalog.rules || []) {
         const before = rule.before || [];
         const after = rule.after || [];
@@ -1332,7 +1371,7 @@
             rule.triggerThreshold ? `Trigger threshold: ${rule.triggerThreshold}` : "",
             rule.triggerTerms?.length ? `Trigger terms: ${rule.triggerTerms.map(term => term.text).filter(Boolean).join(", ")}` : ""
           ].filter(Boolean).join("\n"),
-          nestedGraph: nestedGraphForRule(rule),
+          nestedGraph: nestedGraphFromSubrules(rule.id, rule.subrules || []),
           raw: rule
         });
         for (const label of before) {
@@ -1358,6 +1397,12 @@
             plainEnglish: rule.reason || `Output role for ${rule.id}.`,
             prompt: `Rule ${rule.id} plans before ${label}.`
           });
+        }
+      }
+
+      if (showUncategorizedSubrules) {
+        for (const parent of diagnosticParents(payload)) {
+          ensureNode(parent);
         }
       }
 
@@ -1784,7 +1829,7 @@
       updateOuterCollision();
       const edgeList = visibleEdges();
       const nodeIds = visibleNodeIds(edgeList);
-      const visibleNodes = nodes.filter(node => nodeIds.has(node.id));
+      const visibleNodes = nodes.filter(node => nodeIds.has(node.id) || (node.alwaysVisible && activeFilter !== "rules"));
 
       stageLayer.selectAll("g").data(stages, stage => stage.id).join(enter => {
         const group = enter.append("g").attr("class", "stage-band");
@@ -2508,35 +2553,48 @@
       svg.transition().duration(350).call(zoom.transform, d3.zoomIdentity);
     }
 
+    function renderProductionSummary(graph) {
+      const diagnosticCount = (productionPayload?.subrules?.uncategorizedParents || [])
+        .reduce((sum, parent) => sum + ((parent.subrules || []).length), 0);
+      detailEl.innerHTML = `
+        <div class="detail-title">Production rule graph</div>
+        <p class="detail-copy">Loaded ${escapeHtml(graph.catalog.title || graph.catalog.kind || "rule catalog")} from the latest learning run.</p>
+        <div class="pill-row">
+          <span class="pill">${escapeHtml(graph.nodes.length)} nodes</span>
+          <span class="pill">${escapeHtml(graph.edges.length)} edges</span>
+          <span class="pill">${escapeHtml((graph.run || {}).shortSha || "no sha")}</span>
+          ${diagnosticCount ? `<span class="pill">${escapeHtml(diagnosticCount)} ${showUncategorizedSubrules ? "shown" : "hidden"} uncategorized subrules</span>` : ""}
+        </div>
+        <div class="detail-section">
+          <h3>Run</h3>
+          <dl class="kv">
+            <dt>Run id</dt><dd>${escapeHtml((graph.run || {}).runId || "")}</dd>
+            <dt>Branch</dt><dd>${escapeHtml((graph.run || {}).branch || "")}</dd>
+            <dt>SHA</dt><dd>${escapeHtml((graph.run || {}).headSha || "")}</dd>
+          </dl>
+        </div>
+      `;
+    }
+
+    function renderProductionGraph({ zoomNested = false } = {}) {
+      if (!productionPayload) return;
+      const graph = graphFromRulesPayload(productionPayload);
+      if (!graph.nodes.length || !graph.edges.length) throw new Error("No production rules were available to graph.");
+      replaceGraph(graph.nodes, graph.edges);
+      renderProductionSummary(graph);
+      if (zoomNested) {
+        window.setTimeout(zoomNestedNode, 700);
+      }
+    }
+
     async function loadProductionRules() {
       detailEl.innerHTML = `<div class="detail-title">Loading rules</div><p class="detail-copy">Fetching latest model rules from /api/splitter-rules...</p>`;
       try {
         const response = await fetch("/api/splitter-rules", { cache: "no-store" });
         const payload = await response.json();
         if (!response.ok || payload.error) throw new Error(payload.error || `HTTP ${response.status}`);
-        const graph = graphFromRulesPayload(payload);
-        if (!graph.nodes.length || !graph.edges.length) throw new Error("No production rules were available to graph.");
-        replaceGraph(graph.nodes, graph.edges);
-        detailEl.innerHTML = `
-          <div class="detail-title">Production rule graph</div>
-          <p class="detail-copy">Loaded ${escapeHtml(graph.catalog.title || graph.catalog.kind || "rule catalog")} from the latest learning run.</p>
-          <div class="pill-row">
-            <span class="pill">${escapeHtml(graph.nodes.length)} nodes</span>
-            <span class="pill">${escapeHtml(graph.edges.length)} edges</span>
-            <span class="pill">${escapeHtml((graph.run || {}).shortSha || "no sha")}</span>
-          </div>
-          <div class="detail-section">
-            <h3>Run</h3>
-            <dl class="kv">
-              <dt>Run id</dt><dd>${escapeHtml((graph.run || {}).runId || "")}</dd>
-              <dt>Branch</dt><dd>${escapeHtml((graph.run || {}).branch || "")}</dd>
-              <dt>SHA</dt><dd>${escapeHtml((graph.run || {}).headSha || "")}</dd>
-            </dl>
-          </div>
-        `;
-        if (new URLSearchParams(window.location.search).get("demo") === "nested") {
-          window.setTimeout(zoomNestedNode, 700);
-        }
+        productionPayload = payload;
+        renderProductionGraph({ zoomNested: new URLSearchParams(window.location.search).get("demo") === "nested" });
       } catch (error) {
         detailEl.innerHTML = `
           <div class="detail-title">Using fallback demo</div>
@@ -2554,6 +2612,17 @@
     document.getElementById("zoom-nested").addEventListener("click", zoomNestedNode);
     document.getElementById("fit").addEventListener("click", fitGraph);
     document.getElementById("reset").addEventListener("click", resetGraph);
+    uncategorizedToggle.addEventListener("change", event => {
+      showUncategorizedSubrules = event.currentTarget.checked;
+      try {
+        renderProductionGraph();
+      } catch (error) {
+        detailEl.innerHTML = `
+          <div class="detail-title">Unable to rebuild graph</div>
+          <p class="detail-copy">${escapeHtml(error.message || error)}</p>
+        `;
+      }
+    });
 
     loadProductionRules();
   </script>
