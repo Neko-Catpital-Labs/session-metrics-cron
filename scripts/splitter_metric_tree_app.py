@@ -24,6 +24,7 @@ DEFAULT_STATIC_PATH = REPO_ROOT / "docs" / "splitter-metric-tree-mvp.html"
 DEFAULT_RULES_STATIC_PATH = REPO_ROOT / "docs" / "rules-d3-poc.html"
 DEFAULT_STEPS_STATIC_PATH = REPO_ROOT / "docs" / "rules-steps.html"
 DEFAULT_RULES_D3_POC_STATIC_PATH = REPO_ROOT / "docs" / "rules-d3-poc.html"
+DEFAULT_COST_REPORT_PATH = REPO_ROOT / "reports" / "invoker-cost-breakdown.html"
 DEFAULT_WORKFLOW_ANALYSIS_ROOT = Path(
     os.environ.get(
         "WORKFLOW_ANALYSIS_SERVICE_ROOT",
@@ -148,6 +149,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rules-static-path", type=Path, default=DEFAULT_RULES_STATIC_PATH)
     parser.add_argument("--steps-static-path", type=Path, default=DEFAULT_STEPS_STATIC_PATH)
     parser.add_argument("--rules-d3-poc-static-path", type=Path, default=DEFAULT_RULES_D3_POC_STATIC_PATH)
+    parser.add_argument("--cost-report-path", type=Path, default=DEFAULT_COST_REPORT_PATH)
     parser.add_argument("--workflow-analysis-root", type=Path, default=DEFAULT_WORKFLOW_ANALYSIS_ROOT)
     parser.add_argument("--cache-ttl-seconds", type=int, default=int(os.environ.get("SPLITTER_TREE_CACHE_TTL_SECONDS", str(DEFAULT_CACHE_TTL_SECONDS))))
     return parser.parse_args()
@@ -1340,6 +1342,7 @@ def make_handler(
     steps_static_path: Path,
     rules_d3_poc_static_path: Path,
     workflow_analysis_root: Path,
+    cost_report_path: Path,
     table: str,
     project_id: str,
     backend: str,
@@ -1359,6 +1362,7 @@ def make_handler(
                 "/steps.html",
                 "/rules-d3-poc.html",
                 "/action-rule-graph-poc.html",
+                "/cost",
                 "/healthz",
                 "/readyz",
             }:
@@ -1388,6 +1392,12 @@ def make_handler(
                 return
             if parsed.path == "/action-rule-graph-poc.html":
                 self.send_redirect("/rules.html?demo=nested")
+                return
+            if parsed.path in {"/cost", "/cost.html"}:
+                if cost_report_path.exists():
+                    self.send_static(cost_report_path)
+                else:
+                    self.send_error(HTTPStatus.NOT_FOUND, "cost report not generated yet")
                 return
             if parsed.path == "/api/splitter-metric-tree":
                 self.send_metric_tree(parse_qs(parsed.query))
@@ -1492,6 +1502,7 @@ def main() -> int:
         args.steps_static_path,
         args.rules_d3_poc_static_path,
         args.workflow_analysis_root,
+        args.cost_report_path,
         args.table,
         args.project_id,
         args.backend,

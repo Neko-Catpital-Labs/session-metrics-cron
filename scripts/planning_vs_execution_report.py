@@ -38,6 +38,7 @@ from usage_costing import (  # noqa: E402
 DEFAULT_AUDIT_REPORT = REPO_ROOT / "cache-hit-audit-report.json"
 DEFAULT_CODEX_DIR = Path.home() / ".codex" / "sessions"
 DEFAULT_CLAUDE_DIR = Path.home() / ".claude" / "projects"
+DEFAULT_OMP_DIR = Path.home() / ".omp" / "agent" / "sessions"
 
 PLANNING_PHRASES = [
     "plan-to-invoker",
@@ -183,6 +184,7 @@ class PromptWindow:
     function_name_counts: Counter[str] = field(default_factory=Counter)
     shell_verb_counts: Counter[str] = field(default_factory=Counter)
     command_calls: list["CommandCall"] = field(default_factory=list)
+    omp_prompt_cost_usd: float = 0.0
 
 
 @dataclass
@@ -216,6 +218,8 @@ class SessionStats:
     file: str
     session_date: str
     bucket: str  # planning | execution
+    origin: str = "native"  # native | omp
+    input_includes_cache: bool = True  # codex-style: provider input count already includes cache reads
     provider: str = ""
     billable_model: str = ""
     billable_model_source: str = ""
@@ -343,7 +347,7 @@ def extract_shell_verb(arguments_raw: Any) -> str | None:
         args_obj = arguments_raw
     else:
         return None
-    cmd = args_obj.get("cmd") or args_obj.get("command") or args_obj.get("input", {}).get("command") or ""
+    cmd = args_obj.get("cmd") or args_obj.get("command") or _input_dict(args_obj).get("command") or ""
     if not isinstance(cmd, str):
         return None
     cmd = cmd.strip()
@@ -375,9 +379,16 @@ def parse_tool_arguments(arguments_raw: Any) -> dict[str, Any]:
     return obj if isinstance(obj, dict) else {}
 
 
+def _input_dict(args_obj: dict[str, Any]) -> dict[str, Any]:
+    """Return args_obj["input"] only when it is a dict (omp passes a string patch
+    for edit/write tools, which would otherwise break .get() access)."""
+    nested = args_obj.get("input")
+    return nested if isinstance(nested, dict) else {}
+
+
 def command_text_from_arguments(arguments_raw: Any) -> str:
     args_obj = parse_tool_arguments(arguments_raw)
-    command = args_obj.get("cmd") or args_obj.get("command") or (args_obj.get("input") or {}).get("command")
+    command = args_obj.get("cmd") or args_obj.get("command") or _input_dict(args_obj).get("command")
     return command if isinstance(command, str) else ""
 
 
@@ -398,7 +409,7 @@ def stdin_text_from_arguments(arguments_raw: Any) -> str:
 
 def workdir_from_arguments(arguments_raw: Any) -> str:
     args_obj = parse_tool_arguments(arguments_raw)
-    value = args_obj.get("workdir") or args_obj.get("cwd") or (args_obj.get("input") or {}).get("cwd")
+    value = args_obj.get("workdir") or args_obj.get("cwd") or _input_dict(args_obj).get("cwd")
     return value if isinstance(value, str) else ""
 
 
@@ -1986,6 +1997,7 @@ def parse_claude_session(path: Path) -> SessionStats | None:
     attach_prompt_context(windows, user_prompts[0] if user_prompts else "")
     return SessionStats(
         model="claude",
+        input_includes_cache=False,
         file=str(path),
         session_date=session_date,
         bucket=bucket,
@@ -1997,6 +2009,178 @@ def parse_claude_session(path: Path) -> SessionStats | None:
         agent_messages=agent_message_count,
         tool_calls=tool_calls_total,
         function_outputs=0,
+        final_input=fi,
+        final_cached=fc,
+        final_cache_creation=fcc,
+        final_output=fo,
+        final_reasoning=fr,
+        final_total=ft,
+        session_cwd=session_cwd,
+        first_prompt=user_prompts[0] if user_prompts else "",
+        prompt_windows=windows,
+        function_name_counts=fn_counts,
+        shell_verb_counts=verb_counts,
+    )
+
+def _omp_model_family(model: str) -> str | None:
+    """Map an omp model id (``openai-codex/gpt-5.4``, ``anthropic/claude-opus-4-8``)
+    to the billing family the rest of the pipeline uses."""
+    m = (model or "").lower()
+    if not m:
+        return None
+    if "claude" in m or m.startswith("anthropic"):
+        return "claude"
+    if "codex" in m or "gpt" in m or m.startswith("openai"):
+        return "codex"
+    return None
+
+
+def _omp_text_from_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            item["text"]
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str)
+        ]
+        return "\n".join(parts)
+    return ""
+
+
+def parse_omp_session(path: Path) -> SessionStats | None:
+    """Parse an Oh My Pi (omp) agent session JSONL.
+
+    omp writes one JSON object per line with a top-level ``type``. Assistant
+    ``message`` records carry per-turn ``message.usage`` (input/output/cacheRead/
+    cacheWrite/reasoningTokens) plus a precomputed ``message.usage.cost``; the
+    underlying family (codex vs claude) is on ``message.model``. The session is
+    attributed to the family that accounts for the most spend (sessions are
+    overwhelmingly single-family; model_change mid-session is rare).
+    """
+    user_prompts: list[str] = []
+    windows: list[PromptWindow] = []
+    current: PromptWindow | None = None
+    agent_message_count = tool_calls_total = func_outputs_total = 0
+    fn_counts: Counter[str] = Counter()
+    verb_counts: Counter[str] = Counter()
+    session_date = ""
+    session_cwd = ""
+    family_cost: Counter[str] = Counter()
+    observed_model: dict[str, str] = {}
+    fi = fc = fcc = fo = fr = ft = 0
+
+    try:
+        text = path.read_text(errors="ignore")
+    except OSError:
+        return None
+
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not session_date:
+            session_date = iso_date(obj.get("timestamp"))
+        t = obj.get("type")
+        if t == "session":
+            if isinstance(obj.get("cwd"), str) and not session_cwd:
+                session_cwd = obj["cwd"]
+            continue
+        if t != "message":
+            continue
+        msg = obj.get("message") or {}
+        role = msg.get("role")
+        if role == "user":
+            prompt_text = _omp_text_from_content(msg.get("content"))
+            if current is not None:
+                windows.append(current)
+            user_prompts.append(prompt_text)
+            current = PromptWindow(prompt_index=len(user_prompts), prompt_text=prompt_text)
+        elif role == "assistant":
+            agent_message_count += 1
+            usage = msg.get("usage") or {}
+            ui = int(usage.get("input") or 0)
+            uc = int(usage.get("cacheRead") or 0)
+            ucc = int(usage.get("cacheWrite") or 0)
+            uo = int(usage.get("output") or 0)
+            ur = int(usage.get("reasoningTokens") or 0)
+            ut = int(usage.get("totalTokens") or 0) or (ui + uc + ucc + uo + ur)
+            turn_cost = float(((usage.get("cost") or {}).get("total")) or 0.0)
+            fi += ui; fc += uc; fcc += ucc; fo += uo; fr += ur; ft += ut
+            family = _omp_model_family(msg.get("model") or "")
+            if family:
+                family_cost[family] += turn_cost
+                observed_model.setdefault(family, msg.get("model") or "")
+            if current is not None:
+                current.response_messages += 1
+                current.agent_messages += 1
+                current.input_delta += ui
+                current.cached_delta += uc
+                current.cache_creation_delta += ucc
+                current.output_delta += uo
+                current.reasoning_delta += ur
+                current.total_delta += ut
+                current.omp_prompt_cost_usd += turn_cost
+                answer = _omp_text_from_content(msg.get("content"))
+                if answer:
+                    current.final_answer = answer
+            for item in (msg.get("content") or []):
+                if not isinstance(item, dict) or item.get("type") != "toolCall":
+                    continue
+                tool_calls_total += 1
+                fname = (item.get("name") or "unknown").lower()
+                fn_counts[fname] += 1
+                if current is not None:
+                    current.tool_calls += 1
+                    current.function_name_counts[fname] += 1
+                    add_command_call(current, fname, item.get("arguments"), str(item.get("id") or ""))
+                if fname in SHELL_FUNCTION_NAMES:
+                    verb = extract_shell_verb(item.get("arguments"))
+                    if verb:
+                        verb_counts[verb] += 1
+                        if current is not None:
+                            current.shell_verb_counts[verb] += 1
+        elif role == "toolResult":
+            func_outputs_total += 1
+            if current is not None:
+                current.function_outputs += 1
+                attach_command_output(
+                    current,
+                    str(msg.get("toolCallId") or ""),
+                    output_text_from_payload(msg.get("content")),
+                )
+
+    if current is not None:
+        windows.append(current)
+    if not user_prompts and agent_message_count == 0:
+        return None
+
+    family = family_cost.most_common(1)[0][0] if family_cost else "codex"
+    seen_model = observed_model.get(family, "")
+    if seen_model:
+        billable_model, billable_model_source = resolve_billable_model(family, seen_model)
+    else:
+        billable_model, billable_model_source = default_billable_model(family)
+    bucket = "planning" if PLANNING_RE.search("\n".join(user_prompts)) else "execution"
+    attach_prompt_context(windows, user_prompts[0] if user_prompts else "")
+    return SessionStats(
+        model=family,
+        file=str(path),
+        session_date=session_date,
+        bucket=bucket,
+        origin="omp",
+        input_includes_cache=False,
+        provider=provider_for_session_family(family),
+        billable_model=billable_model,
+        billable_model_source=billable_model_source,
+        usage_source="omp_message_usage",
+        user_prompts=len(user_prompts),
+        agent_messages=agent_message_count,
+        tool_calls=tool_calls_total,
+        function_outputs=func_outputs_total,
         final_input=fi,
         final_cached=fc,
         final_cache_creation=fcc,
@@ -2036,7 +2220,7 @@ def build_rows_for_model(
             cache_read_tokens=s.final_cached,
             cache_creation_tokens=s.final_cache_creation,
             output_tokens=s.final_output,
-            input_includes_cache=s.model == "codex",
+            input_includes_cache=s.input_includes_cache,
         )
         session_total_tokens = raw_total_tokens(
             s.model,
@@ -2050,6 +2234,7 @@ def build_rows_for_model(
         session_rows.append(
             {
                 "model": s.model,
+                "origin": s.origin,
                 "provider": s.provider,
                 "billable_model": s.billable_model,
                 "billable_model_source": s.billable_model_source,
@@ -2087,7 +2272,7 @@ def build_rows_for_model(
                 cache_read_tokens=w.cached_delta,
                 cache_creation_tokens=w.cache_creation_delta,
                 output_tokens=w.output_delta,
-                input_includes_cache=s.model == "codex",
+                input_includes_cache=s.input_includes_cache,
             )
             prompt_total_tokens = raw_total_tokens(
                 s.model,
@@ -2101,6 +2286,7 @@ def build_rows_for_model(
             prompt_rows.append(
                 {
                     "model": s.model,
+                    "origin": s.origin,
                     "provider": s.provider,
                     "billable_model": s.billable_model,
                     "billable_model_source": s.billable_model_source,
@@ -2147,6 +2333,7 @@ def build_rows_for_model(
                     {
                         "schema_version": COMMAND_ATTRIBUTION_SCHEMA_VERSION,
                         "model": s.model,
+                        "origin": s.origin,
                         "provider": s.provider,
                         "billable_model": s.billable_model,
                         "billable_model_source": s.billable_model_source,
@@ -2213,6 +2400,7 @@ def build_rows_for_model(
                     attribution_rows.append(
                         {
                             "model": s.model,
+                            "origin": s.origin,
                             "provider": s.provider,
                             "billable_model": s.billable_model,
                             "billable_model_source": s.billable_model_source,
@@ -2255,6 +2443,92 @@ def build_rows_for_model(
                             "pricing_missing": prompt_cost["pricing_missing"],
                         }
                     )
+    return session_rows, prompt_rows, attribution_rows, command_rows
+
+
+def _apply_omp_costs(
+    session_rows: list[dict[str, Any]],
+    prompt_rows: list[dict[str, Any]],
+    attribution_rows: list[dict[str, Any]],
+    command_rows: list[dict[str, Any]],
+    prompt_cost_by_key: dict[tuple[str, int], float],
+    session_cost_by_file: dict[str, float],
+) -> None:
+    """Replace pricing-table-derived costs with omp's own precomputed per-turn cost.
+
+    omp's internal model ids (gpt-5.x, claude-opus-4-x) are not in the LiteLLM
+    pricing table, so derive_cost() would yield null. omp already records exact
+    per-turn cost, so we use it directly and re-allocate tool/command shares.
+    """
+    for r in session_rows:
+        c = session_cost_by_file.get(r.get("file", ""))
+        if c is not None:
+            r["estimated_cost_usd"] = c
+            r["derived_total_cost_usd"] = c
+            r["pricing_missing"] = False
+    for r in prompt_rows:
+        c = prompt_cost_by_key.get((r.get("file", ""), r.get("prompt_index")))
+        if c is not None:
+            r["estimated_cost_usd"] = c
+            r["derived_total_cost_usd"] = c
+            r["pricing_missing"] = False
+    for r in attribution_rows:
+        c = prompt_cost_by_key.get((r.get("file", ""), r.get("prompt_index")))
+        if c is None:
+            continue
+        ptt = float(r.get("prompt_total_tokens") or 0.0)
+        att = float(r.get("allocated_total_tokens") or 0.0)
+        share = (att / ptt) if ptt else 0.0
+        r["prompt_derived_total_cost_usd"] = c
+        r["allocated_total_cost_usd"] = c * share
+        r["pricing_missing"] = False
+    for r in command_rows:
+        c = prompt_cost_by_key.get((r.get("file", ""), r.get("prompt_index")))
+        if c is None:
+            continue
+        weight = float(r.get("allocation_weight") or 0.0)
+        r["prompt_derived_total_cost_usd"] = c
+        r["allocated_total_cost_usd"] = c * weight
+
+
+def build_omp_rows(
+    sessions: list[SessionStats],
+    pricing_table: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build the same row schema as build_rows_for_model for omp sessions, split by
+    family (codex/claude), then overwrite costs with omp's exact per-turn cost."""
+    prompt_cost_by_key: dict[tuple[str, int], float] = {}
+    session_cost_by_file: dict[str, float] = {}
+    for s in sessions:
+        total = 0.0
+        for w in s.prompt_windows:
+            prompt_cost_by_key[(s.file, w.prompt_index)] = w.omp_prompt_cost_usd
+            total += w.omp_prompt_cost_usd
+        session_cost_by_file[s.file] = total
+
+    session_rows: list[dict[str, Any]] = []
+    prompt_rows: list[dict[str, Any]] = []
+    attribution_rows: list[dict[str, Any]] = []
+    command_rows: list[dict[str, Any]] = []
+    for family in ("codex", "claude"):
+        fam_sessions = [s for s in sessions if s.model == family]
+        if not fam_sessions:
+            continue
+        fam_cost = sum(session_cost_by_file.get(s.file, 0.0) for s in fam_sessions)
+        model_totals = {
+            "inputTokens": 0.0,
+            "cachedInputTokens": 0.0,
+            "cacheCreationTokens": 0.0,
+            "outputTokens": 0.0,
+            "reasoningOutputTokens": 0.0,
+            "costUSD": fam_cost,
+        }
+        sr, pr, ar, cr = build_rows_for_model(fam_sessions, model_totals, pricing_table)
+        session_rows += sr
+        prompt_rows += pr
+        attribution_rows += ar
+        command_rows += cr
+    _apply_omp_costs(session_rows, prompt_rows, attribution_rows, command_rows, prompt_cost_by_key, session_cost_by_file)
     return session_rows, prompt_rows, attribution_rows, command_rows
 
 
@@ -2414,6 +2688,7 @@ def build_report(
     codex_dir: Path,
     claude_dir: Path,
     v4_2_cluster_labels: dict[str, dict[str, str]] | None = None,
+    omp_dir: Path | None = None,
 ) -> dict[str, Any]:
     codex_dir, claude_dir = audit_dedup_dirs(audit_path, codex_dir, claude_dir)
     model_totals = load_model_totals(audit_path)
@@ -2426,11 +2701,18 @@ def build_report(
     codex_session_rows, codex_prompt_rows, codex_attribution_rows, codex_command_rows = build_rows_for_model(codex_sessions, model_totals["codex"], pricing_table)
     claude_session_rows, claude_prompt_rows, claude_attribution_rows, claude_command_rows = build_rows_for_model(claude_sessions, model_totals["claude"], pricing_table)
 
-    all_sessions = codex_sessions + claude_sessions
-    all_session_rows = codex_session_rows + claude_session_rows
-    all_prompt_rows = codex_prompt_rows + claude_prompt_rows
-    all_attribution_rows = codex_attribution_rows + claude_attribution_rows
-    all_command_rows = codex_command_rows + claude_command_rows
+    omp_sessions = (
+        [s for fp in sorted(omp_dir.rglob("*.jsonl")) if (s := parse_omp_session(fp))]
+        if omp_dir is not None and omp_dir.exists()
+        else []
+    )
+    omp_session_rows, omp_prompt_rows, omp_attribution_rows, omp_command_rows = build_omp_rows(omp_sessions, pricing_table)
+
+    all_sessions = codex_sessions + claude_sessions + omp_sessions
+    all_session_rows = codex_session_rows + claude_session_rows + omp_session_rows
+    all_prompt_rows = codex_prompt_rows + claude_prompt_rows + omp_prompt_rows
+    all_attribution_rows = codex_attribution_rows + claude_attribution_rows + omp_attribution_rows
+    all_command_rows = codex_command_rows + claude_command_rows + omp_command_rows
     all_command_rows_v4_1 = build_command_attribution_v4_1_rows(all_command_rows)
     all_command_rows_v4_2, all_command_rows_v4_2_review = build_command_attribution_v4_2_rows(all_command_rows, v4_2_cluster_labels)
     all_command_rows_v4_3, all_command_rows_v4_3_review = build_command_attribution_v4_3_rows(all_command_rows)
@@ -2774,6 +3056,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--audit-report", default=str(DEFAULT_AUDIT_REPORT), help="Path to cache-hit-audit-report.json")
     parser.add_argument("--codex-sessions-dir", default=str(DEFAULT_CODEX_DIR), help="Codex sessions directory")
     parser.add_argument("--claude-sessions-dir", default=str(DEFAULT_CLAUDE_DIR), help="Claude sessions directory")
+    parser.add_argument("--omp-sessions-dir", default=str(DEFAULT_OMP_DIR), help="Oh My Pi (omp) agent sessions directory (optional)")
     parser.add_argument(
         "--v4-2-cluster-labels",
         default="",
@@ -2785,6 +3068,7 @@ def main(argv: list[str] | None = None) -> int:
     audit_path = Path(args.audit_report)
     codex_dir = Path(args.codex_sessions_dir)
     claude_dir = Path(args.claude_sessions_dir)
+    omp_dir = Path(args.omp_sessions_dir)
     if not codex_dir.exists():
         print(f"Codex sessions directory does not exist: {codex_dir}", file=sys.stderr)
         return 1
@@ -2798,7 +3082,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Failed to load v4.2 cluster labels: {exc}", file=sys.stderr)
         return 1
 
-    report = build_report(out_dir, audit_path, codex_dir, claude_dir, v4_2_cluster_labels)
+    report = build_report(out_dir, audit_path, codex_dir, claude_dir, v4_2_cluster_labels, omp_dir=omp_dir)
     print(f"Report written to: {out_dir}")
     for sec_name in ("combined", "codex", "claude"):
         sec = report[sec_name]
