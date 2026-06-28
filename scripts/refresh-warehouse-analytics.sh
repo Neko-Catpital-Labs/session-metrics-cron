@@ -44,7 +44,16 @@ fi
 
 # 1. Collect fleet sessions (local + SSH hosts), dedup by content hash, classify
 #    intent, and emit the fleet-wide v4.5 command-attribution CSV (pricing-table costs).
-python3 scripts/fleet_warehouse_attribution.py --stage-dir "$STAGE_DIR" --out-dir reports
+#    WAREHOUSE_NO_COLLECT=1 reuses an already-staged $STAGE_DIR (skips the rsync) -
+#    used by refresh-cost-dashboard.sh so the fleet is collected only once.
+python3 scripts/fleet_warehouse_attribution.py --stage-dir "$STAGE_DIR" --out-dir reports \
+  ${WAREHOUSE_NO_COLLECT:+--no-collect}
+
+# 1b. Optional durable archive of the raw sessions we just collected (opt-in via
+#     SESSION_ARCHIVE_DEST). Skipped when reusing a stage we didn't collect.
+if [[ -n "${SESSION_ARCHIVE_DEST:-}" && -z "${WAREHOUSE_NO_COLLECT:-}" ]]; then
+  bash scripts/archive-fleet-sessions.sh || echo "WARN: session archive failed (continuing)"
+fi
 
 # 2. Load BigQuery: bq load --replace + refresh views + parity check (row/cost == CSV).
 python3 scripts/warehouse_cost_demo.py load-bigquery

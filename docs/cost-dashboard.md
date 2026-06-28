@@ -56,21 +56,47 @@ Fleet hosts come from `~/.invoker/config.json` (`remoteTargets`) or
 
 ## 2. Build the data
 
-```bash
-# Top half — fleet cost fact (collects sessions across local + SSH hosts,
-# writes reports/cost-daily-fact.json, and copies it to the dashboard host):
-DO1_HOST=invoker@YOUR_HOST bash scripts/refresh-fleet-cost-do1.sh
+The two halves publish to different places (a JSON fact file on the dashboard host
+vs a BigQuery table) with different cost models, so they have separate scripts —
+but they collect the **same** fleet sessions into the same stage. Run the unified
+entry point so the fleet is collected **once**:
 
-# Bottom half — warehouse command analytics (collects fleet sessions, builds the
-# v4.5 command-attribution CSV, then `bq load --replace` into
-# <project>.<dataset>.command_costs plus its views):
+```bash
 set -a; . config/warehouse-analytics.env; set +a
-bash scripts/refresh-warehouse-analytics.sh
+DO1_HOST=invoker@YOUR_HOST bash scripts/refresh-cost-dashboard.sh
 ```
 
-Both are **dedup-safe**: fleet sessions are de-duplicated by file content hash, and
-the warehouse load fully replaces the table (`bq load --replace`) with a built-in
-row/cost parity check. Re-running never double-counts.
+It runs the top half (`refresh-fleet-cost-do1.sh`: collect → `cost-daily-fact.json`
+→ copy to host), then the bottom half (`refresh-warehouse-analytics.sh` with
+`WAREHOUSE_NO_COLLECT=1`, reusing the stage → `bq load --replace` into
+`<project>.<dataset>.command_costs`). You can still run either script alone if you
+only want one half.
+
+Both halves are **dedup-safe**: fleet sessions are de-duplicated by file content
+hash, and the warehouse load fully replaces the table (`bq load --replace`) with a
+built-in row/cost parity check. Re-running is a full rebuild — it never double-counts,
+so re-running *is* the backfill.
+
+### Durable backfill archive (optional)
+
+A rebuild only reaches as far back as the session logs still on the hosts. To keep
+history beyond log rotation, set `SESSION_ARCHIVE_DEST` (a local path or
+`gs://bucket/prefix`); each refresh then saves a dated tarball of the raw collected
+sessions:
+
+```bash
+SESSION_ARCHIVE_DEST=gs://my-bucket/sessions \
+  DO1_HOST=invoker@YOUR_HOST bash scripts/refresh-cost-dashboard.sh
+```
+
+Rebuild from archives later (content-hash dedup makes overlapping tarballs safe):
+
+```bash
+mkdir -p /tmp/restore
+for t in archive/fleet-sessions-*.tar.gz; do tar -xzf "$t" -C /tmp/restore; done
+python3 scripts/fleet_warehouse_attribution.py --no-collect --stage-dir /tmp/restore/fleet-sessions --out-dir reports
+python3 scripts/warehouse_cost_demo.py load-bigquery
+```
 
 ## 3. Serve the dashboard
 
@@ -90,8 +116,13 @@ HTML-only changes need no restart (the file is served per request) — just copy
 ## 4. Schedule daily refreshes (optional)
 
 ```bash
-bash scripts/install-fleet-cost-cron.sh        # 7:00 daily — top half
-bash scripts/install-warehouse-cron.sh         # 7:30 daily — bottom half
+# Recommended — one cron, collects the fleet once, does both halves
+# (and removes any split crons below):
+bash scripts/install-cost-dashboard-cron.sh        # 7:00 daily
+
+# Or schedule the halves independently instead:
+#   bash scripts/install-fleet-cost-cron.sh        # 7:00 daily — top half
+#   bash scripts/install-warehouse-cron.sh         # 7:30 daily — bottom half
 ```
 
 These are workstation crontab entries, so they only fire while the machine is awake.
