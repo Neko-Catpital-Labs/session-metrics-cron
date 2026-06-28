@@ -62,8 +62,9 @@
     <div class="group">
       <span class="lbl">Stack by</span>
       <select id="stackBy">
+        <option value="combo">Harness × Model</option>
         <option value="token_type">Token type</option>
-        <option value="origin">Harness (origin)</option>
+        <option value="origin">Harness</option>
         <option value="model">Model</option>
         <option value="host">Machine</option>
       </select>
@@ -91,16 +92,20 @@
   <script>
   const TOKEN_COLORS = { fresh_input:"#3b82f6", cache_read:"#10b981", cache_creation:"#f59e0b", output:"#ef4444" };
   const PALETTE = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#ec4899","#84cc16","#f97316","#6366f1","#14b8a6","#a855f7"];
+  const COMBO_COLORS = { "native+codex":"#3b82f6", "native+claude":"#10b981", "omp+codex":"#f59e0b", "omp+claude":"#ef4444" };
   const FILTER_DIMS = ["host","origin","model"];
   let FACT = { rows: [], token_types: [], generated_utc: "" };
   let chart = null;
-  const state = { range:"30d", metric:"cost_usd", stackBy:"token_type", from:null, to:null, sel:{ host:new Set(), origin:new Set(), model:new Set() } };
+  const state = { range:"30d", metric:"cost_usd", stackBy:"combo", from:null, to:null, sel:{ host:new Set(), origin:new Set(), model:new Set() } };
 
   const fmtMoney = v => "$" + (v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
   const fmtInt = v => Math.round(v||0).toLocaleString();
-  const colorFor = (dim,cat,i) => dim==="token_type" ? (TOKEN_COLORS[cat]||PALETTE[i%PALETTE.length]) : PALETTE[i%PALETTE.length];
+  const catOf = (r,dim) => dim==="combo" ? (r.origin+"+"+r.model) : r[dim];
+  const dimLabel = d => ({combo:"harness × model", token_type:"token type", origin:"harness", model:"model", host:"machine"}[d] || d);
+  const colorFor = (dim,cat,i) => dim==="token_type" ? (TOKEN_COLORS[cat]||PALETTE[i%PALETTE.length])
+    : dim==="combo" ? (COMBO_COLORS[cat]||PALETTE[i%PALETTE.length]) : PALETTE[i%PALETTE.length];
 
-  function distinct(dim){ return [...new Set(FACT.rows.map(r=>r[dim]))].sort(); }
+  function distinct(dim){ return [...new Set(FACT.rows.map(r=>catOf(r,dim)))].sort(); }
 
   function rangeBounds(){
     const dates = FACT.rows.map(r=>r.date).filter(d=>d && d!=="unknown");
@@ -126,7 +131,7 @@
     let totalCost=0, totalTok=0; const catTotals={};
     for(const r of FACT.rows){
       if(!passes(r,lo,hi)) continue;
-      const cat = r[dim]; const v = r[metric];
+      const cat = catOf(r,dim); const v = r[metric];
       dates.add(r.date); cats.add(cat);
       (cell[r.date] ||= {}); cell[r.date][cat] = (cell[r.date][cat]||0) + v;
       totalCost += r.cost_usd; totalTok += r.tokens;
@@ -152,10 +157,10 @@
     // KPIs
     document.getElementById("kpis").innerHTML =
       kpi(fmtMoney(totalCost),"Cost (range)") + kpi(fmtInt(totalTok),"Tokens (range)") +
-      kpi(labels.length,"Days") + kpi(catList.length, dim.replace("_"," ")+" series");
+      kpi(labels.length,"Days") + kpi(catList.length, dimLabel(dim)+" series");
 
     // Totals table
-    document.getElementById("byLabel").textContent = dim.replace("_"," ");
+    document.getElementById("byLabel").textContent = dimLabel(dim);
     const sorted = Object.entries(catTotals).sort((a,b)=>b[1].cost-a[1].cost);
     document.getElementById("totRows").innerHTML = sorted.map(([c,t],i)=>
       `<tr><td><span class="swatch" style="background:${colorFor(dim,c,i)}"></span><code>${c}</code></td>`+
