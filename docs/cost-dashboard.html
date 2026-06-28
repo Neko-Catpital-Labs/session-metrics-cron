@@ -24,6 +24,15 @@
   .chips { display:flex; gap:.3rem; flex-wrap:wrap; max-width:520px; }
   label.chip { display:inline-flex; align-items:center; gap:.25rem; border:1px solid var(--line); border-radius:14px; padding:.1rem .55rem; font-size:.78rem; cursor:pointer; background:#fff; }
   label.chip input { margin:0; }
+  .pricing { margin:.5rem 0 1rem; padding:.8rem; background:var(--bg); border:1px solid var(--line); border-radius:8px; }
+  .phead { display:flex; align-items:center; gap:.8rem; flex-wrap:wrap; margin-bottom:.6rem; }
+  .pnote { color:var(--sub); font-size:.72rem; }
+  .pgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:.5rem .9rem; }
+  .prate { display:grid; grid-template-columns:1fr; gap:.15rem; }
+  .prate label { font-size:.74rem; color:var(--sub); text-transform:capitalize; }
+  .prate input[type=range] { width:100%; }
+  .prate input[type=number] { width:6.5rem; padding:.15rem .3rem; border:1px solid var(--line); border-radius:5px; font-size:.8rem; }
+  .prate .unit { font-size:.7rem; color:var(--sub); margin-left:.3rem; }
   #chartWrap { position:relative; height:460px; }
   table { border-collapse:collapse; width:100%; margin:1rem 0; font-size:.85rem; }
   th,td { padding:.35rem .6rem; border-bottom:1px solid #eef1f4; text-align:left; }
@@ -83,6 +92,15 @@
     </div>
   </div>
 
+  <div class="pricing">
+    <div class="phead">
+      <span class="lbl">Pricing assumptions ($/Mtok)</span>
+      <button class="seg" id="resetRates">Reset to actual</button>
+      <span class="pnote">Simulates cost as tokens × rate. Baseline = your blended billed rate; affects the Cost metric only.</span>
+    </div>
+    <div class="pgrid" id="priceGrid"></div>
+  </div>
+
   <div id="err"></div>
   <div id="chartWrap"><canvas id="chart"></canvas></div>
   <h3>Totals by <span id="byLabel">token type</span> (selected range &amp; filters)</h3>
@@ -97,6 +115,9 @@
   let FACT = { rows: [], token_types: [], generated_utc: "" };
   let chart = null;
   const state = { range:"30d", metric:"cost_usd", stackBy:"combo", from:null, to:null, sel:{ host:new Set(), origin:new Set(), model:new Set() } };
+  let baseRate = {};   // {model: {token_type: $/Mtok}}  derived once from the fact
+  let simRate  = {};   // {model: {token_type: $/Mtok}}  mutable; what the sliders set
+  const cloneRate = x => JSON.parse(JSON.stringify(x));
 
   const fmtMoney = v => "$" + (v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
   const fmtInt = v => Math.round(v||0).toLocaleString();
@@ -104,6 +125,18 @@
   const dimLabel = d => ({combo:"harness × model", token_type:"token type", origin:"harness", model:"model", host:"machine"}[d] || d);
   const colorFor = (dim,cat,i) => dim==="token_type" ? (TOKEN_COLORS[cat]||PALETTE[i%PALETTE.length])
     : dim==="combo" ? (COMBO_COLORS[cat]||PALETTE[i%PALETTE.length]) : PALETTE[i%PALETTE.length];
+
+  function deriveRates(rows){
+    const c={}, t={};
+    for(const r of rows){
+      (c[r.model] ||= {}); c[r.model][r.token_type]=(c[r.model][r.token_type]||0)+r.cost_usd;
+      (t[r.model] ||= {}); t[r.model][r.token_type]=(t[r.model][r.token_type]||0)+r.tokens;
+    }
+    const out={};
+    for(const m in t){ out[m]={}; for(const tt in t[m]){ if(t[m][tt]>0) out[m][tt]=c[m][tt]/t[m][tt]*1e6; } }
+    return out;
+  }
+  const costOf = r => r.tokens * ((simRate[r.model]&&simRate[r.model][r.token_type])||0) / 1e6;
 
   function distinct(dim){ return [...new Set(FACT.rows.map(r=>catOf(r,dim)))].sort(); }
 
@@ -128,15 +161,17 @@
     const [lo,hi] = rangeBounds();
     const metric = state.metric, dim = state.stackBy;
     const cell = {}; const cats = new Set(); const dates = new Set();
-    let totalCost=0, totalTok=0; const catTotals={};
+    let modeledCost=0, actualCost=0, totalTok=0; const catTotals={};
     for(const r of FACT.rows){
       if(!passes(r,lo,hi)) continue;
-      const cat = catOf(r,dim); const v = r[metric];
+      const cat = catOf(r,dim);
+      const c = costOf(r);
+      const v = metric==="cost_usd" ? c : r.tokens;
       dates.add(r.date); cats.add(cat);
       (cell[r.date] ||= {}); cell[r.date][cat] = (cell[r.date][cat]||0) + v;
-      totalCost += r.cost_usd; totalTok += r.tokens;
+      modeledCost += c; actualCost += r.cost_usd; totalTok += r.tokens;
       catTotals[cat] = catTotals[cat] || {cost:0,tok:0};
-      catTotals[cat].cost += r.cost_usd; catTotals[cat].tok += r.tokens;
+      catTotals[cat].cost += c; catTotals[cat].tok += r.tokens;
     }
     const labels = [...dates].sort();
     const catList = [...cats].sort();
@@ -155,16 +190,20 @@
     });
 
     // KPIs
+    const dCost = modeledCost - actualCost;
+    const pct = actualCost ? (dCost/actualCost*100) : 0;
     document.getElementById("kpis").innerHTML =
-      kpi(fmtMoney(totalCost),"Cost (range)") + kpi(fmtInt(totalTok),"Tokens (range)") +
-      kpi(labels.length,"Days") + kpi(catList.length, dimLabel(dim)+" series");
+      kpi(fmtMoney(modeledCost),"Modeled cost (range)") +
+      kpi(fmtMoney(actualCost),"Actual billed (range)") +
+      kpi((pct>=0?"+":"")+pct.toFixed(1)+"%", "Δ vs billed ("+(dCost>=0?"+":"")+fmtMoney(dCost)+")") +
+      kpi(fmtInt(totalTok),"Tokens (range)") + kpi(labels.length,"Days");
 
     // Totals table
     document.getElementById("byLabel").textContent = dimLabel(dim);
     const sorted = Object.entries(catTotals).sort((a,b)=>b[1].cost-a[1].cost);
     document.getElementById("totRows").innerHTML = sorted.map(([c,t],i)=>
       `<tr><td><span class="swatch" style="background:${colorFor(dim,c,i)}"></span><code>${c}</code></td>`+
-      `<td class="n">${fmtMoney(t.cost)}</td><td class="n">${totalCost? (t.cost/totalCost*100).toFixed(1):"0.0"}%</td>`+
+      `<td class="n">${fmtMoney(t.cost)}</td><td class="n">${modeledCost? (t.cost/modeledCost*100).toFixed(1):"0.0"}%</td>`+
       `<td class="n">${fmtInt(t.tok)}</td></tr>`).join("");
   }
   const kpi = (v,l)=>`<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`;
@@ -182,6 +221,32 @@
     document.querySelectorAll(`#${containerId} .seg`).forEach(b=> b.classList.toggle("on", b.dataset[attr]===val));
   }
 
+  function buildPricing(){
+    const ttOrder = (FACT.token_types && FACT.token_types.length) ? FACT.token_types
+      : ["fresh_input","cache_read","cache_creation","output"];
+    let html="";
+    for(const m of Object.keys(baseRate).sort()){
+      for(const tt of ttOrder){
+        const base = baseRate[m][tt];
+        if(base===undefined) continue;                       // no tokens for this combo -> no control
+        const max = Math.max(base*4, 1).toFixed(2);
+        const step = (parseFloat(max)/200).toFixed(4);
+        const id = `rate_${m}_${tt}`;
+        html += `<div class="prate"><label>${m} · ${tt.replace(/_/g," ")}</label>`+
+          `<input type="range" id="${id}_s" min="0" max="${max}" step="${step}" value="${base}">`+
+          `<input type="number" id="${id}_n" min="0" step="0.01" value="${base.toFixed(3)}"><span class="unit">$/Mtok</span></div>`;
+      }
+    }
+    document.getElementById("priceGrid").innerHTML = html;
+    for(const m of Object.keys(baseRate)) for(const tt in baseRate[m]){
+      const id=`rate_${m}_${tt}`, s=document.getElementById(id+"_s"), n=document.getElementById(id+"_n");
+      if(!s||!n) continue;
+      s.addEventListener("input", e=>{ const x=Math.max(0,parseFloat(e.target.value)||0); simRate[m][tt]=x; n.value=x.toFixed(3); render(); });
+      n.addEventListener("input", e=>{ const x=Math.max(0,parseFloat(e.target.value)||0); simRate[m][tt]=x; s.value=Math.min(x, parseFloat(s.max)); render(); });
+    }
+  }
+  function resetRates(){ simRate = cloneRate(baseRate); buildPricing(); render(); }
+
   async function init(){
     try{
       const res = await fetch("/api/cost-timeseries");
@@ -191,6 +256,10 @@
     document.getElementById("meta").textContent =
       `${FACT.rows.length.toLocaleString()} fact rows · generated ${FACT.generated_utc||"?"} · native = codex/claude CLI, omp = Oh My Pi harness`;
     FILTER_DIMS.forEach((d,i)=> buildChips(d, ["filtHost","filtOrigin","filtModel"][i]));
+    baseRate = deriveRates(FACT.rows);
+    simRate  = cloneRate(baseRate);
+    buildPricing();
+    document.getElementById("resetRates").addEventListener("click", resetRates);
 
     document.querySelectorAll("#rangeBtns .seg").forEach(b=> b.addEventListener("click",()=>{
       state.range=b.dataset.range; setActive("rangeBtns","range",state.range);
