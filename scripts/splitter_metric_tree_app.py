@@ -25,14 +25,24 @@ DEFAULT_RULES_STATIC_PATH = REPO_ROOT / "docs" / "rules-d3-poc.html"
 DEFAULT_STEPS_STATIC_PATH = REPO_ROOT / "docs" / "rules-steps.html"
 DEFAULT_RULES_D3_POC_STATIC_PATH = REPO_ROOT / "docs" / "rules-d3-poc.html"
 DEFAULT_COST_REPORT_PATH = REPO_ROOT / "reports" / "invoker-cost-breakdown.html"
+DEFAULT_COST_DASHBOARD_PATH = REPO_ROOT / "docs" / "cost-dashboard.html"
+DEFAULT_COST_FACT_PATH = REPO_ROOT / "reports" / "cost-daily-fact.json"
+DEFAULT_CHART_ASSET_PATH = REPO_ROOT / "docs" / "vendor" / "chart.umd.min.js"
 DEFAULT_WORKFLOW_ANALYSIS_ROOT = Path(
     os.environ.get(
         "WORKFLOW_ANALYSIS_SERVICE_ROOT",
         str(REPO_ROOT.parent / "workflow-analysis-service"),
     )
 )
-DEFAULT_TABLE = "summer-nexus-137922.splitter_metrics.splitter_replay_metric_scores_over_time"
-DEFAULT_PROJECT = "summer-nexus-137922"
+DEFAULT_PROJECT = os.environ.get("BIGQUERY_PROJECT_ID", "summer-nexus-137922")
+DEFAULT_TABLE = os.environ.get(
+    "SPLITTER_METRICS_TABLE",
+    f"{DEFAULT_PROJECT}.{os.environ.get('SPLITTER_METRICS_DATASET', 'splitter_metrics')}.splitter_replay_metric_scores_over_time",
+)
+DEFAULT_WAREHOUSE_TABLE = os.environ.get(
+    "WAREHOUSE_COMMAND_COSTS_TABLE",
+    f"{DEFAULT_PROJECT}.{os.environ.get('BIGQUERY_DATASET', 'session_metrics_demo')}.command_costs",
+)
 DEFAULT_METRIC_PATH = "planToResponseGraphScore"
 DEFAULT_VARIANT = "hinted"
 DEFAULT_HISTORY_RUNS = 20
@@ -140,6 +150,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=int(os.environ.get("SPLITTER_TREE_PORT", "8788")))
     parser.add_argument("--project-id", default=os.environ.get("BIGQUERY_PROJECT_ID", DEFAULT_PROJECT))
     parser.add_argument("--table", default=os.environ.get("SPLITTER_METRICS_TABLE", DEFAULT_TABLE))
+    parser.add_argument("--warehouse-table", default=os.environ.get("WAREHOUSE_COMMAND_COSTS_TABLE", DEFAULT_WAREHOUSE_TABLE))
     parser.add_argument("--backend", choices=("bigquery", "metabase"), default=os.environ.get("SPLITTER_TREE_BACKEND", "bigquery"))
     parser.add_argument("--metabase-url", default=os.environ.get("METABASE_URL", ""))
     parser.add_argument("--metabase-api-key", default=os.environ.get("METABASE_API_KEY", ""))
@@ -150,6 +161,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps-static-path", type=Path, default=DEFAULT_STEPS_STATIC_PATH)
     parser.add_argument("--rules-d3-poc-static-path", type=Path, default=DEFAULT_RULES_D3_POC_STATIC_PATH)
     parser.add_argument("--cost-report-path", type=Path, default=DEFAULT_COST_REPORT_PATH)
+    parser.add_argument("--cost-dashboard-path", type=Path, default=DEFAULT_COST_DASHBOARD_PATH)
+    parser.add_argument("--cost-fact-path", type=Path, default=DEFAULT_COST_FACT_PATH)
+    parser.add_argument("--chart-asset-path", type=Path, default=DEFAULT_CHART_ASSET_PATH)
     parser.add_argument("--workflow-analysis-root", type=Path, default=DEFAULT_WORKFLOW_ANALYSIS_ROOT)
     parser.add_argument("--cache-ttl-seconds", type=int, default=int(os.environ.get("SPLITTER_TREE_CACHE_TTL_SECONDS", str(DEFAULT_CACHE_TTL_SECONDS))))
     return parser.parse_args()
@@ -423,6 +437,125 @@ def metabase_tree_response(
         "history": normalize_history(history_rows),
     }
 
+
+def sanitize_date(value: str | None) -> str | None:
+    if not value:
+        return None
+    value = value.strip()
+    if len(value) != 10 or value[4] != "-" or value[7] != "-":
+        return None
+    year, month, day = value[:4], value[5:7], value[8:10]
+    if not (year.isdigit() and month.isdigit() and day.isdigit()):
+        return None
+    if int(year) < 1 or not (1 <= int(month) <= 12) or not (1 <= int(day) <= 31):
+        return None
+    return value
+
+
+def warehouse_date_where(start: str | None, end: str | None) -> str:
+    clauses = []
+    if start:
+        clauses.append(f"session_date >= '{start}'")
+    if end:
+        clauses.append(f"session_date <= '{end}'")
+    return ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+
+def warehouse_by_intent_sql(table: str, start: str | None = None, end: str | None = None) -> str:
+    return f"""
+        SELECT agent_tool_intention AS intent,
+               SUM(allocated_total_cost_usd) AS cost_usd,
+               SUM(allocated_total_tokens) AS tokens,
+               COUNT(*) AS commands
+        FROM `{table}`
+        {warehouse_date_where(start, end)}
+        GROUP BY intent
+        ORDER BY cost_usd DESC
+    """
+
+
+def warehouse_cache_sql(table: str, start: str | None = None, end: str | None = None) -> str:
+    return f"""
+        SELECT session_date AS date,
+               SUM(allocated_fresh_input_tokens) AS fresh_input,
+               SUM(allocated_cache_read_tokens) AS cache_read,
+               SUM(allocated_cache_creation_tokens) AS cache_creation,
+               SUM(allocated_output_tokens) AS output
+        FROM `{table}`
+        {warehouse_date_where(start, end)}
+        GROUP BY date
+        ORDER BY date
+    """
+
+
+def run_warehouse_query(
+    sql: str,
+    *,
+    backend: str,
+    project_id: str,
+    metabase_url: str,
+    metabase_api_key: str,
+    metabase_database_id: int,
+) -> list[dict[str, Any]]:
+    if backend == "metabase":
+        return run_metabase_dataset(metabase_url, metabase_api_key, metabase_database_id, sql)
+    from google.cloud import bigquery  # type: ignore
+
+    client = bigquery.Client(project=project_id)
+    return [dict(row.items()) for row in client.query(sql).result()]
+
+
+def usage_by_intent_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    cleaned: list[dict[str, Any]] = []
+    total = 0.0
+    for row in rows:
+        cost = to_float(row.get("cost_usd")) or 0.0
+        total += cost
+        cleaned.append({
+            "intent": str(row.get("intent") or "uncategorized"),
+            "cost_usd": round(cost, 4),
+            "tokens": to_float(row.get("tokens")) or 0.0,
+            "commands": to_int(row.get("commands")) or 0,
+        })
+    cleaned.sort(key=lambda item: item["cost_usd"], reverse=True)
+    return {"rows": cleaned, "total_cost_usd": round(total, 4)}
+
+
+def cache_hit_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    daily: list[dict[str, Any]] = []
+    tot_read = tot_fresh = tot_create = tot_out = 0.0
+    for row in rows:
+        fresh = to_float(row.get("fresh_input")) or 0.0
+        read = to_float(row.get("cache_read")) or 0.0
+        create = to_float(row.get("cache_creation")) or 0.0
+        out = to_float(row.get("output")) or 0.0
+        denom = read + fresh
+        daily.append({
+            "date": str(row.get("date") or ""),
+            "cache_read": read,
+            "fresh_input": fresh,
+            "cache_creation": create,
+            "output": out,
+            "cache_hit_pct": round(read / denom * 100, 4) if denom else 0.0,
+        })
+        tot_read += read
+        tot_fresh += fresh
+        tot_create += create
+        tot_out += out
+    daily.sort(key=lambda item: item["date"])
+    denom = tot_read + tot_fresh
+    dates = [item["date"] for item in daily if item["date"]]
+    return {
+        "rows": daily,
+        "overall_cache_hit_pct": round(tot_read / denom * 100, 4) if denom else 0.0,
+        "totals": {
+            "cache_read": tot_read,
+            "fresh_input": tot_fresh,
+            "cache_creation": tot_create,
+            "output": tot_out,
+        },
+        "date_range": [dates[0], dates[-1]] if dates else None,
+    }
 
 def normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized = [
@@ -1343,6 +1476,10 @@ def make_handler(
     rules_d3_poc_static_path: Path,
     workflow_analysis_root: Path,
     cost_report_path: Path,
+    cost_dashboard_path: Path,
+    cost_fact_path: Path,
+    chart_asset_path: Path,
+    warehouse_table: str,
     table: str,
     project_id: str,
     backend: str,
@@ -1394,10 +1531,34 @@ def make_handler(
                 self.send_redirect("/rules.html?demo=nested")
                 return
             if parsed.path in {"/cost", "/cost.html"}:
+                if cost_dashboard_path.exists():
+                    self.send_static(cost_dashboard_path)
+                else:
+                    self.send_error(HTTPStatus.NOT_FOUND, "cost dashboard not deployed yet")
+                return
+            if parsed.path == "/cost-summary":
                 if cost_report_path.exists():
                     self.send_static(cost_report_path)
                 else:
-                    self.send_error(HTTPStatus.NOT_FOUND, "cost report not generated yet")
+                    self.send_error(HTTPStatus.NOT_FOUND, "cost summary not generated yet")
+                return
+            if parsed.path == "/api/cost-timeseries":
+                if cost_fact_path.exists():
+                    self.send_bytes(cost_fact_path.read_bytes(), "application/json; charset=utf-8")
+                else:
+                    self.send_json({"error": "cost fact not generated yet"}, status=HTTPStatus.NOT_FOUND)
+                return
+            if parsed.path == "/cost-assets/chart.umd.min.js":
+                if chart_asset_path.exists():
+                    self.send_bytes(chart_asset_path.read_bytes(), "application/javascript; charset=utf-8")
+                else:
+                    self.send_error(HTTPStatus.NOT_FOUND, "chart asset missing")
+                return
+            if parsed.path == "/api/usage-by-intent":
+                self.send_warehouse(parse_qs(parsed.query), warehouse_by_intent_sql, usage_by_intent_payload, "usage-by-intent")
+                return
+            if parsed.path == "/api/cache-hit":
+                self.send_warehouse(parse_qs(parsed.query), warehouse_cache_sql, cache_hit_payload, "cache-hit")
                 return
             if parsed.path == "/api/splitter-metric-tree":
                 self.send_metric_tree(parse_qs(parsed.query))
@@ -1434,6 +1595,14 @@ def make_handler(
             self.end_headers()
             self.wfile.write(body)
 
+        def send_bytes(self, body: bytes, content_type: str) -> None:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def send_redirect(self, location: str) -> None:
             self.send_response(HTTPStatus.FOUND)
             self.send_header("Location", location)
@@ -1463,6 +1632,27 @@ def make_handler(
                 self.send_json(payload)
             except ValueError as exc:
                 self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def send_warehouse(self, params: dict[str, list[str]], sql_builder: Any, shaper: Any, cache_prefix: str) -> None:
+            try:
+                start = sanitize_date(first(params, "from"))
+                end = sanitize_date(first(params, "to"))
+                cache_key = f"{cache_prefix}:{start or ''}:{end or ''}"
+                payload = cache.get(cache_key)
+                if payload is None:
+                    rows = run_warehouse_query(
+                        sql_builder(warehouse_table, start, end),
+                        backend=backend,
+                        project_id=project_id,
+                        metabase_url=metabase_url,
+                        metabase_api_key=metabase_api_key,
+                        metabase_database_id=metabase_database_id,
+                    )
+                    payload = shaper(rows)
+                    cache.set(cache_key, payload)
+                self.send_json(payload)
             except Exception as exc:
                 self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -1503,6 +1693,10 @@ def main() -> int:
         args.rules_d3_poc_static_path,
         args.workflow_analysis_root,
         args.cost_report_path,
+        args.cost_dashboard_path,
+        args.cost_fact_path,
+        args.chart_asset_path,
+        args.warehouse_table,
         args.table,
         args.project_id,
         args.backend,

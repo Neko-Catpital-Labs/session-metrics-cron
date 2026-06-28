@@ -67,10 +67,15 @@ bash scripts/nightly_usage_pipeline.sh --dry-run --env-file config/nightly-usage
   - `scripts/uninstall-nightly-usage-launchd.sh`
 - Optional GitHub Actions cron:
   - `.github/workflows/nightly-session-metrics.yml`
+- Cost dashboard refreshes (workstation crontab):
+  - `scripts/install-fleet-cost-cron.sh`
+  - `scripts/install-warehouse-cron.sh`
+  - `scripts/install-cost-tunnel-launchagent.sh` (macOS tunnel)
 
 ## Documentation
 
 - `docs/setup.md`
+- `docs/cost-dashboard.md`
 - `docs/architecture.md`
 - `docs/source-onboarding.md`
 - `docs/usage-metrics-nightly.md`

@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -129,6 +130,64 @@ def native_window_cost(ss: Any, w: Any, rates: dict[str, dict[str, float]]) -> f
         + w.cache_creation_delta * rcw
         + (w.output_delta + w.reasoning_delta) * rout
     )
+
+
+TOKEN_TYPES = ("fresh_input", "cache_read", "cache_creation", "output")
+
+
+def component_split(ss: Any, w: Any, rates: dict[str, dict[str, float]]) -> tuple[dict[str, float], dict[str, float]]:
+    """Per-token-type cost + tokens for one prompt window.
+
+    omp windows use omp's exact per-component cost; native windows use the
+    omp-derived per-component family rates (totals match native_window_cost).
+    """
+    if ss.input_includes_cache:
+        fresh_tokens = max(0, w.input_delta - w.cached_delta - w.cache_creation_delta)
+    else:
+        fresh_tokens = w.input_delta
+    tokens = {
+        "fresh_input": float(fresh_tokens),
+        "cache_read": float(w.cached_delta),
+        "cache_creation": float(w.cache_creation_delta),
+        "output": float(w.output_delta + w.reasoning_delta),
+    }
+    if ss.origin == "omp":
+        cost = {
+            "fresh_input": w.omp_cost_fresh_input,
+            "cache_read": w.omp_cost_cache_read,
+            "cache_creation": w.omp_cost_cache_creation,
+            "output": w.omp_cost_output,
+        }
+    else:
+        r = rates.get(ss.model) or {}
+        cost = {
+            "fresh_input": tokens["fresh_input"] * r.get("input", 0.0),
+            "cache_read": tokens["cache_read"] * r.get("cacheRead", 0.0),
+            "cache_creation": tokens["cache_creation"] * r.get("cacheWrite", 0.0),
+            "output": tokens["output"] * r.get("output", 0.0),
+        }
+    return cost, tokens
+
+
+def build_daily_fact(sessions: list[tuple[Any, str]], rates: dict[str, dict[str, float]]) -> list[dict[str, Any]]:
+    """Aggregate to one row per (date, host, origin, model, token_type)."""
+    agg: dict[tuple[str, str, str, str, str], dict[str, float]] = {}
+    for ss, host in sessions:
+        date = (ss.session_date or "").strip() or "unknown"
+        for w in ss.prompt_windows:
+            cost, tokens = component_split(ss, w, rates)
+            for tt in TOKEN_TYPES:
+                if not cost[tt] and not tokens[tt]:
+                    continue
+                key = (date, host, ss.origin, ss.model, tt)
+                cell = agg.setdefault(key, {"cost_usd": 0.0, "tokens": 0.0})
+                cell["cost_usd"] += cost[tt]
+                cell["tokens"] += tokens[tt]
+    return [
+        {"date": d, "host": h, "origin": o, "model": m, "token_type": tt,
+         "cost_usd": round(v["cost_usd"], 6), "tokens": int(v["tokens"])}
+        for (d, h, o, m, tt), v in sorted(agg.items())
+    ]
 
 
 def emit_rows(ss: Any, host: str, rates: dict[str, dict[str, float]],
@@ -252,6 +311,14 @@ def main() -> int:
     out = Path(args.out_dir)
     write_csv(out / "planning-vs-execution-prompts.csv", prompt_rows)
     write_csv(out / "planning-vs-execution-tool-attribution.csv", attribution_rows)
+    fact = build_daily_fact(sessions, rates)
+    fact_path = out / "cost-daily-fact.json"
+    fact_path.write_text(json.dumps({
+        "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "token_types": list(TOKEN_TYPES),
+        "rows": fact,
+    }, separators=(",", ":")), encoding="utf-8")
+    print(f"wrote {fact_path} ({len(fact)} fact rows)")
     total = sum(r["derived_total_cost_usd"] for r in prompt_rows)
     print(f"sessions={len(sessions)} prompts={len(prompt_rows)} tool_rows={len(attribution_rows)} total_cost=${total:,.2f}")
     print(f"wrote {out}/planning-vs-execution-prompts.csv")

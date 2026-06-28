@@ -85,6 +85,81 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertEqual(rows, [{"metric_path": "root", "score": 0.9}])
         self.assertEqual(calls[0]["database"], 2)
 
+    def test_warehouse_sql_builders_reference_table_and_columns(self) -> None:
+        intent_sql = app.warehouse_by_intent_sql("proj.ds.command_costs")
+        self.assertIn("`proj.ds.command_costs`", intent_sql)
+        self.assertIn("agent_tool_intention AS intent", intent_sql)
+        self.assertIn("SUM(allocated_total_cost_usd)", intent_sql)
+        cache_sql = app.warehouse_cache_sql("proj.ds.command_costs")
+        self.assertIn("allocated_cache_read_tokens", cache_sql)
+        self.assertIn("allocated_fresh_input_tokens", cache_sql)
+        self.assertIn("session_date AS date", cache_sql)
+
+    def test_warehouse_sql_applies_date_filter(self) -> None:
+        no_filter = app.warehouse_by_intent_sql("p.d.t")
+        self.assertNotIn("WHERE", no_filter)
+        filtered = app.warehouse_by_intent_sql("p.d.t", "2026-04-01", "2026-04-30")
+        self.assertIn("session_date >= '2026-04-01'", filtered)
+        self.assertIn("session_date <= '2026-04-30'", filtered)
+        cache_filtered = app.warehouse_cache_sql("p.d.t", None, "2026-05-29")
+        self.assertIn("session_date <= '2026-05-29'", cache_filtered)
+        self.assertNotIn("session_date >=", cache_filtered)
+
+    def test_sanitize_date_accepts_valid_rejects_garbage(self) -> None:
+        self.assertEqual(app.sanitize_date("2026-04-01"), "2026-04-01")
+        self.assertEqual(app.sanitize_date("  2026-12-31 "), "2026-12-31")
+        self.assertIsNone(app.sanitize_date("0000-00-00"))
+        self.assertIsNone(app.sanitize_date("2026/04/01"))
+        self.assertIsNone(app.sanitize_date("2026-13-01"))
+        self.assertIsNone(app.sanitize_date("'; DROP TABLE x"))
+        self.assertIsNone(app.sanitize_date(None))
+
+    def test_usage_by_intent_payload_sorts_by_cost_and_totals(self) -> None:
+        payload = app.usage_by_intent_payload([
+            {"intent": "a", "cost_usd": 1.5, "tokens": 10, "commands": 2},
+            {"intent": "b", "cost_usd": 3.0, "tokens": 20, "commands": 5},
+        ])
+        self.assertEqual([r["intent"] for r in payload["rows"]], ["b", "a"])
+        self.assertEqual(payload["total_cost_usd"], 4.5)
+
+    def test_cache_hit_payload_computes_pct_overall_and_range(self) -> None:
+        payload = app.cache_hit_payload([
+            {"date": "2026-05-02", "fresh_input": 100, "cache_read": 900, "cache_creation": 50, "output": 10},
+            {"date": "2026-05-01", "fresh_input": 0, "cache_read": 0, "cache_creation": 0, "output": 0},
+        ])
+        row = next(r for r in payload["rows"] if r["date"] == "2026-05-02")
+        self.assertEqual(row["cache_hit_pct"], 90.0)
+        self.assertEqual(payload["overall_cache_hit_pct"], 90.0)
+        self.assertEqual(payload["date_range"], ["2026-05-01", "2026-05-02"])
+
+    def test_run_warehouse_query_uses_metabase_backend(self) -> None:
+        captured: list[dict[str, Any]] = []
+
+        def fake_request(url: str, api_key: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+            captured.append(payload)
+            return {"data": {"cols": [{"name": "intent"}], "rows": [["x"]]}}
+
+        original = app.metabase_request
+        app.metabase_request = fake_request
+        try:
+            rows = app.run_warehouse_query(
+                "SELECT 1",
+                backend="metabase",
+                project_id="p",
+                metabase_url="u",
+                metabase_api_key="k",
+                metabase_database_id=7,
+            )
+        finally:
+            app.metabase_request = original
+        self.assertEqual(rows, [{"intent": "x"}])
+        self.assertEqual(captured[0]["database"], 7)
+
+    def test_warehouse_routes_registered(self) -> None:
+        source = SCRIPT_PATH.read_text()
+        self.assertIn('"/api/usage-by-intent"', source)
+        self.assertIn('"/api/cache-hit"', source)
+
     def test_normalize_rows_keeps_score_and_weights(self) -> None:
         rows = app.normalize_rows(
             [
