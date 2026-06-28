@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "local": {
+    "name": "local_this_machine",
+    "codexSessionsDir": "~/.codex/sessions",
+    "claudeRootDir": "~/.claude",
+    "ompSessionsDir": "~/.omp/agent/sessions"
+  },
+  "remoteTargets": []
+}

@@ -117,8 +117,8 @@
   <table><thead><tr><th>Category</th><th class="n">Cost</th><th class="n">Share</th><th class="n">Tokens</th></tr></thead><tbody id="totRows"></tbody></table>
 
   <div class="whsec" id="whSection">
-    <h2>Command analytics <span class="whnote" id="whMeta">— warehouse · v4.5 command attribution</span></h2>
-    <div class="whnote">Live from the warehouse (BigQuery/Metabase) — a separate, command-level lineage from the fleet cost above (different totals &amp; freshness). <span id="whUnavail" class="whbad" style="display:none">Warehouse analytics unavailable right now.</span></div>
+    <h2>Command analytics <span class="whnote" id="whMeta">— warehouse · this workstation · v4.5 command attribution</span></h2>
+    <div class="whnote">Live from the warehouse (BigQuery/Metabase) — command-level attribution for <strong>this workstation's</strong> sessions only (fleet-wide coming soon), a separate lineage from the fleet cost above (different totals &amp; freshness). <span id="whUnavail" class="whbad" style="display:none">Warehouse analytics unavailable right now.</span></div>
     <div class="whrow">
       <div class="whcard">
         <h3 id="cacheTitle">Cache hit rate (daily)</h3>
@@ -317,7 +317,7 @@
   function renderCacheChart(data){
     const rows = data.rows||[];
     const dr = data.date_range ? ` · ${data.date_range[0]} → ${data.date_range[1]}` : " · no rows in selected range";
-    document.getElementById("whMeta").textContent = `— warehouse · v4.5 command attribution${dr}`;
+    document.getElementById("whMeta").textContent = `— warehouse · this workstation · v4.5 command attribution${dr}`;
     if(!rows.length){
       document.getElementById("cacheTitle").innerHTML = `Cache hit rate (daily) <span class="whnote">no data in selected range</span>`;
       if(cacheChart){ cacheChart.destroy(); cacheChart=null; }
