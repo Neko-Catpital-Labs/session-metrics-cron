@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Invoker Fleet Cost Dashboard</title>
+<style>
+  :root { --fg:#1b1f24; --sub:#57606a; --line:#e2e6ea; --bg:#f6f8fa; }
+  * { box-sizing: border-box; }
+  body { font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,sans-serif; color:var(--fg); margin:0; padding:1.5rem; max-width:1180px; margin:0 auto; }
+  h1 { font-size:1.5rem; margin:0 0 .15rem; }
+  .sub { color:var(--sub); font-size:.85rem; }
+  .kpis { display:flex; gap:1rem; flex-wrap:wrap; margin:1rem 0; }
+  .kpi { flex:1; min-width:150px; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:.6rem .9rem; }
+  .kpi .v { font-size:1.4rem; font-weight:700; }
+  .kpi .l { color:var(--sub); font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; }
+  .controls { display:flex; gap:1.2rem; flex-wrap:wrap; align-items:flex-start; margin:.5rem 0 1rem; padding:.8rem; background:var(--bg); border:1px solid var(--line); border-radius:8px; }
+  .group { display:flex; flex-direction:column; gap:.3rem; }
+  .group .lbl { font-size:.7rem; text-transform:uppercase; letter-spacing:.03em; color:var(--sub); }
+  .btns { display:flex; gap:.25rem; flex-wrap:wrap; }
+  button.seg { border:1px solid var(--line); background:#fff; padding:.25rem .6rem; border-radius:6px; cursor:pointer; font-size:.82rem; }
+  button.seg.on { background:#3b82f6; color:#fff; border-color:#3b82f6; }
+  select { padding:.25rem .4rem; border:1px solid var(--line); border-radius:6px; background:#fff; font-size:.82rem; }
+  .chips { display:flex; gap:.3rem; flex-wrap:wrap; max-width:520px; }
+  label.chip { display:inline-flex; align-items:center; gap:.25rem; border:1px solid var(--line); border-radius:14px; padding:.1rem .55rem; font-size:.78rem; cursor:pointer; background:#fff; }
+  label.chip input { margin:0; }
+  #chartWrap { position:relative; height:460px; }
+  table { border-collapse:collapse; width:100%; margin:1rem 0; font-size:.85rem; }
+  th,td { padding:.35rem .6rem; border-bottom:1px solid #eef1f4; text-align:left; }
+  th { background:var(--bg); } td.n,th.n { text-align:right; font-variant-numeric:tabular-nums; }
+  .swatch { display:inline-block; width:11px; height:11px; border-radius:2px; margin-right:.4rem; vertical-align:middle; }
+  #err { color:#b91c1c; }
+</style>
+</head>
+<body>
+  <h1>Invoker Fleet Cost Dashboard</h1>
+  <div class="sub" id="meta">loading…</div>
+  <div class="kpis" id="kpis"></div>
+
+  <div class="controls">
+    <div class="group">
+      <span class="lbl">Time range</span>
+      <div class="btns" id="rangeBtns">
+        <button class="seg" data-range="7d">7d</button>
+        <button class="seg" data-range="30d">30d</button>
+        <button class="seg" data-range="90d">90d</button>
+        <button class="seg" data-range="ytd">YTD</button>
+        <button class="seg" data-range="all">All</button>
+        <button class="seg" data-range="custom">Custom</button>
+      </div>
+      <div class="btns" id="customRange" style="display:none">
+        <input type="date" id="fromDate"> <input type="date" id="toDate">
+      </div>
+    </div>
+    <div class="group">
+      <span class="lbl">Metric</span>
+      <div class="btns" id="metricBtns">
+        <button class="seg" data-metric="cost_usd">Cost ($)</button>
+        <button class="seg" data-metric="tokens">Tokens</button>
+      </div>
+    </div>
+    <div class="group">
+      <span class="lbl">Stack by</span>
+      <select id="stackBy">
+        <option value="token_type">Token type</option>
+        <option value="origin">Harness (origin)</option>
+        <option value="model">Model</option>
+        <option value="host">Machine</option>
+      </select>
+    </div>
+    <div class="group">
+      <span class="lbl">Machine</span>
+      <div class="chips" id="filtHost"></div>
+    </div>
+    <div class="group">
+      <span class="lbl">Harness</span>
+      <div class="chips" id="filtOrigin"></div>
+    </div>
+    <div class="group">
+      <span class="lbl">Model</span>
+      <div class="chips" id="filtModel"></div>
+    </div>
+  </div>
+
+  <div id="err"></div>
+  <div id="chartWrap"><canvas id="chart"></canvas></div>
+  <h3>Totals by <span id="byLabel">token type</span> (selected range &amp; filters)</h3>
+  <table><thead><tr><th>Category</th><th class="n">Cost</th><th class="n">Share</th><th class="n">Tokens</th></tr></thead><tbody id="totRows"></tbody></table>
+
+  <script src="/cost-assets/chart.umd.min.js"></script>
+  <script>
+  const TOKEN_COLORS = { fresh_input:"#3b82f6", cache_read:"#10b981", cache_creation:"#f59e0b", output:"#ef4444" };
+  const PALETTE = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#ec4899","#84cc16","#f97316","#6366f1","#14b8a6","#a855f7"];
+  const FILTER_DIMS = ["host","origin","model"];
+  let FACT = { rows: [], token_types: [], generated_utc: "" };
+  let chart = null;
+  const state = { range:"30d", metric:"cost_usd", stackBy:"token_type", from:null, to:null, sel:{ host:new Set(), origin:new Set(), model:new Set() } };
+
+  const fmtMoney = v => "$" + (v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const fmtInt = v => Math.round(v||0).toLocaleString();
+  const colorFor = (dim,cat,i) => dim==="token_type" ? (TOKEN_COLORS[cat]||PALETTE[i%PALETTE.length]) : PALETTE[i%PALETTE.length];
+
+  function distinct(dim){ return [...new Set(FACT.rows.map(r=>r[dim]))].sort(); }
+
+  function rangeBounds(){
+    const dates = FACT.rows.map(r=>r.date).filter(d=>d && d!=="unknown");
+    if(!dates.length) return ["0000-00-00","9999-12-31"];
+    const hi = dates.reduce((a,b)=>a>b?a:b);
+    if(state.range==="all") return ["0000-00-00","9999-12-31"];
+    if(state.range==="custom") return [state.from||"0000-00-00", state.to||"9999-12-31"];
+    if(state.range==="ytd") return [hi.slice(0,4)+"-01-01", hi];
+    const days = {"7d":7,"30d":30,"90d":90}[state.range] || 30;
+    const d = new Date(hi+"T00:00:00Z"); d.setUTCDate(d.getUTCDate()-(days-1));
+    return [d.toISOString().slice(0,10), hi];
+  }
+
+  function passes(r, lo, hi){
+    return state.sel.host.has(r.host) && state.sel.origin.has(r.origin) && state.sel.model.has(r.model)
+      && r.date>=lo && r.date<=hi;
+  }
+
+  function render(){
+    const [lo,hi] = rangeBounds();
+    const metric = state.metric, dim = state.stackBy;
+    const cell = {}; const cats = new Set(); const dates = new Set();
+    let totalCost=0, totalTok=0; const catTotals={};
+    for(const r of FACT.rows){
+      if(!passes(r,lo,hi)) continue;
+      const cat = r[dim]; const v = r[metric];
+      dates.add(r.date); cats.add(cat);
+      (cell[r.date] ||= {}); cell[r.date][cat] = (cell[r.date][cat]||0) + v;
+      totalCost += r.cost_usd; totalTok += r.tokens;
+      catTotals[cat] = catTotals[cat] || {cost:0,tok:0};
+      catTotals[cat].cost += r.cost_usd; catTotals[cat].tok += r.tokens;
+    }
+    const labels = [...dates].sort();
+    const catList = [...cats].sort();
+    const datasets = catList.map((c,i)=>({ label:c, data: labels.map(d=>(cell[d]&&cell[d][c])||0), backgroundColor: colorFor(dim,c,i), borderWidth:0, stack:"s" }));
+
+    if(chart) chart.destroy();
+    chart = new Chart(document.getElementById("chart"), {
+      type:"bar",
+      data:{ labels, datasets },
+      options:{
+        maintainAspectRatio:false, animation:false,
+        plugins:{ legend:{ position:"bottom" }, tooltip:{ callbacks:{ label:(ctx)=> ctx.dataset.label+": "+(metric==="cost_usd"?fmtMoney(ctx.parsed.y):fmtInt(ctx.parsed.y)) } } },
+        scales:{ x:{ stacked:true, ticks:{ maxRotation:90, autoSkip:true, maxTicksLimit:30 } },
+                 y:{ stacked:true, ticks:{ callback:(v)=> metric==="cost_usd"? "$"+v.toLocaleString() : v.toLocaleString() } } }
+      }
+    });
+
+    // KPIs
+    document.getElementById("kpis").innerHTML =
+      kpi(fmtMoney(totalCost),"Cost (range)") + kpi(fmtInt(totalTok),"Tokens (range)") +
+      kpi(labels.length,"Days") + kpi(catList.length, dim.replace("_"," ")+" series");
+
+    // Totals table
+    document.getElementById("byLabel").textContent = dim.replace("_"," ");
+    const sorted = Object.entries(catTotals).sort((a,b)=>b[1].cost-a[1].cost);
+    document.getElementById("totRows").innerHTML = sorted.map(([c,t],i)=>
+      `<tr><td><span class="swatch" style="background:${colorFor(dim,c,i)}"></span><code>${c}</code></td>`+
+      `<td class="n">${fmtMoney(t.cost)}</td><td class="n">${totalCost? (t.cost/totalCost*100).toFixed(1):"0.0"}%</td>`+
+      `<td class="n">${fmtInt(t.tok)}</td></tr>`).join("");
+  }
+  const kpi = (v,l)=>`<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+
+  function buildChips(dim, containerId){
+    const el = document.getElementById(containerId);
+    el.innerHTML = distinct(dim).map(v=>
+      `<label class="chip"><input type="checkbox" data-dim="${dim}" value="${v}" checked> ${v}</label>`).join("");
+    el.querySelectorAll("input").forEach(cb=>{
+      state.sel[dim].add(cb.value);
+      cb.addEventListener("change",()=>{ cb.checked ? state.sel[dim].add(cb.value) : state.sel[dim].delete(cb.value); render(); });
+    });
+  }
+  function setActive(containerId, attr, val){
+    document.querySelectorAll(`#${containerId} .seg`).forEach(b=> b.classList.toggle("on", b.dataset[attr]===val));
+  }
+
+  async function init(){
+    try{
+      const res = await fetch("/api/cost-timeseries");
+      if(!res.ok) throw new Error("HTTP "+res.status);
+      FACT = await res.json();
+    }catch(e){ document.getElementById("err").textContent = "Failed to load /api/cost-timeseries: "+e.message; return; }
+    document.getElementById("meta").textContent =
+      `${FACT.rows.length.toLocaleString()} fact rows · generated ${FACT.generated_utc||"?"} · native = codex/claude CLI, omp = Oh My Pi harness`;
+    FILTER_DIMS.forEach((d,i)=> buildChips(d, ["filtHost","filtOrigin","filtModel"][i]));
+
+    document.querySelectorAll("#rangeBtns .seg").forEach(b=> b.addEventListener("click",()=>{
+      state.range=b.dataset.range; setActive("rangeBtns","range",state.range);
+      document.getElementById("customRange").style.display = state.range==="custom" ? "flex" : "none";
+      render();
+    }));
+    document.querySelectorAll("#metricBtns .seg").forEach(b=> b.addEventListener("click",()=>{
+      state.metric=b.dataset.metric; setActive("metricBtns","metric",state.metric); render();
+    }));
+    document.getElementById("stackBy").addEventListener("change", e=>{ state.stackBy=e.target.value; render(); });
+    document.getElementById("fromDate").addEventListener("change", e=>{ state.from=e.target.value; if(state.range==="custom") render(); });
+    document.getElementById("toDate").addEventListener("change", e=>{ state.to=e.target.value; if(state.range==="custom") render(); });
+
+    setActive("rangeBtns","range",state.range);
+    setActive("metricBtns","metric",state.metric);
+    render();
+  }
+  init();
+  </script>
+</body>
+</html>

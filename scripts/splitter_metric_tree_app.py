@@ -25,6 +25,9 @@ DEFAULT_RULES_STATIC_PATH = REPO_ROOT / "docs" / "rules-d3-poc.html"
 DEFAULT_STEPS_STATIC_PATH = REPO_ROOT / "docs" / "rules-steps.html"
 DEFAULT_RULES_D3_POC_STATIC_PATH = REPO_ROOT / "docs" / "rules-d3-poc.html"
 DEFAULT_COST_REPORT_PATH = REPO_ROOT / "reports" / "invoker-cost-breakdown.html"
+DEFAULT_COST_DASHBOARD_PATH = REPO_ROOT / "docs" / "cost-dashboard.html"
+DEFAULT_COST_FACT_PATH = REPO_ROOT / "reports" / "cost-daily-fact.json"
+DEFAULT_CHART_ASSET_PATH = REPO_ROOT / "docs" / "vendor" / "chart.umd.min.js"
 DEFAULT_WORKFLOW_ANALYSIS_ROOT = Path(
     os.environ.get(
         "WORKFLOW_ANALYSIS_SERVICE_ROOT",
@@ -150,6 +153,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps-static-path", type=Path, default=DEFAULT_STEPS_STATIC_PATH)
     parser.add_argument("--rules-d3-poc-static-path", type=Path, default=DEFAULT_RULES_D3_POC_STATIC_PATH)
     parser.add_argument("--cost-report-path", type=Path, default=DEFAULT_COST_REPORT_PATH)
+    parser.add_argument("--cost-dashboard-path", type=Path, default=DEFAULT_COST_DASHBOARD_PATH)
+    parser.add_argument("--cost-fact-path", type=Path, default=DEFAULT_COST_FACT_PATH)
+    parser.add_argument("--chart-asset-path", type=Path, default=DEFAULT_CHART_ASSET_PATH)
     parser.add_argument("--workflow-analysis-root", type=Path, default=DEFAULT_WORKFLOW_ANALYSIS_ROOT)
     parser.add_argument("--cache-ttl-seconds", type=int, default=int(os.environ.get("SPLITTER_TREE_CACHE_TTL_SECONDS", str(DEFAULT_CACHE_TTL_SECONDS))))
     return parser.parse_args()
@@ -1343,6 +1349,9 @@ def make_handler(
     rules_d3_poc_static_path: Path,
     workflow_analysis_root: Path,
     cost_report_path: Path,
+    cost_dashboard_path: Path,
+    cost_fact_path: Path,
+    chart_asset_path: Path,
     table: str,
     project_id: str,
     backend: str,
@@ -1394,10 +1403,28 @@ def make_handler(
                 self.send_redirect("/rules.html?demo=nested")
                 return
             if parsed.path in {"/cost", "/cost.html"}:
+                if cost_dashboard_path.exists():
+                    self.send_static(cost_dashboard_path)
+                else:
+                    self.send_error(HTTPStatus.NOT_FOUND, "cost dashboard not deployed yet")
+                return
+            if parsed.path == "/cost-summary":
                 if cost_report_path.exists():
                     self.send_static(cost_report_path)
                 else:
-                    self.send_error(HTTPStatus.NOT_FOUND, "cost report not generated yet")
+                    self.send_error(HTTPStatus.NOT_FOUND, "cost summary not generated yet")
+                return
+            if parsed.path == "/api/cost-timeseries":
+                if cost_fact_path.exists():
+                    self.send_bytes(cost_fact_path.read_bytes(), "application/json; charset=utf-8")
+                else:
+                    self.send_json({"error": "cost fact not generated yet"}, status=HTTPStatus.NOT_FOUND)
+                return
+            if parsed.path == "/cost-assets/chart.umd.min.js":
+                if chart_asset_path.exists():
+                    self.send_bytes(chart_asset_path.read_bytes(), "application/javascript; charset=utf-8")
+                else:
+                    self.send_error(HTTPStatus.NOT_FOUND, "chart asset missing")
                 return
             if parsed.path == "/api/splitter-metric-tree":
                 self.send_metric_tree(parse_qs(parsed.query))
@@ -1429,6 +1456,14 @@ def make_handler(
             body = path.read_bytes()
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def send_bytes(self, body: bytes, content_type: str) -> None:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -1503,6 +1538,9 @@ def main() -> int:
         args.rules_d3_poc_static_path,
         args.workflow_analysis_root,
         args.cost_report_path,
+        args.cost_dashboard_path,
+        args.cost_fact_path,
+        args.chart_asset_path,
         args.table,
         args.project_id,
         args.backend,

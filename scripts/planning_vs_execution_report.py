@@ -185,6 +185,10 @@ class PromptWindow:
     shell_verb_counts: Counter[str] = field(default_factory=Counter)
     command_calls: list["CommandCall"] = field(default_factory=list)
     omp_prompt_cost_usd: float = 0.0
+    omp_cost_fresh_input: float = 0.0
+    omp_cost_cache_read: float = 0.0
+    omp_cost_cache_creation: float = 0.0
+    omp_cost_output: float = 0.0
 
 
 @dataclass
@@ -2108,7 +2112,8 @@ def parse_omp_session(path: Path) -> SessionStats | None:
             uo = int(usage.get("output") or 0)
             ur = int(usage.get("reasoningTokens") or 0)
             ut = int(usage.get("totalTokens") or 0) or (ui + uc + ucc + uo + ur)
-            turn_cost = float(((usage.get("cost") or {}).get("total")) or 0.0)
+            tcost = usage.get("cost") or {}
+            turn_cost = float(tcost.get("total") or 0.0)
             fi += ui; fc += uc; fcc += ucc; fo += uo; fr += ur; ft += ut
             family = _omp_model_family(msg.get("model") or "")
             if family:
@@ -2124,6 +2129,10 @@ def parse_omp_session(path: Path) -> SessionStats | None:
                 current.reasoning_delta += ur
                 current.total_delta += ut
                 current.omp_prompt_cost_usd += turn_cost
+                current.omp_cost_fresh_input += float(tcost.get("input") or 0.0)
+                current.omp_cost_cache_read += float(tcost.get("cacheRead") or 0.0)
+                current.omp_cost_cache_creation += float(tcost.get("cacheWrite") or 0.0)
+                current.omp_cost_output += float(tcost.get("output") or 0.0)
                 answer = _omp_text_from_content(msg.get("content"))
                 if answer:
                     current.final_answer = answer
