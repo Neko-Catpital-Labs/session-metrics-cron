@@ -288,10 +288,21 @@
   function resetToRecorded(){ simRate = cloneRate(baseRate); buildPricing(); render(); }
 
   let cacheChart = null, intentChart = null;
+  function whQuery(){
+    if(state.range==="all") return "";
+    const [lo,hi] = rangeBounds();
+    const p = new URLSearchParams();
+    if(lo && lo!=="0000-00-00") p.set("from", lo);
+    if(hi && hi!=="9999-12-31") p.set("to", hi);
+    const s = p.toString();
+    return s ? "?"+s : "";
+  }
   async function loadWarehouse(){
+    const qs = whQuery();
+    document.getElementById("whUnavail").style.display="none";
     await Promise.all([
-      fetchWarehouse("/api/cache-hit", renderCacheChart),
-      fetchWarehouse("/api/usage-by-intent", renderIntentChart),
+      fetchWarehouse("/api/cache-hit"+qs, renderCacheChart),
+      fetchWarehouse("/api/usage-by-intent"+qs, renderIntentChart),
     ]);
   }
   async function fetchWarehouse(url, render){
@@ -305,8 +316,13 @@
   }
   function renderCacheChart(data){
     const rows = data.rows||[];
-    const dr = data.date_range ? ` · ${data.date_range[0]} → ${data.date_range[1]}` : "";
+    const dr = data.date_range ? ` · ${data.date_range[0]} → ${data.date_range[1]}` : " · no rows in selected range";
     document.getElementById("whMeta").textContent = `— warehouse · v4.5 command attribution${dr}`;
+    if(!rows.length){
+      document.getElementById("cacheTitle").innerHTML = `Cache hit rate (daily) <span class="whnote">no data in selected range</span>`;
+      if(cacheChart){ cacheChart.destroy(); cacheChart=null; }
+      return;
+    }
     document.getElementById("cacheTitle").innerHTML = `Cache hit rate (daily) <span class="whnote">overall ${(data.overall_cache_hit_pct||0).toFixed(1)}%</span>`;
     if(cacheChart) cacheChart.destroy();
     cacheChart = new Chart(document.getElementById("cacheChart"), {
@@ -319,6 +335,11 @@
   }
   function renderIntentChart(data){
     const rows = (data.rows||[]).slice();
+    if(!rows.length){
+      document.getElementById("intentTitle").innerHTML = `Cost by intent <span class="whnote">no data in selected range</span>`;
+      if(intentChart){ intentChart.destroy(); intentChart=null; }
+      return;
+    }
     const TOP = 12;
     const top = rows.slice(0, TOP);
     const rest = rows.slice(TOP);
@@ -354,13 +375,14 @@
       state.range=b.dataset.range; setActive("rangeBtns","range",state.range);
       document.getElementById("customRange").style.display = state.range==="custom" ? "flex" : "none";
       render();
+      loadWarehouse();
     }));
     document.querySelectorAll("#metricBtns .seg").forEach(b=> b.addEventListener("click",()=>{
       state.metric=b.dataset.metric; setActive("metricBtns","metric",state.metric); render();
     }));
     document.getElementById("stackBy").addEventListener("change", e=>{ state.stackBy=e.target.value; render(); });
-    document.getElementById("fromDate").addEventListener("change", e=>{ state.from=e.target.value; if(state.range==="custom") render(); });
-    document.getElementById("toDate").addEventListener("change", e=>{ state.to=e.target.value; if(state.range==="custom") render(); });
+    document.getElementById("fromDate").addEventListener("change", e=>{ state.from=e.target.value; if(state.range==="custom"){ render(); loadWarehouse(); } });
+    document.getElementById("toDate").addEventListener("change", e=>{ state.to=e.target.value; if(state.range==="custom"){ render(); loadWarehouse(); } });
 
     setActive("rangeBtns","range",state.range);
     setActive("metricBtns","metric",state.metric);

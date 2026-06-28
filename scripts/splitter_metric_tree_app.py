@@ -432,19 +432,43 @@ def metabase_tree_response(
     }
 
 
-def warehouse_by_intent_sql(table: str) -> str:
+def sanitize_date(value: str | None) -> str | None:
+    if not value:
+        return None
+    value = value.strip()
+    if len(value) != 10 or value[4] != "-" or value[7] != "-":
+        return None
+    year, month, day = value[:4], value[5:7], value[8:10]
+    if not (year.isdigit() and month.isdigit() and day.isdigit()):
+        return None
+    if int(year) < 1 or not (1 <= int(month) <= 12) or not (1 <= int(day) <= 31):
+        return None
+    return value
+
+
+def warehouse_date_where(start: str | None, end: str | None) -> str:
+    clauses = []
+    if start:
+        clauses.append(f"session_date >= '{start}'")
+    if end:
+        clauses.append(f"session_date <= '{end}'")
+    return ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+
+def warehouse_by_intent_sql(table: str, start: str | None = None, end: str | None = None) -> str:
     return f"""
         SELECT agent_tool_intention AS intent,
                SUM(allocated_total_cost_usd) AS cost_usd,
                SUM(allocated_total_tokens) AS tokens,
                COUNT(*) AS commands
         FROM `{table}`
+        {warehouse_date_where(start, end)}
         GROUP BY intent
         ORDER BY cost_usd DESC
     """
 
 
-def warehouse_cache_sql(table: str) -> str:
+def warehouse_cache_sql(table: str, start: str | None = None, end: str | None = None) -> str:
     return f"""
         SELECT session_date AS date,
                SUM(allocated_fresh_input_tokens) AS fresh_input,
@@ -452,6 +476,7 @@ def warehouse_cache_sql(table: str) -> str:
                SUM(allocated_cache_creation_tokens) AS cache_creation,
                SUM(allocated_output_tokens) AS output
         FROM `{table}`
+        {warehouse_date_where(start, end)}
         GROUP BY date
         ORDER BY date
     """
@@ -1524,10 +1549,10 @@ def make_handler(
                     self.send_error(HTTPStatus.NOT_FOUND, "chart asset missing")
                 return
             if parsed.path == "/api/usage-by-intent":
-                self.send_warehouse(warehouse_by_intent_sql(warehouse_table), usage_by_intent_payload, "usage-by-intent")
+                self.send_warehouse(parse_qs(parsed.query), warehouse_by_intent_sql, usage_by_intent_payload, "usage-by-intent")
                 return
             if parsed.path == "/api/cache-hit":
-                self.send_warehouse(warehouse_cache_sql(warehouse_table), cache_hit_payload, "cache-hit")
+                self.send_warehouse(parse_qs(parsed.query), warehouse_cache_sql, cache_hit_payload, "cache-hit")
                 return
             if parsed.path == "/api/splitter-metric-tree":
                 self.send_metric_tree(parse_qs(parsed.query))
@@ -1604,12 +1629,15 @@ def make_handler(
             except Exception as exc:
                 self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
-        def send_warehouse(self, sql: str, shaper: Any, cache_key: str) -> None:
+        def send_warehouse(self, params: dict[str, list[str]], sql_builder: Any, shaper: Any, cache_prefix: str) -> None:
             try:
+                start = sanitize_date(first(params, "from"))
+                end = sanitize_date(first(params, "to"))
+                cache_key = f"{cache_prefix}:{start or ''}:{end or ''}"
                 payload = cache.get(cache_key)
                 if payload is None:
                     rows = run_warehouse_query(
-                        sql,
+                        sql_builder(warehouse_table, start, end),
                         backend=backend,
                         project_id=project_id,
                         metabase_url=metabase_url,

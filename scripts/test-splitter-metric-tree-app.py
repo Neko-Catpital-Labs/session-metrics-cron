@@ -95,6 +95,25 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn("allocated_fresh_input_tokens", cache_sql)
         self.assertIn("session_date AS date", cache_sql)
 
+    def test_warehouse_sql_applies_date_filter(self) -> None:
+        no_filter = app.warehouse_by_intent_sql("p.d.t")
+        self.assertNotIn("WHERE", no_filter)
+        filtered = app.warehouse_by_intent_sql("p.d.t", "2026-04-01", "2026-04-30")
+        self.assertIn("session_date >= '2026-04-01'", filtered)
+        self.assertIn("session_date <= '2026-04-30'", filtered)
+        cache_filtered = app.warehouse_cache_sql("p.d.t", None, "2026-05-29")
+        self.assertIn("session_date <= '2026-05-29'", cache_filtered)
+        self.assertNotIn("session_date >=", cache_filtered)
+
+    def test_sanitize_date_accepts_valid_rejects_garbage(self) -> None:
+        self.assertEqual(app.sanitize_date("2026-04-01"), "2026-04-01")
+        self.assertEqual(app.sanitize_date("  2026-12-31 "), "2026-12-31")
+        self.assertIsNone(app.sanitize_date("0000-00-00"))
+        self.assertIsNone(app.sanitize_date("2026/04/01"))
+        self.assertIsNone(app.sanitize_date("2026-13-01"))
+        self.assertIsNone(app.sanitize_date("'; DROP TABLE x"))
+        self.assertIsNone(app.sanitize_date(None))
+
     def test_usage_by_intent_payload_sorts_by_cost_and_totals(self) -> None:
         payload = app.usage_by_intent_payload([
             {"intent": "a", "cost_usd": 1.5, "tokens": 10, "commands": 2},
