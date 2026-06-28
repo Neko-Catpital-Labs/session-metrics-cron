@@ -39,6 +39,15 @@
   th { background:var(--bg); } td.n,th.n { text-align:right; font-variant-numeric:tabular-nums; }
   .swatch { display:inline-block; width:11px; height:11px; border-radius:2px; margin-right:.4rem; vertical-align:middle; }
   #err { color:#b91c1c; }
+  .whsec { margin-top:1.6rem; padding-top:1rem; border-top:2px solid var(--line); }
+  .whsec h2 { font-size:1.05rem; margin:0 0 .15rem; }
+  .whrow { display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-top:.8rem; }
+  .whcard { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:.8rem; }
+  .whcard h3 { margin:0 0 .5rem; font-size:.9rem; }
+  .whcanwrap { position:relative; height:300px; }
+  .whnote { color:var(--sub); font-size:.72rem; font-weight:400; }
+  .whbad { color:#b91c1c; }
+  @media (max-width:820px){ .whrow { grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
@@ -106,6 +115,21 @@
   <div id="chartWrap"><canvas id="chart"></canvas></div>
   <h3>Totals by <span id="byLabel">token type</span> (selected range &amp; filters)</h3>
   <table><thead><tr><th>Category</th><th class="n">Cost</th><th class="n">Share</th><th class="n">Tokens</th></tr></thead><tbody id="totRows"></tbody></table>
+
+  <div class="whsec" id="whSection">
+    <h2>Command analytics <span class="whnote" id="whMeta">— warehouse · v4.5 command attribution</span></h2>
+    <div class="whnote">Live from the warehouse (BigQuery/Metabase) — a separate, command-level lineage from the fleet cost above (different totals &amp; freshness). <span id="whUnavail" class="whbad" style="display:none">Warehouse analytics unavailable right now.</span></div>
+    <div class="whrow">
+      <div class="whcard">
+        <h3 id="cacheTitle">Cache hit rate (daily)</h3>
+        <div class="whcanwrap"><canvas id="cacheChart"></canvas></div>
+      </div>
+      <div class="whcard">
+        <h3 id="intentTitle">Cost by intent</h3>
+        <div class="whcanwrap"><canvas id="intentChart"></canvas></div>
+      </div>
+    </div>
+  </div>
 
   <script src="/cost-assets/chart.umd.min.js"></script>
   <script>
@@ -263,6 +287,53 @@
   function resetToList(){ simRate = cloneRate(listRate); buildPricing(); render(); }
   function resetToRecorded(){ simRate = cloneRate(baseRate); buildPricing(); render(); }
 
+  let cacheChart = null, intentChart = null;
+  async function loadWarehouse(){
+    await Promise.all([
+      fetchWarehouse("/api/cache-hit", renderCacheChart),
+      fetchWarehouse("/api/usage-by-intent", renderIntentChart),
+    ]);
+  }
+  async function fetchWarehouse(url, render){
+    try{
+      const res = await fetch(url);
+      if(!res.ok) throw new Error("HTTP "+res.status);
+      const data = await res.json();
+      if(data.error) throw new Error(data.error);
+      render(data);
+    }catch(e){ document.getElementById("whUnavail").style.display="inline"; }
+  }
+  function renderCacheChart(data){
+    const rows = data.rows||[];
+    const dr = data.date_range ? ` · ${data.date_range[0]} → ${data.date_range[1]}` : "";
+    document.getElementById("whMeta").textContent = `— warehouse · v4.5 command attribution${dr}`;
+    document.getElementById("cacheTitle").innerHTML = `Cache hit rate (daily) <span class="whnote">overall ${(data.overall_cache_hit_pct||0).toFixed(1)}%</span>`;
+    if(cacheChart) cacheChart.destroy();
+    cacheChart = new Chart(document.getElementById("cacheChart"), {
+      type:"line",
+      data:{ labels: rows.map(r=>r.date), datasets:[{ label:"cache hit %", data: rows.map(r=>r.cache_hit_pct), borderColor:"#10b981", backgroundColor:"rgba(16,185,129,.18)", borderWidth:2, pointRadius:0, fill:true, tension:.25 }] },
+      options:{ maintainAspectRatio:false, animation:false,
+        plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>c.parsed.y.toFixed(1)+"%"}} },
+        scales:{ x:{ ticks:{ maxRotation:90, autoSkip:true, maxTicksLimit:20 } }, y:{ min:0, max:100, ticks:{ callback:v=>v+"%" } } } }
+    });
+  }
+  function renderIntentChart(data){
+    const rows = (data.rows||[]).slice();
+    const TOP = 12;
+    const top = rows.slice(0, TOP);
+    const rest = rows.slice(TOP);
+    if(rest.length) top.push({ intent:`(other ${rest.length})`, cost_usd: rest.reduce((a,r)=>a+(r.cost_usd||0),0) });
+    document.getElementById("intentTitle").innerHTML = `Cost by intent <span class="whnote">total ${fmtMoney(data.total_cost_usd)}</span>`;
+    if(intentChart) intentChart.destroy();
+    intentChart = new Chart(document.getElementById("intentChart"), {
+      type:"bar",
+      data:{ labels: top.map(r=>r.intent.replace(/_/g," ")), datasets:[{ label:"cost", data: top.map(r=>r.cost_usd), backgroundColor: top.map((_,i)=>PALETTE[i%PALETTE.length]), borderWidth:0 }] },
+      options:{ indexAxis:"y", maintainAspectRatio:false, animation:false,
+        plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>fmtMoney(c.parsed.x)}} },
+        scales:{ x:{ ticks:{ callback:v=>"$"+v.toLocaleString() } } } }
+    });
+  }
+
   async function init(){
     try{
       const res = await fetch("/api/cost-timeseries");
@@ -294,6 +365,7 @@
     setActive("rangeBtns","range",state.range);
     setActive("metricBtns","metric",state.metric);
     render();
+    loadWarehouse();
   }
   init();
   </script>

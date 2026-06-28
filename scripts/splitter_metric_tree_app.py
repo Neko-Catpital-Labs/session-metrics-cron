@@ -35,6 +35,7 @@ DEFAULT_WORKFLOW_ANALYSIS_ROOT = Path(
     )
 )
 DEFAULT_TABLE = "summer-nexus-137922.splitter_metrics.splitter_replay_metric_scores_over_time"
+DEFAULT_WAREHOUSE_TABLE = "summer-nexus-137922.session_metrics_demo.command_costs"
 DEFAULT_PROJECT = "summer-nexus-137922"
 DEFAULT_METRIC_PATH = "planToResponseGraphScore"
 DEFAULT_VARIANT = "hinted"
@@ -143,6 +144,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=int(os.environ.get("SPLITTER_TREE_PORT", "8788")))
     parser.add_argument("--project-id", default=os.environ.get("BIGQUERY_PROJECT_ID", DEFAULT_PROJECT))
     parser.add_argument("--table", default=os.environ.get("SPLITTER_METRICS_TABLE", DEFAULT_TABLE))
+    parser.add_argument("--warehouse-table", default=os.environ.get("WAREHOUSE_COMMAND_COSTS_TABLE", DEFAULT_WAREHOUSE_TABLE))
     parser.add_argument("--backend", choices=("bigquery", "metabase"), default=os.environ.get("SPLITTER_TREE_BACKEND", "bigquery"))
     parser.add_argument("--metabase-url", default=os.environ.get("METABASE_URL", ""))
     parser.add_argument("--metabase-api-key", default=os.environ.get("METABASE_API_KEY", ""))
@@ -429,6 +431,100 @@ def metabase_tree_response(
         "history": normalize_history(history_rows),
     }
 
+
+def warehouse_by_intent_sql(table: str) -> str:
+    return f"""
+        SELECT agent_tool_intention AS intent,
+               SUM(allocated_total_cost_usd) AS cost_usd,
+               SUM(allocated_total_tokens) AS tokens,
+               COUNT(*) AS commands
+        FROM `{table}`
+        GROUP BY intent
+        ORDER BY cost_usd DESC
+    """
+
+
+def warehouse_cache_sql(table: str) -> str:
+    return f"""
+        SELECT session_date AS date,
+               SUM(allocated_fresh_input_tokens) AS fresh_input,
+               SUM(allocated_cache_read_tokens) AS cache_read,
+               SUM(allocated_cache_creation_tokens) AS cache_creation,
+               SUM(allocated_output_tokens) AS output
+        FROM `{table}`
+        GROUP BY date
+        ORDER BY date
+    """
+
+
+def run_warehouse_query(
+    sql: str,
+    *,
+    backend: str,
+    project_id: str,
+    metabase_url: str,
+    metabase_api_key: str,
+    metabase_database_id: int,
+) -> list[dict[str, Any]]:
+    if backend == "metabase":
+        return run_metabase_dataset(metabase_url, metabase_api_key, metabase_database_id, sql)
+    from google.cloud import bigquery  # type: ignore
+
+    client = bigquery.Client(project=project_id)
+    return [dict(row.items()) for row in client.query(sql).result()]
+
+
+def usage_by_intent_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    cleaned: list[dict[str, Any]] = []
+    total = 0.0
+    for row in rows:
+        cost = to_float(row.get("cost_usd")) or 0.0
+        total += cost
+        cleaned.append({
+            "intent": str(row.get("intent") or "uncategorized"),
+            "cost_usd": round(cost, 4),
+            "tokens": to_float(row.get("tokens")) or 0.0,
+            "commands": to_int(row.get("commands")) or 0,
+        })
+    cleaned.sort(key=lambda item: item["cost_usd"], reverse=True)
+    return {"rows": cleaned, "total_cost_usd": round(total, 4)}
+
+
+def cache_hit_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    daily: list[dict[str, Any]] = []
+    tot_read = tot_fresh = tot_create = tot_out = 0.0
+    for row in rows:
+        fresh = to_float(row.get("fresh_input")) or 0.0
+        read = to_float(row.get("cache_read")) or 0.0
+        create = to_float(row.get("cache_creation")) or 0.0
+        out = to_float(row.get("output")) or 0.0
+        denom = read + fresh
+        daily.append({
+            "date": str(row.get("date") or ""),
+            "cache_read": read,
+            "fresh_input": fresh,
+            "cache_creation": create,
+            "output": out,
+            "cache_hit_pct": round(read / denom * 100, 4) if denom else 0.0,
+        })
+        tot_read += read
+        tot_fresh += fresh
+        tot_create += create
+        tot_out += out
+    daily.sort(key=lambda item: item["date"])
+    denom = tot_read + tot_fresh
+    dates = [item["date"] for item in daily if item["date"]]
+    return {
+        "rows": daily,
+        "overall_cache_hit_pct": round(tot_read / denom * 100, 4) if denom else 0.0,
+        "totals": {
+            "cache_read": tot_read,
+            "fresh_input": tot_fresh,
+            "cache_creation": tot_create,
+            "output": tot_out,
+        },
+        "date_range": [dates[0], dates[-1]] if dates else None,
+    }
 
 def normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized = [
@@ -1352,6 +1448,7 @@ def make_handler(
     cost_dashboard_path: Path,
     cost_fact_path: Path,
     chart_asset_path: Path,
+    warehouse_table: str,
     table: str,
     project_id: str,
     backend: str,
@@ -1425,6 +1522,12 @@ def make_handler(
                     self.send_bytes(chart_asset_path.read_bytes(), "application/javascript; charset=utf-8")
                 else:
                     self.send_error(HTTPStatus.NOT_FOUND, "chart asset missing")
+                return
+            if parsed.path == "/api/usage-by-intent":
+                self.send_warehouse(warehouse_by_intent_sql(warehouse_table), usage_by_intent_payload, "usage-by-intent")
+                return
+            if parsed.path == "/api/cache-hit":
+                self.send_warehouse(warehouse_cache_sql(warehouse_table), cache_hit_payload, "cache-hit")
                 return
             if parsed.path == "/api/splitter-metric-tree":
                 self.send_metric_tree(parse_qs(parsed.query))
@@ -1501,6 +1604,24 @@ def make_handler(
             except Exception as exc:
                 self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
+        def send_warehouse(self, sql: str, shaper: Any, cache_key: str) -> None:
+            try:
+                payload = cache.get(cache_key)
+                if payload is None:
+                    rows = run_warehouse_query(
+                        sql,
+                        backend=backend,
+                        project_id=project_id,
+                        metabase_url=metabase_url,
+                        metabase_api_key=metabase_api_key,
+                        metabase_database_id=metabase_database_id,
+                    )
+                    payload = shaper(rows)
+                    cache.set(cache_key, payload)
+                self.send_json(payload)
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
         def send_rules(self) -> None:
             try:
                 payload = cache.get("splitter-rules")
@@ -1541,6 +1662,7 @@ def main() -> int:
         args.cost_dashboard_path,
         args.cost_fact_path,
         args.chart_asset_path,
+        args.warehouse_table,
         args.table,
         args.project_id,
         args.backend,
