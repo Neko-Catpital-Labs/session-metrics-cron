@@ -95,8 +95,9 @@
   <div class="pricing">
     <div class="phead">
       <span class="lbl">Pricing assumptions ($/Mtok)</span>
-      <button class="seg" id="resetRates">Reset to actual</button>
-      <span class="pnote">Simulates cost as tokens × rate. Baseline = your blended billed rate; affects the Cost metric only.</span>
+      <button class="seg" id="resetList">Reset to list prices</button>
+      <button class="seg" id="resetRecorded">Reset to recorded rate</button>
+      <span class="pnote">Cost = tokens × rate. Defaults to real published list prices (Claude Sonnet 4.5, GPT-5.5; mid-2026). "Recorded rate" = your blended billed rate from the data. Affects the Cost metric only.</span>
     </div>
     <div class="pgrid" id="priceGrid"></div>
   </div>
@@ -117,6 +118,13 @@
   const state = { range:"30d", metric:"cost_usd", stackBy:"combo", from:null, to:null, sel:{ host:new Set(), origin:new Set(), model:new Set() } };
   let baseRate = {};   // {model: {token_type: $/Mtok}}  derived once from the fact
   let simRate  = {};   // {model: {token_type: $/Mtok}}  mutable; what the sliders set
+  let listRate = {};   // {model: {token_type: $/Mtok}}  real published list prices (card below, merged onto fact structure)
+  // Real published list prices, $/Mtok (mid-2026). Sources: Anthropic platform docs; OpenAI API pricing.
+  // claude family -> Claude Sonnet 4.5; codex family -> GPT-5.5. OpenAI does not bill cache writes (no codex cache_creation).
+  const LIST_RATES = {
+    claude: { fresh_input:3.0, cache_read:0.30, cache_creation:3.75, output:15.0 },
+    codex:  { fresh_input:5.0, cache_read:0.50, output:30.0 },
+  };
   const cloneRate = x => JSON.parse(JSON.stringify(x));
 
   const fmtMoney = v => "$" + (v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -227,14 +235,14 @@
     let html="";
     for(const m of Object.keys(baseRate).sort()){
       for(const tt of ttOrder){
-        const base = baseRate[m][tt];
-        if(base===undefined) continue;                       // no tokens for this combo -> no control
-        const max = Math.max(base*4, 1).toFixed(2);
+        if(baseRate[m][tt]===undefined) continue;            // no tokens for this combo -> no control
+        const cur = simRate[m][tt];                          // current value drives both inputs
+        const max = Math.max(baseRate[m][tt]*4, cur, 1).toFixed(2);   // stable range, never below current
         const step = (parseFloat(max)/200).toFixed(4);
         const id = `rate_${m}_${tt}`;
         html += `<div class="prate"><label>${m} · ${tt.replace(/_/g," ")}</label>`+
-          `<input type="range" id="${id}_s" min="0" max="${max}" step="${step}" value="${base}">`+
-          `<input type="number" id="${id}_n" min="0" step="0.01" value="${base.toFixed(3)}"><span class="unit">$/Mtok</span></div>`;
+          `<input type="range" id="${id}_s" min="0" max="${max}" step="${step}" value="${Math.min(cur, parseFloat(max))}">`+
+          `<input type="number" id="${id}_n" min="0" step="0.01" value="${cur.toFixed(3)}"><span class="unit">$/Mtok</span></div>`;
       }
     }
     document.getElementById("priceGrid").innerHTML = html;
@@ -245,7 +253,15 @@
       n.addEventListener("input", e=>{ const x=Math.max(0,parseFloat(e.target.value)||0); simRate[m][tt]=x; s.value=Math.min(x, parseFloat(s.max)); render(); });
     }
   }
-  function resetRates(){ simRate = cloneRate(baseRate); buildPricing(); render(); }
+  function buildListRate(){
+    const out = cloneRate(baseRate);                         // recorded structure/values as fallback
+    for(const m in out) for(const tt in out[m]){
+      if(LIST_RATES[m] && LIST_RATES[m][tt]!==undefined) out[m][tt]=LIST_RATES[m][tt];
+    }
+    return out;
+  }
+  function resetToList(){ simRate = cloneRate(listRate); buildPricing(); render(); }
+  function resetToRecorded(){ simRate = cloneRate(baseRate); buildPricing(); render(); }
 
   async function init(){
     try{
@@ -257,9 +273,11 @@
       `${FACT.rows.length.toLocaleString()} fact rows · generated ${FACT.generated_utc||"?"} · native = codex/claude CLI, omp = Oh My Pi harness`;
     FILTER_DIMS.forEach((d,i)=> buildChips(d, ["filtHost","filtOrigin","filtModel"][i]));
     baseRate = deriveRates(FACT.rows);
-    simRate  = cloneRate(baseRate);
+    listRate = buildListRate();
+    simRate  = cloneRate(listRate);     // default to real published list prices
     buildPricing();
-    document.getElementById("resetRates").addEventListener("click", resetRates);
+    document.getElementById("resetList").addEventListener("click", resetToList);
+    document.getElementById("resetRecorded").addEventListener("click", resetToRecorded);
 
     document.querySelectorAll("#rangeBtns .seg").forEach(b=> b.addEventListener("click",()=>{
       state.range=b.dataset.range; setActive("rangeBtns","range",state.range);
