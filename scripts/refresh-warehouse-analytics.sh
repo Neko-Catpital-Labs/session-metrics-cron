@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Repopulate the warehouse command-cost analytics that back the cost dashboard's
-# "Cache hit rate" and "Cost by intent" panels, then reload BigQuery.
+# Repopulate the FLEET-WIDE warehouse command-cost analytics (the cost dashboard's
+# "Cache hit rate" and "Cost by intent" panels), then reload BigQuery.
 #
-# Scope: THIS workstation's codex/claude/omp sessions only. The attribution cost
-# model anchors per-command cost to this machine's ccusage bill, so it is
-# local-scoped by design. Fleet-wide attribution is a separate pipeline.
+# Scope: codex/claude/omp sessions across local + all SSH fleet hosts (from
+# ~/.invoker/config.json). Per-command cost is anchored to the pricing table
+# (ccusage-free) so the whole fleet is costed consistently; omp commands keep
+# their exact per-turn cost.
 #
 # Dedup-safe by construction:
-#   - cache_hit_audit dedups source logs by content hash, and
+#   - fleet sessions are de-duplicated by file content hash across hosts, and
 #   - warehouse_cost_demo loads with `bq load --replace` (full table overwrite).
 # Re-running never appends or double-counts.
 #
@@ -17,11 +18,10 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${WAREHOUSE_ANALYTICS_ENV:-$REPO_ROOT/config/warehouse-analytics.env}"
-SOURCES_CONFIG="${WAREHOUSE_SOURCES_CONFIG:-$REPO_ROOT/config/sources-local.json}"
-WORKSPACE="${WAREHOUSE_BACKFILL_WORKSPACE:-$HOME/.session-metrics-cron/warehouse/backfill-workspace}"
+STAGE_DIR="${FLEET_STAGE_DIR:-/tmp/fleet-sessions}"
 LOG_DIR="${WAREHOUSE_LOG_DIR:-$HOME/.session-metrics-cron/warehouse}"
 
-mkdir -p "$LOG_DIR" "$(dirname "$WORKSPACE")"
+mkdir -p "$LOG_DIR"
 exec >>"$LOG_DIR/refresh.log" 2>&1
 echo "=================================================================="
 echo "[$(date '+%F %T')] warehouse refresh start (repo=$REPO_ROOT)"
@@ -42,15 +42,11 @@ if [[ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" || ! -f "${GOOGLE_APPLICATION_CRE
   exit 1
 fi
 
-# 1. Audit local sessions: fresh ccusage baseline + content-hash-deduped merged dirs.
-python3 scripts/cache_hit_audit.py \
-  --output cache-hit-audit-report.json --top 50 \
-  --sources-config "$SOURCES_CONFIG" --workspace "$WORKSPACE"
+# 1. Collect fleet sessions (local + SSH hosts), dedup by content hash, classify
+#    intent, and emit the fleet-wide v4.5 command-attribution CSV (pricing-table costs).
+python3 scripts/fleet_warehouse_attribution.py --stage-dir "$STAGE_DIR" --out-dir reports
 
-# 2. Build the v4.5 command-attribution CSV (deduped dirs + intent classifier).
-python3 scripts/planning_vs_execution_report.py --out-dir reports
-
-# 3. Load BigQuery: bq load --replace + refresh views + parity check (row/cost == CSV).
+# 2. Load BigQuery: bq load --replace + refresh views + parity check (row/cost == CSV).
 python3 scripts/warehouse_cost_demo.py load-bigquery
 
-echo "[$(date '+%F %T')] warehouse refresh done -> $BIGQUERY_PROJECT_ID command_costs reloaded"
+echo "[$(date '+%F %T')] warehouse refresh done -> $BIGQUERY_PROJECT_ID command_costs reloaded (fleet)"
