@@ -34,9 +34,15 @@ DEFAULT_WORKFLOW_ANALYSIS_ROOT = Path(
         str(REPO_ROOT.parent / "workflow-analysis-service"),
     )
 )
-DEFAULT_TABLE = "summer-nexus-137922.splitter_metrics.splitter_replay_metric_scores_over_time"
-DEFAULT_WAREHOUSE_TABLE = "summer-nexus-137922.session_metrics_demo.command_costs"
-DEFAULT_PROJECT = "summer-nexus-137922"
+DEFAULT_PROJECT = os.environ.get("BIGQUERY_PROJECT_ID", "summer-nexus-137922")
+DEFAULT_TABLE = os.environ.get(
+    "SPLITTER_METRICS_TABLE",
+    f"{DEFAULT_PROJECT}.{os.environ.get('SPLITTER_METRICS_DATASET', 'splitter_metrics')}.splitter_replay_metric_scores_over_time",
+)
+DEFAULT_WAREHOUSE_TABLE = os.environ.get(
+    "WAREHOUSE_COMMAND_COSTS_TABLE",
+    f"{DEFAULT_PROJECT}.{os.environ.get('BIGQUERY_DATASET', 'session_metrics_demo')}.command_costs",
+)
 DEFAULT_METRIC_PATH = "planToResponseGraphScore"
 DEFAULT_VARIANT = "hinted"
 DEFAULT_HISTORY_RUNS = 20
