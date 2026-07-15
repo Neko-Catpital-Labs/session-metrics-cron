@@ -23,18 +23,20 @@ def row(
     prompt_index: str = "1",
     command_index: str = "1",
     cost: str = "1.0",
+    session_date: str = "2026-05-01",
     prompt: str = "Implement the plan.",
     intention: str = "implementation_planning_inspection",
     function: str = "exec_command",
     shell: str = "rg",
     command: str = "rg foo src",
+    stdin_preview: str = "",
     parent_shell: str = "",
     parent_command: str = "",
 ) -> dict[str, str]:
     return {
         "schema_version": report.SCHEMA_VERSION,
         "classification_revision": report.CLASSIFICATION_REVISION,
-        "session_date": "2026-05-01",
+        "session_date": session_date,
         "file": file,
         "prompt_index": prompt_index,
         "command_index": command_index,
@@ -48,13 +50,20 @@ def row(
         "function_name": function,
         "shell_verb": shell,
         "command_preview": command,
-        "stdin_preview": "",
+        "stdin_preview": stdin_preview,
         "stdin_input_kind": "",
         "terminal_context_parent_shell_verb": parent_shell,
         "terminal_context_parent_command_preview": parent_command,
         "target": "",
     }
 
+
+
+def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = report.csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
 
 class SessionPhaseNarrativeReportTests(unittest.TestCase):
     def test_prompt_windows_group_by_session_id_and_prompt_index(self) -> None:
@@ -65,6 +74,20 @@ class SessionPhaseNarrativeReportTests(unittest.TestCase):
         ]
         windows = report.prompt_windows(rows)
         self.assertEqual([key for key, _rows in windows], [("a", "2"), ("b", "1"), ("a", "1")])
+
+
+    def test_load_rows_handles_optional_date_bounds(self) -> None:
+        rows = [
+            row(session_date="2026-04-30"),
+            row(session_date="2026-05-02"),
+            row(session_date="2026-05-05"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "usage.csv"
+            write_csv(path, rows)
+            self.assertEqual(len(report.load_rows(path, None, None)), 3)
+            self.assertEqual(len(report.load_rows(path, "2026-05-01", None)), 2)
+            self.assertEqual(len(report.load_rows(path, None, "2026-05-02")), 2)
 
     def test_classifies_build_repair_and_final_proof(self) -> None:
         rows = [
@@ -191,19 +214,70 @@ class SessionPhaseNarrativeReportTests(unittest.TestCase):
         self.assertNotEqual(classified[-1].reason, "repeated_or_failure_driven_test_loop")
         self.assertEqual(classified[-1].workflow_phase, "failure_diagnosis")
 
-    def test_write_window_payload_has_expected_shape(self) -> None:
+    def test_write_window_payload_includes_fixing_proof_fields(self) -> None:
         rows = [
-            row(command_index="1", cost="1"),
-            row(command_index="2", intention="ci_monitoring", shell="gh", command="gh pr checks 1 --watch=false", cost="2"),
+            row(
+                command_index="1",
+                cost="1.5",
+                prompt="A build/test command failed. Fix the code so the command succeeds.",
+                intention="failure_diagnosis_inspection",
+                shell="tail",
+                command="tail -100 test.log",
+            ),
+            row(
+                command_index="2",
+                cost="2.5",
+                intention="implementation_edit",
+                function="edit",
+                shell="",
+                command="",
+            ),
+            row(
+                command_index="3",
+                cost="3.5",
+                prompt="A build/test command failed. Fix the code so the command succeeds.",
+                intention="test_execution",
+                shell="pnpm",
+                command="pnpm test src/foo.test.ts",
+            ),
+            row(
+                command_index="4",
+                cost="4.0",
+                prompt="A build/test command failed. Fix the code so the command succeeds.",
+                intention="test_execution",
+                shell="pnpm",
+                command="pnpm test src/foo.test.ts --rerun",
+            ),
+            row(
+                command_index="5",
+                cost="1.0",
+                intention="ci_monitoring",
+                function="wait",
+                shell="",
+                command="",
+                stdin_preview="gh pr checks 1 --watch=false",
+            ),
         ]
         with tempfile.TemporaryDirectory() as tmp:
-            payload = report.build_window_payload(1, ("session-a", "1"), rows, Path(tmp), False, 1)
+            tmpdir = Path(tmp)
+            payload = report.build_window_payload(1, ("session-a", "1"), rows, tmpdir, False, 1)
+            (tmpdir / "windows").mkdir()
+            _md_path, json_path = report.write_window_files(payload, tmpdir / "windows")
         self.assertEqual(payload["rank"], 1)
         self.assertEqual(payload["session_id"], "session-a")
-        self.assertEqual(payload["total_cost_usd"], 3.0)
+        self.assertEqual(payload["total_cost_usd"], 12.5)
         self.assertEqual(payload["narrative"]["review_status"], "deterministic_only")
-        self.assertTrue(payload["phase_rollup"])
-        self.assertTrue(payload["timeline"])
+        self.assertEqual(payload["dominant_fixing_cause"], "Repeated repair/test loops")
+        self.assertEqual(payload["window_file"], json_path.name)
+        self.assertEqual(payload["fixing_cause_rollup"][0]["cause"], "Repeated repair/test loops")
+        self.assertEqual(payload["timeline"][0]["fixing_cause"], "Failure diagnosis thrash")
+        self.assertEqual(payload["commands"][0]["fixing_cause"], "Failure diagnosis thrash")
+        self.assertEqual(payload["commands"][-1]["preview"], "gh pr checks 1 --watch=false")
+        self.assertEqual(payload["commands"][-1]["stdin_preview"], "gh pr checks 1 --watch=false")
+    def test_deterministic_short_title_reuses_prompt_compaction(self) -> None:
+        title = report.deterministic_short_title("Fix the parser and then verify the failing CI path again.")
+        self.assertEqual(title, report.compact("Fix the parser and then verify the failing CI path again.", 80))
+
 
     def test_markdown_mentions_phase_and_efficiency_rollups(self) -> None:
         rows = [row(command_index="1", cost="1")]

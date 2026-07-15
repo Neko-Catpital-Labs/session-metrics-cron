@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import importlib.util
 import json
 import os
@@ -26,6 +27,10 @@ DEFAULT_STEPS_STATIC_PATH = REPO_ROOT / "docs" / "rules-steps.html"
 DEFAULT_RULES_D3_POC_STATIC_PATH = REPO_ROOT / "docs" / "rules-d3-poc.html"
 DEFAULT_COST_REPORT_PATH = REPO_ROOT / "reports" / "invoker-cost-breakdown.html"
 DEFAULT_COST_DASHBOARD_PATH = REPO_ROOT / "docs" / "cost-dashboard.html"
+DEFAULT_FIXING_COST_DASHBOARD_PATH = REPO_ROOT / "docs" / "fixing-cost-dashboard.html"
+DEFAULT_COST_EXPLORER_STATIC_PATH = REPO_ROOT / "docs" / "cost-explorer.html"
+DEFAULT_COST_EXPLORER_DIR = REPO_ROOT / "reports" / "cost-explorer-v1"
+DEFAULT_INSIGHTS_INDEX_PATH = REPO_ROOT / "docs" / "insights.html"
 DEFAULT_COST_FACT_PATH = REPO_ROOT / "reports" / "cost-daily-fact.json"
 DEFAULT_CHART_ASSET_PATH = REPO_ROOT / "docs" / "vendor" / "chart.umd.min.js"
 DEFAULT_WORKFLOW_ANALYSIS_ROOT = Path(
@@ -43,6 +48,10 @@ DEFAULT_WAREHOUSE_TABLE = os.environ.get(
     "WAREHOUSE_COMMAND_COSTS_TABLE",
     f"{DEFAULT_PROJECT}.{os.environ.get('BIGQUERY_DATASET', 'session_metrics_demo')}.command_costs",
 )
+DEFAULT_COST_EXPLORER_TABLE = os.environ.get(
+    "COST_EXPLORER_COMMANDS_TABLE",
+    f"{DEFAULT_PROJECT}.{os.environ.get('BIGQUERY_DATASET', 'session_metrics_demo')}.cost_explorer_commands_v1",
+)
 DEFAULT_METRIC_PATH = "planToResponseGraphScore"
 DEFAULT_VARIANT = "hinted"
 DEFAULT_HISTORY_RUNS = 20
@@ -50,6 +59,8 @@ MAX_HISTORY_RUNS = 100
 MAX_METRIC_PATH_LENGTH = 512
 DEFAULT_CACHE_TTL_SECONDS = 60
 DEFAULT_METABASE_DATABASE_ID = 2
+MAX_COST_EXPLORER_ROWS = 200
+DEFAULT_COST_EXPLORER_ROWS = 50
 DEFAULT_BIGQUERY_LOCATION = "US"
 DIAGNOSTIC_SCORE_PARENTS = {
     "correctStackLinkCount": "correctStackLinksScore",
@@ -162,6 +173,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rules-d3-poc-static-path", type=Path, default=DEFAULT_RULES_D3_POC_STATIC_PATH)
     parser.add_argument("--cost-report-path", type=Path, default=DEFAULT_COST_REPORT_PATH)
     parser.add_argument("--cost-dashboard-path", type=Path, default=DEFAULT_COST_DASHBOARD_PATH)
+    parser.add_argument("--fixing-cost-dashboard-path", type=Path, default=DEFAULT_FIXING_COST_DASHBOARD_PATH)
+    parser.add_argument("--cost-explorer-path", type=Path, default=DEFAULT_COST_EXPLORER_STATIC_PATH)
+    parser.add_argument("--cost-explorer-dir", type=Path, default=DEFAULT_COST_EXPLORER_DIR)
+    parser.add_argument("--insights-index-path", type=Path, default=DEFAULT_INSIGHTS_INDEX_PATH)
     parser.add_argument("--cost-fact-path", type=Path, default=DEFAULT_COST_FACT_PATH)
     parser.add_argument("--chart-asset-path", type=Path, default=DEFAULT_CHART_ASSET_PATH)
     parser.add_argument("--workflow-analysis-root", type=Path, default=DEFAULT_WORKFLOW_ANALYSIS_ROOT)
@@ -452,13 +467,97 @@ def sanitize_date(value: str | None) -> str | None:
     return value
 
 
-def warehouse_date_where(start: str | None, end: str | None) -> str:
-    clauses = []
+
+def sanitize_bound_date(params: dict[str, list[str]], key: str) -> str | None:
+    raw = first(params, key)
+    value = sanitize_date(raw)
+    if raw and not value:
+        raise ValueError(f"invalid {key} date: {raw}")
+    return value
+
+
+VALID_COST_EXPLORER_ISSUE_KINDS = {
+    "fixing_cause",
+    "task_type",
+    "request_pattern",
+    "agent_tool_intention",
+    "function_name",
+    "shell_verb",
+}
+VALID_COST_EXPLORER_TOKEN_BUCKETS = {"all", "context", "cache_read", "output"}
+
+
+def sanitize_cost_explorer_issue_kind(value: str | None) -> str:
+    issue_kind = (value or "").strip()
+    if issue_kind and issue_kind not in VALID_COST_EXPLORER_ISSUE_KINDS:
+        raise ValueError(f"invalid issue_kind: {issue_kind}")
+    return issue_kind
+
+
+def sanitize_cost_explorer_token_bucket(value: str | None) -> str:
+    token_bucket = (value or "all").strip().lower() or "all"
+    if token_bucket not in VALID_COST_EXPLORER_TOKEN_BUCKETS:
+        raise ValueError(f"invalid token_bucket: {token_bucket}")
+    return token_bucket
+
+
+def clamp_cost_explorer_limit(value: str | None) -> int:
+    if value is None or not value.strip():
+        return DEFAULT_COST_EXPLORER_ROWS
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError(f"invalid limit: {value}") from exc
+    return max(1, min(MAX_COST_EXPLORER_ROWS, parsed))
+
+
+def clamp_cost_explorer_offset(value: str | None) -> int:
+    if value is None or not value.strip():
+        return 0
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError(f"invalid offset: {value}") from exc
+    return max(0, parsed)
+
+
+def derive_cost_explorer_table(warehouse_table: str) -> str:
+    cleaned = warehouse_table.strip().strip("`")
+    if cleaned.endswith(".command_costs"):
+        return cleaned[: -len(".command_costs")] + ".cost_explorer_commands_v1"
+    if "." in cleaned:
+        return cleaned.rsplit(".", 1)[0] + ".cost_explorer_commands_v1"
+    return DEFAULT_COST_EXPLORER_TABLE
+
+
+def warehouse_date_where(start: str | None, end: str | None, extra_clauses: list[str] | None = None) -> str:
+    clauses: list[str] = []
     if start:
         clauses.append(f"session_date >= '{start}'")
     if end:
         clauses.append(f"session_date <= '{end}'")
+    if extra_clauses:
+        clauses.extend(extra_clauses)
     return ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+
+FIXING_CAUSE_CASE = """
+  CASE
+    WHEN workflow_phase = 'failure_diagnosis' AND efficiency_label = 'thrash' THEN 'Failure diagnosis thrash'
+    WHEN workflow_phase = 'failure_diagnosis' AND efficiency_label = 'expected_overhead' THEN 'Expected failure investigation overhead'
+    WHEN workflow_phase = 'repair_loop' THEN 'Repeated repair/test loops'
+    WHEN workflow_phase = 'orientation' THEN 'Orientation in service of fixing'
+    WHEN workflow_phase = 'ci_merge_monitoring' AND efficiency_label = 'thrash' THEN 'CI/merge monitoring thrash'
+  END
+"""
+
+CI_BRANCH_FILTER = """
+  (
+    workflow_phase = 'ci_merge_monitoring'
+    OR agent_tool_intention IN ('ci_monitoring', 'branch_stack_orchestration', 'pr_creation_or_update')
+    OR work_motivation = 'branch_stack'
+  )
+"""
 
 
 def warehouse_by_intent_sql(table: str, start: str | None = None, end: str | None = None) -> str:
@@ -486,6 +585,290 @@ def warehouse_cache_sql(table: str, start: str | None = None, end: str | None = 
         GROUP BY date
         ORDER BY date
     """
+
+
+def warehouse_phase_efficiency_sql(table: str, start: str | None = None, end: str | None = None) -> str:
+    return f"""
+        SELECT workflow_phase,
+               efficiency_label,
+               SUM(allocated_total_cost_usd) AS cost_usd,
+               SUM(allocated_total_tokens) AS tokens,
+               COUNT(*) AS commands
+        FROM `{table}`
+        {warehouse_date_where(start, end)}
+        GROUP BY workflow_phase, efficiency_label
+        ORDER BY cost_usd DESC
+    """
+
+
+def warehouse_fixing_causes_sql(table: str, start: str | None = None, end: str | None = None) -> str:
+    return f"""
+        SELECT {FIXING_CAUSE_CASE} AS cause,
+               SUM(allocated_total_cost_usd) AS cost_usd,
+               SUM(allocated_total_tokens) AS tokens,
+               COUNT(*) AS commands
+        FROM `{table}`
+        {warehouse_date_where(start, end)}
+        GROUP BY cause
+        HAVING cause IS NOT NULL
+        ORDER BY cost_usd DESC
+    """
+
+
+def warehouse_ci_branch_sql(table: str, start: str | None = None, end: str | None = None) -> str:
+    return f"""
+        SELECT workflow_phase,
+               agent_tool_intention AS intent,
+               work_motivation AS motivation,
+               SUM(allocated_total_cost_usd) AS cost_usd,
+               SUM(allocated_total_tokens) AS tokens,
+               COUNT(*) AS commands
+        FROM `{table}`
+        {warehouse_date_where(start, end, [CI_BRANCH_FILTER.strip()])}
+        GROUP BY workflow_phase, intent, motivation
+        ORDER BY cost_usd DESC
+        LIMIT 40
+    """
+def cost_explorer_issue_column(issue_kind: str) -> str:
+    return {
+        "fixing_cause": "fixing_cause",
+        "task_type": "task_type",
+        "request_pattern": "request_pattern",
+        "agent_tool_intention": "agent_tool_intention",
+        "function_name": "function_name",
+        "shell_verb": "shell_verb",
+    }[issue_kind]
+
+
+def cost_explorer_match_expression(token_bucket: str) -> str:
+    return {
+        "all": "allocated_total_cost_usd",
+        "context": "headline_context_cost_usd",
+        "cache_read": "headline_cache_read_cost_usd",
+        "output": "headline_output_cost_usd",
+    }[token_bucket]
+
+
+def cost_explorer_search_sql(
+    table: str,
+    *,
+    start: str | None,
+    end: str | None,
+    issue_kind: str,
+    issue_value: str,
+    token_bucket: str,
+    task_type: str,
+    request_pattern: str,
+    agent_tool_intention: str,
+    function_name: str,
+    shell_verb: str,
+    model: str,
+    origin: str,
+    text: str,
+    limit: int,
+    offset: int,
+) -> str:
+    filters: list[str] = []
+    if task_type:
+        filters.append(f"task_type = {sql_string(task_type)}")
+    if request_pattern:
+        filters.append(f"request_pattern = {sql_string(request_pattern)}")
+    if agent_tool_intention:
+        filters.append(f"agent_tool_intention = {sql_string(agent_tool_intention)}")
+    if function_name:
+        filters.append(f"function_name = {sql_string(function_name)}")
+    if shell_verb:
+        filters.append(f"shell_verb = {sql_string(shell_verb)}")
+    if model:
+        filters.append(f"model = {sql_string(model)}")
+    if origin:
+        filters.append(f"origin = {sql_string(origin)}")
+    if text:
+        needle = sql_string(text.lower())
+        filters.append(
+            "("
+            f"STRPOS(LOWER(COALESCE(short_title, '')), {needle}) > 0 OR "
+            f"STRPOS(LOWER(COALESCE(prompt_preview, '')), {needle}) > 0 OR "
+            f"STRPOS(LOWER(COALESCE(task_label, '')), {needle}) > 0"
+            ")"
+        )
+    if issue_kind:
+        issue_column = cost_explorer_issue_column(issue_kind)
+        filters.append(f"COALESCE({issue_column}, '') != ''")
+        if issue_value:
+            filters.append(f"{issue_column} = {sql_string(issue_value)}")
+    filtered_where = warehouse_date_where(start, end, filters)
+    all_where = warehouse_date_where(start, end)
+    matching_cost_expr = cost_explorer_match_expression(token_bucket)
+    return f"""
+WITH all_commands AS (
+  SELECT
+    base.*,
+    CASE
+      WHEN LENGTH(base.prompt_preview_clean) <= 80 THEN base.prompt_preview_clean
+      ELSE CONCAT(RTRIM(SUBSTR(base.prompt_preview_clean, 1, 77)), '...')
+    END AS short_title
+  FROM (
+    SELECT
+      *,
+      REGEXP_REPLACE(COALESCE(prompt_preview, ''), r'\\s+', ' ') AS prompt_preview_clean
+    FROM `{table}`
+    {all_where}
+  ) AS base
+),
+filtered_commands AS (
+  SELECT *
+  FROM all_commands
+  {filtered_where or ''}
+),
+matching_windows AS (
+  SELECT DISTINCT session_date, session_id, prompt_index, window_file
+  FROM filtered_commands
+),
+window_totals AS (
+  SELECT
+    all_commands.session_date,
+    all_commands.session_id,
+    all_commands.prompt_index,
+    all_commands.window_file,
+    all_commands.short_title,
+    all_commands.request_pattern,
+    all_commands.task_type,
+    all_commands.task_type_label,
+    all_commands.model,
+    all_commands.origin,
+    SUM(all_commands.allocated_total_cost_usd) AS total_cost_usd,
+    SUM(all_commands.headline_context_cost_usd) AS headline_context_cost_usd,
+    SUM(all_commands.headline_cache_read_cost_usd) AS headline_cache_read_cost_usd,
+    SUM(all_commands.headline_output_cost_usd) AS headline_output_cost_usd
+  FROM all_commands
+  INNER JOIN matching_windows USING (session_date, session_id, prompt_index, window_file)
+  GROUP BY session_date, session_id, prompt_index, window_file, short_title, request_pattern, task_type, task_type_label, model, origin
+),
+dominant_causes AS (
+  SELECT
+    session_date,
+    session_id,
+    prompt_index,
+    window_file,
+    fixing_cause AS dominant_fixing_cause
+  FROM (
+    SELECT
+      cause_totals.*,
+      ROW_NUMBER() OVER (
+        PARTITION BY session_date, session_id, prompt_index, window_file
+        ORDER BY cause_cost_usd DESC, fixing_cause ASC
+      ) AS row_num
+    FROM (
+      SELECT
+        all_commands.session_date,
+        all_commands.session_id,
+        all_commands.prompt_index,
+        all_commands.window_file,
+        COALESCE(all_commands.fixing_cause, '') AS fixing_cause,
+        SUM(all_commands.allocated_total_cost_usd) AS cause_cost_usd
+      FROM all_commands
+      INNER JOIN matching_windows USING (session_date, session_id, prompt_index, window_file)
+      WHERE COALESCE(all_commands.fixing_cause, '') != ''
+      GROUP BY all_commands.session_date, all_commands.session_id, all_commands.prompt_index, all_commands.window_file, fixing_cause
+    ) AS cause_totals
+  )
+  WHERE row_num = 1
+),
+matching_totals AS (
+  SELECT
+    session_date,
+    session_id,
+    prompt_index,
+    window_file,
+    SUM({matching_cost_expr}) AS matching_cost_usd
+  FROM filtered_commands
+  GROUP BY session_date, session_id, prompt_index, window_file
+),
+grouped AS (
+  SELECT
+    window_totals.session_date,
+    window_totals.session_id,
+    window_totals.prompt_index,
+    window_totals.window_file,
+    window_totals.short_title,
+    window_totals.request_pattern,
+    window_totals.task_type,
+    window_totals.task_type_label,
+    COALESCE(dominant_causes.dominant_fixing_cause, '') AS dominant_fixing_cause,
+    window_totals.model,
+    window_totals.origin,
+    matching_totals.matching_cost_usd,
+    window_totals.total_cost_usd,
+    window_totals.headline_context_cost_usd,
+    window_totals.headline_cache_read_cost_usd,
+    window_totals.headline_output_cost_usd
+  FROM window_totals
+  INNER JOIN matching_totals USING (session_date, session_id, prompt_index, window_file)
+  LEFT JOIN dominant_causes USING (session_date, session_id, prompt_index, window_file)
+  WHERE matching_totals.matching_cost_usd > 0
+)
+SELECT
+  *,
+  COUNT(*) OVER () AS total_rows,
+  SUM(matching_cost_usd) OVER () AS matching_cost_total,
+  SUM(headline_context_cost_usd) OVER () AS headline_context_cost_total,
+  SUM(headline_cache_read_cost_usd) OVER () AS headline_cache_read_cost_total,
+  SUM(headline_output_cost_usd) OVER () AS headline_output_cost_total
+FROM grouped
+ORDER BY matching_cost_usd DESC, total_cost_usd DESC, session_date DESC
+LIMIT {limit}
+OFFSET {offset}
+"""
+
+
+def cost_explorer_search_payload(rows: list[dict[str, Any]], filters: dict[str, Any]) -> dict[str, Any]:
+    cleaned = [
+        {
+            "session_id": str(row.get("session_id") or ""),
+            "prompt_index": to_int(row.get("prompt_index")) or 0,
+            "session_date": str(row.get("session_date") or ""),
+            "window_file": str(row.get("window_file") or ""),
+            "short_title": str(row.get("short_title") or ""),
+            "request_pattern": str(row.get("request_pattern") or ""),
+            "task_type": str(row.get("task_type") or ""),
+            "task_type_label": str(row.get("task_type_label") or ""),
+            "dominant_fixing_cause": str(row.get("dominant_fixing_cause") or ""),
+            "origin": str(row.get("origin") or ""),
+            "model": str(row.get("model") or ""),
+            "matching_cost_usd": round(to_float(row.get("matching_cost_usd")) or 0.0, 4),
+            "total_cost_usd": round(to_float(row.get("total_cost_usd")) or 0.0, 4),
+            "headline_context_cost_usd": round(to_float(row.get("headline_context_cost_usd")) or 0.0, 4),
+            "headline_cache_read_cost_usd": round(to_float(row.get("headline_cache_read_cost_usd")) or 0.0, 4),
+            "headline_output_cost_usd": round(to_float(row.get("headline_output_cost_usd")) or 0.0, 4),
+        }
+        for row in rows
+    ]
+    if rows:
+        first_row = rows[0]
+        total_rows = to_int(first_row.get("total_rows")) or 0
+        totals = {
+            "matching_cost_usd": round(to_float(first_row.get("matching_cost_total")) or 0.0, 4),
+            "headline_context_cost_usd": round(to_float(first_row.get("headline_context_cost_total")) or 0.0, 4),
+            "headline_cache_read_cost_usd": round(to_float(first_row.get("headline_cache_read_cost_total")) or 0.0, 4),
+            "headline_output_cost_usd": round(to_float(first_row.get("headline_output_cost_total")) or 0.0, 4),
+            "prompt_window_count": total_rows,
+        }
+    else:
+        total_rows = 0
+        totals = {
+            "matching_cost_usd": 0.0,
+            "headline_context_cost_usd": 0.0,
+            "headline_cache_read_cost_usd": 0.0,
+            "headline_output_cost_usd": 0.0,
+            "prompt_window_count": 0,
+        }
+    return {
+        "rows": cleaned,
+        "totals": totals,
+        "filters": filters,
+        "total_rows": total_rows,
+    }
 
 
 def run_warehouse_query(
@@ -556,6 +939,124 @@ def cache_hit_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "date_range": [dates[0], dates[-1]] if dates else None,
     }
+
+
+def grouped_cost_payload(rows: list[dict[str, Any]], *, label_key: str) -> dict[str, Any]:
+    cleaned: list[dict[str, Any]] = []
+    total = 0.0
+    for row in rows:
+        cost = to_float(row.get("cost_usd")) or 0.0
+        total += cost
+        item = {
+            label_key: str(row.get(label_key) or "uncategorized"),
+            "cost_usd": round(cost, 4),
+            "tokens": to_float(row.get("tokens")) or 0.0,
+            "commands": to_int(row.get("commands")) or 0,
+        }
+        if "workflow_phase" in row:
+            item["workflow_phase"] = str(row.get("workflow_phase") or "")
+        if "efficiency_label" in row:
+            item["efficiency_label"] = str(row.get("efficiency_label") or "")
+        if "intent" in row:
+            item["intent"] = str(row.get("intent") or "")
+        if "motivation" in row:
+            item["motivation"] = str(row.get("motivation") or "")
+        cleaned.append(item)
+    cleaned.sort(key=lambda item: item["cost_usd"], reverse=True)
+    return {"rows": cleaned, "total_cost_usd": round(total, 4)}
+
+
+def fixing_causes_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    payload = grouped_cost_payload(rows, label_key="cause")
+    total = payload["total_cost_usd"] or 0.0
+    for row in payload["rows"]:
+        row["share_pct"] = round(row["cost_usd"] / total * 100, 2) if total else 0.0
+    return payload
+
+
+def phase_efficiency_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    cleaned: list[dict[str, Any]] = []
+    total = 0.0
+    for row in rows:
+        cost = to_float(row.get("cost_usd")) or 0.0
+        total += cost
+        cleaned.append({
+            "workflow_phase": str(row.get("workflow_phase") or "uncategorized"),
+            "efficiency_label": str(row.get("efficiency_label") or "uncategorized"),
+            "cost_usd": round(cost, 4),
+            "tokens": to_float(row.get("tokens")) or 0.0,
+            "commands": to_int(row.get("commands")) or 0,
+        })
+    cleaned.sort(key=lambda item: item["cost_usd"], reverse=True)
+    return {"rows": cleaned, "total_cost_usd": round(total, 4)}
+
+
+def ci_branch_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    payload = grouped_cost_payload(rows, label_key="workflow_phase")
+    by_intent: dict[str, float] = {}
+    for row in rows:
+        intent = str(row.get("intent") or "uncategorized")
+        by_intent[intent] = by_intent.get(intent, 0.0) + (to_float(row.get("cost_usd")) or 0.0)
+    intents = [
+        {"intent": intent, "cost_usd": round(cost, 4)}
+        for intent, cost in sorted(by_intent.items(), key=lambda item: item[1], reverse=True)
+    ]
+    payload["by_intent"] = intents
+    return payload
+
+
+def stale_cost_explorer_error() -> FileNotFoundError:
+    return FileNotFoundError("cost explorer data not generated yet")
+
+
+def load_cost_explorer_summary(cost_explorer_dir: Path, cache: TTLCache) -> dict[str, Any]:
+    cache_key = f"cost-explorer-summary:{cost_explorer_dir}"
+    payload = cache.get(cache_key)
+    if payload is not None:
+        return payload
+    summary_path = cost_explorer_dir / "summary.json"
+    if not summary_path.exists():
+        raise stale_cost_explorer_error()
+    summary = read_json_file(summary_path)
+    if not isinstance(summary.get("headline_totals"), dict):
+        raise stale_cost_explorer_error()
+    cache.set(cache_key, summary)
+    return summary
+
+
+def load_cost_explorer_windows_index(cost_explorer_dir: Path, cache: TTLCache) -> list[dict[str, str]]:
+    cache_key = f"cost-explorer-windows:{cost_explorer_dir}"
+    payload = cache.get(cache_key)
+    if payload is not None:
+        return payload
+    index_path = cost_explorer_dir / "windows.csv"
+    if not index_path.exists():
+        raise stale_cost_explorer_error()
+    with index_path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    if not rows:
+        raise stale_cost_explorer_error()
+    for row in rows:
+        if not row.get("session_id") or not row.get("prompt_index") or not row.get("window_file"):
+            raise stale_cost_explorer_error()
+    cache.set(cache_key, rows)
+    return rows
+
+
+def load_cost_explorer_window(cost_explorer_dir: Path, window_file: str, cache: TTLCache) -> dict[str, Any]:
+    if not window_file or Path(window_file).name != window_file or not window_file.endswith(".json"):
+        raise FileNotFoundError(window_file or "missing")
+    cache_key = f"cost-explorer-window:{cost_explorer_dir}:{window_file}"
+    payload = cache.get(cache_key)
+    if payload is not None:
+        return payload
+    path = cost_explorer_dir / "windows" / window_file
+    if not path.exists():
+        raise FileNotFoundError(window_file)
+    payload = read_json_file(path)
+    cache.set(cache_key, payload)
+    return payload
+
 
 def normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized = [
@@ -1477,9 +1978,13 @@ def make_handler(
     workflow_analysis_root: Path,
     cost_report_path: Path,
     cost_dashboard_path: Path,
+    fixing_cost_dashboard_path: Path,
+    cost_explorer_path: Path,
+    insights_index_path: Path,
     cost_fact_path: Path,
     chart_asset_path: Path,
     warehouse_table: str,
+    cost_explorer_table: str,
     table: str,
     project_id: str,
     backend: str,
@@ -1487,6 +1992,7 @@ def make_handler(
     metabase_api_key: str,
     metabase_database_id: int,
     bigquery_location: str,
+    cost_explorer_dir: Path,
     cache: TTLCache,
 ) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
@@ -1500,6 +2006,9 @@ def make_handler(
                 "/rules-d3-poc.html",
                 "/action-rule-graph-poc.html",
                 "/cost",
+                "/fixing-cost",
+                "/cost-explorer",
+                "/insights",
                 "/healthz",
                 "/readyz",
             }:
@@ -1536,6 +2045,24 @@ def make_handler(
                 else:
                     self.send_error(HTTPStatus.NOT_FOUND, "cost dashboard not deployed yet")
                 return
+            if parsed.path in {"/fixing-cost", "/fixing-cost.html"}:
+                if fixing_cost_dashboard_path.exists():
+                    self.send_static(fixing_cost_dashboard_path)
+                else:
+                    self.send_error(HTTPStatus.NOT_FOUND, "fixing cost dashboard not deployed yet")
+                return
+            if parsed.path in {"/cost-explorer", "/cost-explorer.html"}:
+                if cost_explorer_path.exists():
+                    self.send_static(cost_explorer_path)
+                else:
+                    self.send_error(HTTPStatus.NOT_FOUND, "cost explorer dashboard not deployed yet")
+                return
+            if parsed.path in {"/insights", "/insights.html"}:
+                if insights_index_path.exists():
+                    self.send_static(insights_index_path)
+                else:
+                    self.send_error(HTTPStatus.NOT_FOUND, "insights index not deployed yet")
+                return
             if parsed.path == "/cost-summary":
                 if cost_report_path.exists():
                     self.send_static(cost_report_path)
@@ -1556,6 +2083,24 @@ def make_handler(
                 return
             if parsed.path == "/api/usage-by-intent":
                 self.send_warehouse(parse_qs(parsed.query), warehouse_by_intent_sql, usage_by_intent_payload, "usage-by-intent")
+                return
+            if parsed.path == "/api/phase-efficiency":
+                self.send_warehouse(parse_qs(parsed.query), warehouse_phase_efficiency_sql, phase_efficiency_payload, "phase-efficiency")
+                return
+            if parsed.path == "/api/fixing-causes":
+                self.send_warehouse(parse_qs(parsed.query), warehouse_fixing_causes_sql, fixing_causes_payload, "fixing-causes")
+                return
+            if parsed.path == "/api/ci-branch-summary":
+                self.send_warehouse(parse_qs(parsed.query), warehouse_ci_branch_sql, ci_branch_payload, "ci-branch-summary")
+                return
+            if parsed.path == "/api/cost-explorer-summary":
+                self.send_cost_explorer_summary()
+                return
+            if parsed.path == "/api/cost-explorer-search":
+                self.send_cost_explorer_search(parse_qs(parsed.query))
+                return
+            if parsed.path == "/api/cost-explorer-window":
+                self.send_cost_explorer_window(parse_qs(parsed.query))
                 return
             if parsed.path == "/api/cache-hit":
                 self.send_warehouse(parse_qs(parsed.query), warehouse_cache_sql, cache_hit_payload, "cache-hit")
@@ -1656,6 +2201,111 @@ def make_handler(
             except Exception as exc:
                 self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
+        def send_cost_explorer_summary(self) -> None:
+            try:
+                self.send_json(load_cost_explorer_summary(cost_explorer_dir, cache))
+            except FileNotFoundError as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def send_cost_explorer_search(self, params: dict[str, list[str]]) -> None:
+            try:
+                load_cost_explorer_summary(cost_explorer_dir, cache)
+                start = sanitize_bound_date(params, "from")
+                end = sanitize_bound_date(params, "to")
+                issue_kind = sanitize_cost_explorer_issue_kind(first(params, "issue_kind"))
+                issue_value = (first(params, "issue_value") or "").strip()
+                if issue_value and not issue_kind:
+                    raise ValueError("issue_kind is required when issue_value is set")
+                token_bucket = sanitize_cost_explorer_token_bucket(first(params, "token_bucket"))
+                limit = clamp_cost_explorer_limit(first(params, "limit"))
+                offset = clamp_cost_explorer_offset(first(params, "offset"))
+                filters = {
+                    "from": start or "",
+                    "to": end or "",
+                    "issue_kind": issue_kind,
+                    "issue_value": issue_value,
+                    "token_bucket": token_bucket,
+                    "request_pattern": (first(params, "request_pattern") or "").strip(),
+                    "task_type": (first(params, "task_type") or "").strip(),
+                    "agent_tool_intention": (first(params, "agent_tool_intention") or "").strip(),
+                    "function_name": (first(params, "function_name") or "").strip(),
+                    "shell_verb": (first(params, "shell_verb") or "").strip(),
+                    "model": (first(params, "model") or "").strip(),
+                    "origin": (first(params, "origin") or "").strip(),
+                    "text": (first(params, "text") or "").strip(),
+                    "limit": limit,
+                    "offset": offset,
+                }
+                cache_key = "cost-explorer-search:" + json.dumps(filters, sort_keys=True)
+                payload = cache.get(cache_key)
+                if payload is None:
+                    rows = run_warehouse_query(
+                        cost_explorer_search_sql(
+                            cost_explorer_table,
+                            start=start,
+                            end=end,
+                            issue_kind=issue_kind,
+                            issue_value=issue_value,
+                            token_bucket=token_bucket,
+                            task_type=filters["task_type"],
+                            request_pattern=filters["request_pattern"],
+                            agent_tool_intention=filters["agent_tool_intention"],
+                            function_name=filters["function_name"],
+                            shell_verb=filters["shell_verb"],
+                            model=filters["model"],
+                            origin=filters["origin"],
+                            text=filters["text"],
+                            limit=limit,
+                            offset=offset,
+                        ),
+                        backend=backend,
+                        project_id=project_id,
+                        metabase_url=metabase_url,
+                        metabase_api_key=metabase_api_key,
+                        metabase_database_id=metabase_database_id,
+                    )
+                    payload = cost_explorer_search_payload(rows, filters)
+                    cache.set(cache_key, payload)
+                self.send_json(payload)
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            except FileNotFoundError as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def send_cost_explorer_window(self, params: dict[str, list[str]]) -> None:
+            try:
+                session = (first(params, "session_id") or "").strip()
+                prompt_index = (first(params, "prompt_index") or "").strip()
+                if not session or not prompt_index:
+                    raise ValueError("session_id and prompt_index are required")
+                rows = load_cost_explorer_windows_index(cost_explorer_dir, cache)
+                row = next(
+                    (
+                        item
+                        for item in rows
+                        if str(item.get("session_id") or "") == session and str(item.get("prompt_index") or "") == prompt_index
+                    ),
+                    None,
+                )
+                if row is None:
+                    self.send_json({"error": "cost explorer window not found"}, status=HTTPStatus.NOT_FOUND)
+                    return
+                payload = load_cost_explorer_window(cost_explorer_dir, str(row.get("window_file") or ""), cache)
+                self.send_json(payload)
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            except FileNotFoundError as exc:
+                if str(exc) == "cost explorer data not generated yet":
+                    self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+                else:
+                    self.send_json({"error": "cost explorer window not found"}, status=HTTPStatus.NOT_FOUND)
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
         def send_rules(self) -> None:
             try:
                 payload = cache.get("splitter-rules")
@@ -1694,9 +2344,13 @@ def main() -> int:
         args.workflow_analysis_root,
         args.cost_report_path,
         args.cost_dashboard_path,
+        args.fixing_cost_dashboard_path,
+        args.cost_explorer_path,
+        args.insights_index_path,
         args.cost_fact_path,
         args.chart_asset_path,
         args.warehouse_table,
+        derive_cost_explorer_table(args.warehouse_table),
         args.table,
         args.project_id,
         args.backend,
@@ -1704,6 +2358,7 @@ def main() -> int:
         args.metabase_api_key,
         args.metabase_database_id,
         args.bigquery_location,
+        args.cost_explorer_dir,
         cache,
     )
     server = ThreadingHTTPServer((args.host, args.port), handler)

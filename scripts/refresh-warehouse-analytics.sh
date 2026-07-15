@@ -49,6 +49,16 @@ fi
 python3 scripts/fleet_warehouse_attribution.py --stage-dir "$STAGE_DIR" --out-dir reports \
   ${WAREHOUSE_NO_COLLECT:+--no-collect}
 
+# 1a. Build the local cost-explorer artifact family from the same staged
+#     command-attribution CSV before archive/load. Fail closed when the CSV is
+#     missing, empty, or yields zero prompt windows so the explanation pages
+#     never lag behind the aggregates.
+python3 scripts/cost_explorer_report.py \
+  --input reports/usage-command-attribution-v4_5.csv \
+  --output-dir reports/cost-explorer-v1 \
+  --request-pattern-config config/request-patterns.yaml \
+  --task-categorization-config config/task-categorization.yaml
+
 # 1b. Optional durable archive of the raw sessions we just collected (opt-in via
 #     SESSION_ARCHIVE_DEST). Skipped when reusing a stage we didn't collect.
 if [[ -n "${SESSION_ARCHIVE_DEST:-}" && -z "${WAREHOUSE_NO_COLLECT:-}" ]]; then

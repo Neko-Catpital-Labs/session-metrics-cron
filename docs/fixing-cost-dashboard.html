@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fixing Cost Explainer</title>
+<style>
+  :root { --fg:#1b1f24; --sub:#57606a; --line:#e2e6ea; --bg:#f6f8fa; --panel:#fff; --link:#2563eb; --bad:#b91c1c; --tag:#eef2ff; }
+  * { box-sizing:border-box; }
+  body { font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,sans-serif; color:var(--fg); margin:0; padding:1.25rem; max-width:1280px; margin:0 auto; }
+  a { color:var(--link); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  h1 { font-size:1.55rem; margin:0 0 .15rem; }
+  h2, h3 { margin:.2rem 0 .6rem; }
+  .sub, .muted { color:var(--sub); }
+  .nav { display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:.65rem; font-size:.92rem; }
+  #err { color:var(--bad); margin:.8rem 0; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:.75rem; margin:1rem 0 1.15rem; }
+  .kpi { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:.75rem .9rem; }
+  .kpi .v { font-size:1.35rem; font-weight:700; }
+  .kpi .l { color:var(--sub); font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; }
+  .section-stack { display:flex; flex-direction:column; gap:.85rem; }
+  details.section { border:1px solid var(--line); border-radius:10px; background:var(--panel); }
+  details.section > summary { cursor:pointer; list-style:none; padding:.85rem .95rem; font-weight:600; display:flex; justify-content:space-between; gap:.8rem; align-items:center; }
+  details.section > summary::-webkit-details-marker { display:none; }
+  details.section[open] > summary { border-bottom:1px solid var(--line); }
+  .section-body { padding:.9rem .95rem 1rem; }
+  .grid-3 { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:.7rem; }
+  .grid-2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:.7rem; }
+  .link-card { display:block; border:1px solid var(--line); border-radius:10px; background:var(--bg); padding:.8rem .85rem; color:inherit; }
+  .link-card strong { display:block; margin-bottom:.15rem; }
+  .link-card .money { font-size:1.15rem; font-weight:700; }
+  .chip-list, .tag-list { display:flex; flex-wrap:wrap; gap:.4rem; }
+  .chip-link, .tag { display:inline-flex; align-items:center; gap:.28rem; border:1px solid var(--line); border-radius:999px; padding:.18rem .56rem; background:#fff; font-size:.78rem; color:inherit; }
+  .tag { background:var(--tag); border:none; color:#334155; }
+  table { width:100%; border-collapse:collapse; font-size:.86rem; }
+  th, td { padding:.42rem .5rem; border-bottom:1px solid #eef1f4; text-align:left; vertical-align:top; }
+  th.n, td.n { text-align:right; font-variant-numeric:tabular-nums; }
+  .table-wrap { overflow:auto; }
+  .canwrap { position:relative; height:310px; }
+  .legacy-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1rem; }
+  .legacy-card { border:1px solid var(--line); border-radius:10px; background:var(--bg); padding:.8rem; }
+  .note { color:var(--sub); font-size:.8rem; }
+  @media (max-width:860px){ body { padding:1rem; } }
+</style>
+<script src="/cost-assets/chart.umd.min.js"></script>
+</head>
+<body>
+  <div class="nav"><a href="/insights">← All insights</a><a href="/cost">Fleet cost</a><a href="/cost-explorer">Cost explorer</a></div>
+  <h1>Fixing cost explainer</h1>
+  <div class="sub" id="meta">Loading explorer summary…</div>
+  <div id="err"></div>
+  <div class="kpis" id="kpis"></div>
+
+  <div class="section-stack">
+    <details class="section" open>
+      <summary>Fixing / CI issues</summary>
+      <div class="section-body" id="fixingIssuesSection"></div>
+    </details>
+
+    <details class="section">
+      <summary>Task categories</summary>
+      <div class="section-body" id="taskCategoriesSection"></div>
+    </details>
+
+    <details class="section">
+      <summary>Request patterns</summary>
+      <div class="section-body" id="requestPatternsSection"></div>
+    </details>
+
+    <details class="section">
+      <summary>Tool hotspots</summary>
+      <div class="section-body" id="toolHotspotsSection"></div>
+    </details>
+
+    <details class="section">
+      <summary>Token composition</summary>
+      <div class="section-body" id="tokenCompositionSection"></div>
+    </details>
+
+    <details class="section">
+      <summary>Legacy warehouse charts</summary>
+      <div class="section-body">
+        <div class="legacy-grid">
+          <div class="legacy-card">
+            <h3>Fixing causes</h3>
+            <div class="canwrap"><canvas id="causesChart"></canvas></div>
+          </div>
+          <div class="legacy-card">
+            <h3>Cost by intent (fixing-related)</h3>
+            <div class="canwrap"><canvas id="intentChart"></canvas></div>
+          </div>
+          <div class="legacy-card">
+            <h3>Workflow phase × efficiency</h3>
+            <div class="canwrap"><canvas id="phaseChart"></canvas></div>
+          </div>
+          <div class="legacy-card">
+            <h3>CI &amp; branch-management slice</h3>
+            <div class="canwrap"><canvas id="ciChart"></canvas></div>
+          </div>
+        </div>
+        <h3 style="margin-top:1rem">Fixing cause table</h3>
+        <div class="table-wrap"><table><thead><tr><th>Cause</th><th class="n">Cost</th><th class="n">Share</th><th class="n">Commands</th></tr></thead><tbody id="causeRows"></tbody></table></div>
+      </div>
+    </details>
+  </div>
+
+<script>
+const FIXING_INTENTS = new Set([
+  "failure_diagnosis_inspection",
+  "test_execution",
+  "full_validation",
+  "ci_monitoring",
+  "branch_stack_orchestration",
+  "pr_creation_or_update",
+  "process_control",
+  "implementation_planning_inspection",
+  "repo_orientation",
+  "diff_review",
+]);
+let causesChart, intentChart, phaseChart, ciChart;
+
+function escapeHtml(value){
+  return String(value ?? "").replace(/[&<>\"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[ch]);
+}
+function money(value){ return "$" + Number(value || 0).toLocaleString(undefined, { minimumFractionDigits:2, maximumFractionDigits:2 }); }
+function count(value){ return Number(value || 0).toLocaleString(); }
+function pct(value, total){ return total ? `${(Number(value || 0) / Number(total || 1) * 100).toFixed(1)}%` : "0.0%"; }
+function fetchJson(url){
+  return fetch(url).then(async res => {
+    const data = await res.json().catch(() => ({}));
+    if(!res.ok){
+      const error = new Error((data && data.error) || (url + " HTTP " + res.status));
+      error.status = res.status;
+      throw error;
+    }
+    return data;
+  });
+}
+function explorerLink(params){
+  const query = new URLSearchParams(params);
+  return `/cost-explorer?${query.toString()}`;
+}
+function rowLink(kind, value, extra = {}){
+  const params = new URLSearchParams(extra);
+  if(kind) params.set("issue_kind", kind);
+  if(value) params.set("issue_value", value);
+  return `/cost-explorer?${params.toString()}`;
+}
+function renderKpis(summary){
+  const totals = summary.headline_totals || {};
+  document.getElementById("kpis").innerHTML = [
+    [money(totals.total_attributed_cost_usd), "Total attributed cost"],
+    [money(totals.headline_context_cost_usd), "Context / prompt-window cost"],
+    [money(totals.headline_cache_read_cost_usd), "Cache-read cost"],
+    [money(totals.headline_output_cost_usd), "Output cost"],
+    [count(totals.prompt_window_count), "Prompt windows"],
+    [count(totals.command_count), "Commands"],
+  ].map(([value, label]) => `<div class="kpi"><div class="v">${value}</div><div class="l">${label}</div></div>`).join("");
+}
+function byCause(summary, name){
+  return (summary.fixing_causes || []).find(row => row.fixing_cause === name) || { cost_usd:0, prompt_window_count:0, command_count:0 };
+}
+function renderFixingIssues(summary){
+  const cards = [
+    ["Fixing CI", "CI/merge monitoring thrash"],
+    ["Repair / test loops", "Repeated repair/test loops"],
+    ["Failure diagnosis thrash", "Failure diagnosis thrash"],
+  ].map(([label, cause]) => {
+    const row = byCause(summary, cause);
+    return `<a class="link-card" href="${escapeHtml(rowLink('fixing_cause', cause))}"><strong>${escapeHtml(label)}</strong><div class="money">${money(row.cost_usd)}</div><div class="muted">${count(row.prompt_window_count)} windows · ${count(row.command_count)} commands</div></a>`;
+  }).join("");
+  const rows = (summary.fixing_causes || []).map(row => `<tr><td><a href="${escapeHtml(rowLink('fixing_cause', row.fixing_cause))}">${escapeHtml(row.fixing_cause || '')}</a></td><td class="n">${money(row.cost_usd)}</td><td class="n">${count(row.prompt_window_count)}</td><td class="n">${count(row.command_count)}</td></tr>`).join("") || '<tr><td colspan="4" class="muted">No fixing causes.</td></tr>';
+  document.getElementById("fixingIssuesSection").innerHTML = `<div class="grid-3">${cards}</div><h3 style="margin-top:1rem">All fixing causes</h3><div class="table-wrap"><table><thead><tr><th>Cause</th><th class="n">Cost</th><th class="n">Windows</th><th class="n">Commands</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+function renderTaskCategories(summary){
+  const rows = (summary.task_categories || []).slice(0, 16).map(row => `<a class="chip-link" href="${escapeHtml(rowLink('task_type', row.task_type))}">${escapeHtml(row.label || row.task_type || '')}<span class="muted">${money(row.cost_usd)}</span></a>`).join("") || '<div class="note">No task categories.</div>';
+  document.getElementById("taskCategoriesSection").innerHTML = `<div class="chip-list">${rows}</div>`;
+}
+function renderRequestPatterns(summary){
+  const rows = (summary.request_patterns || []).slice(0, 18).map(row => `<a class="chip-link" href="${escapeHtml(rowLink('request_pattern', row.request_pattern))}">${escapeHtml(row.request_pattern || '')}<span class="muted">${money(row.cost_usd)}</span></a>`).join("") || '<div class="note">No request patterns.</div>';
+  document.getElementById("requestPatternsSection").innerHTML = `<div class="chip-list">${rows}</div>`;
+}
+function hotspotGroup(title, issueKind, rows, key){
+  return `<div><h3>${escapeHtml(title)}</h3><div class="chip-list">${(rows || []).slice(0, 12).map(row => `<a class="chip-link" href="${escapeHtml(rowLink(issueKind, row[key]))}">${escapeHtml(row[key] || '')}<span class="muted">${money(row.cost_usd)}</span></a>`).join('') || '<span class="note">No rows.</span>'}</div></div>`;
+}
+function renderToolHotspots(summary){
+  const toolHotspots = summary.tool_hotspots || {};
+  document.getElementById("toolHotspotsSection").innerHTML = `<div class="grid-2">${[
+    hotspotGroup("Functions", "function_name", toolHotspots.function_names, "function_name"),
+    hotspotGroup("Shell verbs", "shell_verb", toolHotspots.shell_verbs, "shell_verb"),
+    hotspotGroup("Tool intentions", "agent_tool_intention", toolHotspots.agent_tool_intentions, "agent_tool_intention"),
+  ].join('')}</div>`;
+}
+function renderTokenComposition(summary){
+  const token = summary.token_composition || {};
+  document.getElementById("tokenCompositionSection").innerHTML = `<div class="grid-3">
+    <a class="link-card" href="${escapeHtml(explorerLink({ token_bucket:'context' }))}"><strong>Context</strong><div class="money">${money(token.headline_context_cost_usd)}</div><div class="muted">${count(token.headline_context_tokens)} tok</div></a>
+    <a class="link-card" href="${escapeHtml(explorerLink({ token_bucket:'cache_read' }))}"><strong>Cache read</strong><div class="money">${money(token.headline_cache_read_cost_usd)}</div><div class="muted">${count(token.headline_cache_read_tokens)} tok</div></a>
+    <a class="link-card" href="${escapeHtml(explorerLink({ token_bucket:'output' }))}"><strong>Output</strong><div class="money">${money(token.headline_output_cost_usd)}</div><div class="muted">${count(token.headline_output_tokens)} tok</div></a>
+  </div><p class="note" style="margin-top:.75rem">Context folds fresh input and cache creation together. Reasoning tokens stay tracked-only: ${count(token.reasoning_tokens_tracked)} reasoning tok.</p>`;
+}
+function barChart(canvasId, labels, values, existing){
+  if(existing) existing.destroy();
+  if(!labels.length) return null;
+  const colors = ["#2563eb","#3b82f6","#60a5fa","#93c5fd","#c084fc","#f59e0b","#ef4444","#10b981","#64748b","#f97316"];
+  return new Chart(document.getElementById(canvasId), {
+    type:"bar",
+    data:{ labels, datasets:[{ data: values, backgroundColor: labels.map((_, i) => colors[i % colors.length]) }] },
+    options:{
+      indexAxis:"y",
+      maintainAspectRatio:false,
+      animation:false,
+      plugins:{ legend:{ display:false }, tooltip:{ callbacks:{ label: ctx => money(ctx.parsed.x) } } },
+      scales:{ x:{ beginAtZero:true, ticks:{ callback: value => money(value) } }, y:{ ticks:{ autoSkip:false, font:{ size:10 } } } }
+    }
+  });
+}
+function renderLegacyCharts(causes, intents, phase, ci){
+  const causeRows = (causes.rows || []).map(row => `<tr><td>${escapeHtml(row.cause || '')}</td><td class="n">${money(row.cost_usd)}</td><td class="n">${Number(row.share_pct || 0).toFixed(1)}%</td><td class="n">${count(row.commands || 0)}</td></tr>`).join("") || '<tr><td colspan="4" class="muted">No rows.</td></tr>';
+  document.getElementById("causeRows").innerHTML = causeRows;
+  causesChart = barChart("causesChart", (causes.rows || []).map(row => row.cause), (causes.rows || []).map(row => row.cost_usd), causesChart);
+  const fixingRows = (intents.rows || []).filter(row => FIXING_INTENTS.has(row.intent));
+  intentChart = barChart("intentChart", fixingRows.map(row => row.intent), fixingRows.map(row => row.cost_usd), intentChart);
+  const topPhase = (phase.rows || []).slice(0, 12);
+  phaseChart = barChart("phaseChart", topPhase.map(row => `${row.workflow_phase} · ${row.efficiency_label}`), topPhase.map(row => row.cost_usd), phaseChart);
+  const ciRows = (ci.by_intent || []).slice(0, 10);
+  ciChart = barChart("ciChart", ciRows.map(row => row.intent), ciRows.map(row => row.cost_usd), ciChart);
+}
+async function load(){
+  try{
+    const [summary, causes, intents, phase, ci] = await Promise.all([
+      fetchJson('/api/cost-explorer-summary'),
+      fetchJson('/api/fixing-causes'),
+      fetchJson('/api/usage-by-intent'),
+      fetchJson('/api/phase-efficiency'),
+      fetchJson('/api/ci-branch-summary'),
+    ]);
+    document.getElementById('meta').textContent = `Explorer summary + warehouse rollups · ${summary.date_range?.from || ''} → ${summary.date_range?.to || ''}`;
+    renderKpis(summary);
+    renderFixingIssues(summary);
+    renderTaskCategories(summary);
+    renderRequestPatterns(summary);
+    renderToolHotspots(summary);
+    renderTokenComposition(summary);
+    renderLegacyCharts(causes, intents, phase, ci);
+  }catch(error){
+    document.getElementById('err').textContent = `Failed to load fixing-cost summary: ${error.message}`;
+    document.getElementById('meta').textContent = 'Fixing-cost data is unavailable.';
+  }
+}
+load();
+</script>
+</body>
+</html>

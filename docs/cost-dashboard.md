@@ -21,12 +21,23 @@ this. Both are correct for what they measure.
 
 - `scripts/splitter_metric_tree_app.py` is the web server. Routes:
   - `/cost` → serves `docs/cost-dashboard.html` (per request; no build step).
+  - `/fixing-cost` → serves `docs/fixing-cost-dashboard.html`, the explanation page
+    backed by `reports/cost-explorer-v1/summary.json` plus the existing warehouse
+    rollups.
+  - `/cost-explorer` → serves `docs/cost-explorer.html`, the search/detail page
+    backed by `reports/cost-explorer-v1` and the high-cardinality warehouse sidecar
+    table `cost_explorer_commands_v1`.
   - `/api/cost-timeseries` → the fleet cost fact JSON (top half).
-  - `/api/cache-hit`, `/api/usage-by-intent` → BigQuery proxy for the bottom half
-    (server-side; credentials never reach the browser; 60s cache; `?from=&to=`
-    honor the dashboard's time-range control).
-- `docs/cost-dashboard.html` is the whole UI (vanilla JS + Chart.js). Edit and
-  redeploy by copying the file — no bundler.
+  - `/api/cache-hit`, `/api/usage-by-intent`, `/api/fixing-causes`,
+    `/api/phase-efficiency`, `/api/ci-branch-summary` → BigQuery proxy for the
+    warehouse charts.
+  - `/api/cost-explorer-summary` → returns `reports/cost-explorer-v1/summary.json`
+    unchanged.
+  - `/api/cost-explorer-search`, `/api/cost-explorer-window` → warehouse-backed
+    prompt-window search plus local prompt-window proof payloads.
+- `docs/cost-dashboard.html`, `docs/fixing-cost-dashboard.html`, and
+  `docs/cost-explorer.html` are the whole UI layer (vanilla JS + Chart.js). Edit
+  and redeploy by copying the file — no bundler.
 
 ## Prerequisites
 
@@ -68,9 +79,11 @@ DO1_HOST=invoker@YOUR_HOST bash scripts/refresh-cost-dashboard.sh
 
 It runs the top half (`refresh-fleet-cost-do1.sh`: collect → `cost-daily-fact.json`
 → copy to host), then the bottom half (`refresh-warehouse-analytics.sh` with
-`WAREHOUSE_NO_COLLECT=1`, reusing the stage → `bq load --replace` into
-`<project>.<dataset>.command_costs`). You can still run either script alone if you
-only want one half.
+`WAREHOUSE_NO_COLLECT=1`, reusing the stage → regenerate
+`reports/cost-explorer-v1` from `reports/usage-command-attribution-v4_5.csv`
+→ `bq load --replace` into `<project>.<dataset>.command_costs` **and**
+`<project>.<dataset>.cost_explorer_commands_v1`). You can still run either script
+alone if you only want one half.
 
 Both halves are **dedup-safe**: fleet sessions are de-duplicated by file content
 hash, and the warehouse load fully replaces the table (`bq load --replace`) with a
@@ -95,6 +108,7 @@ Rebuild from archives later (content-hash dedup makes overlapping tarballs safe)
 mkdir -p /tmp/restore
 for t in archive/fleet-sessions-*.tar.gz; do tar -xzf "$t" -C /tmp/restore; done
 python3 scripts/fleet_warehouse_attribution.py --no-collect --stage-dir /tmp/restore/fleet-sessions --out-dir reports
+python3 scripts/cost_explorer_report.py --input reports/usage-command-attribution-v4_5.csv --output-dir reports/cost-explorer-v1 --request-pattern-config config/request-patterns.yaml --task-categorization-config config/task-categorization.yaml
 python3 scripts/warehouse_cost_demo.py load-bigquery
 ```
 

@@ -104,6 +104,32 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         cache_filtered = app.warehouse_cache_sql("p.d.t", None, "2026-05-29")
         self.assertIn("session_date <= '2026-05-29'", cache_filtered)
         self.assertNotIn("session_date >=", cache_filtered)
+        fixing_sql = app.warehouse_fixing_causes_sql("p.d.t", "2026-04-01", "2026-04-30")
+        self.assertIn("Failure diagnosis thrash", fixing_sql)
+        self.assertIn("CI/merge monitoring thrash", fixing_sql)
+        ci_sql = app.warehouse_ci_branch_sql("p.d.t")
+        self.assertIn("ci_merge_monitoring", ci_sql)
+        self.assertIn("branch_stack", ci_sql)
+        phase_sql = app.warehouse_phase_efficiency_sql("p.d.t")
+        self.assertIn("workflow_phase", phase_sql)
+        self.assertIn("efficiency_label", phase_sql)
+
+    def test_fixing_payloads_shape_rows(self) -> None:
+        causes = app.fixing_causes_payload([
+            {"cause": "CI/merge monitoring thrash", "cost_usd": 10.0, "tokens": 100.0, "commands": 5},
+            {"cause": "Failure diagnosis thrash", "cost_usd": 20.0, "tokens": 200.0, "commands": 7},
+        ])
+        self.assertEqual(causes["total_cost_usd"], 30.0)
+        self.assertAlmostEqual(causes["rows"][0]["share_pct"], 66.67, places=2)
+        phase = app.phase_efficiency_payload([
+            {"workflow_phase": "repair_loop", "efficiency_label": "thrash", "cost_usd": 3.0, "tokens": 30.0, "commands": 2},
+        ])
+        self.assertEqual(phase["rows"][0]["workflow_phase"], "repair_loop")
+        ci = app.ci_branch_payload([
+            {"workflow_phase": "ci_merge_monitoring", "intent": "ci_monitoring", "motivation": "branch_stack", "cost_usd": 4.0, "tokens": 40.0, "commands": 1},
+        ])
+        self.assertEqual(ci["total_cost_usd"], 4.0)
+        self.assertEqual(ci["by_intent"][0]["intent"], "ci_monitoring")
 
     def test_sanitize_date_accepts_valid_rejects_garbage(self) -> None:
         self.assertEqual(app.sanitize_date("2026-04-01"), "2026-04-01")
@@ -155,10 +181,78 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertEqual(rows, [{"intent": "x"}])
         self.assertEqual(captured[0]["database"], 7)
 
+
+    def test_cost_explorer_loaders_read_summary_index_and_window_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            windows_dir = root / "windows"
+            windows_dir.mkdir()
+            summary = {
+                "headline_totals": {"total_attributed_cost_usd": 12.5, "prompt_window_count": 1, "command_count": 3},
+                "fixing_causes": [],
+            }
+            window_payload = {
+                "session_id": "session-a",
+                "prompt_index": "2",
+                "timeline": [{"start_command_index": 3, "end_command_index": 5, "fixing_cause": "Repeated repair/test loops"}],
+                "commands": [{"command_index": 3, "preview": "pnpm test"}],
+                "fixing_cause_rollup": [{"cause": "Repeated repair/test loops", "cost_usd": 2.5, "cost_pct": 50.0, "events": 2}],
+            }
+            (root / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+            (root / "windows.csv").write_text(
+                "session_date,session_id,prompt_index,window_file\n2026-07-15,session-a,2,session-a-p2.json\n",
+                encoding="utf-8",
+            )
+            (windows_dir / "session-a-p2.json").write_text(json.dumps(window_payload), encoding="utf-8")
+            cache = app.TTLCache(60)
+            loaded_summary = app.load_cost_explorer_summary(root, cache)
+            loaded_index = app.load_cost_explorer_windows_index(root, cache)
+            loaded_window = app.load_cost_explorer_window(root, "session-a-p2.json", cache)
+        self.assertEqual(loaded_summary["headline_totals"]["prompt_window_count"], 1)
+        self.assertEqual(loaded_index[0]["window_file"], "session-a-p2.json")
+        self.assertEqual(loaded_window["timeline"][0]["fixing_cause"], "Repeated repair/test loops")
+        self.assertEqual(loaded_window["commands"][0]["preview"], "pnpm test")
+
+    def test_cost_explorer_summary_loader_rejects_stale_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "summary.json").write_text(json.dumps({"windows": [{"session_id": "old-shape"}]}), encoding="utf-8")
+            with self.assertRaises(FileNotFoundError):
+                app.load_cost_explorer_summary(root, app.TTLCache(60))
+
+    def test_cost_explorer_limit_and_table_defaults(self) -> None:
+        self.assertEqual(app.clamp_cost_explorer_limit(None), 50)
+        self.assertEqual(app.clamp_cost_explorer_limit("500"), 200)
+        self.assertEqual(app.clamp_cost_explorer_offset(None), 0)
+        self.assertEqual(app.clamp_cost_explorer_offset("-5"), 0)
+        self.assertEqual(app.derive_cost_explorer_table("proj.ds.command_costs"), "proj.ds.cost_explorer_commands_v1")
+        with self.assertRaises(ValueError):
+            app.clamp_cost_explorer_limit("oops")
+
     def test_warehouse_routes_registered(self) -> None:
         source = SCRIPT_PATH.read_text()
         self.assertIn('"/api/usage-by-intent"', source)
         self.assertIn('"/api/cache-hit"', source)
+        self.assertIn('"/fixing-cost"', source)
+        self.assertIn('"/cost-explorer"', source)
+        self.assertIn('"/api/fixing-causes"', source)
+        self.assertIn('"/api/ci-branch-summary"', source)
+        self.assertIn('"/api/cost-explorer-summary"', source)
+        self.assertIn('"/api/cost-explorer-search"', source)
+        self.assertIn('"/api/cost-explorer-window"', source)
+
+    def test_fixing_and_explorer_dashboards_include_new_sections(self) -> None:
+        fixing_html = (REPO_ROOT / "docs" / "fixing-cost-dashboard.html").read_text()
+        self.assertIn("Fixing / CI issues", fixing_html)
+        self.assertIn("Task categories", fixing_html)
+        self.assertIn("Request patterns", fixing_html)
+        self.assertIn("Tool hotspots", fixing_html)
+        self.assertIn("Token composition", fixing_html)
+        self.assertIn("Legacy warehouse charts", fixing_html)
+        explorer_html = (REPO_ROOT / "docs" / "cost-explorer.html").read_text()
+        self.assertIn('id=\"explorerFilters\"', explorer_html)
+        self.assertIn('id=\"explorerResults\"', explorer_html)
+        self.assertIn('id=\"explorerDetail\"', explorer_html)
 
     def test_normalize_rows_keeps_score_and_weights(self) -> None:
         rows = app.normalize_rows(

@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cost Explorer</title>
+<style>
+  :root { --fg:#1b1f24; --sub:#57606a; --line:#e2e6ea; --bg:#f6f8fa; --panel:#fff; --link:#2563eb; --good:#166534; --bad:#b91c1c; --selected:#eff6ff; --selected-line:#2563eb; --highlight:#fff7cc; --tag:#eef2ff; }
+  * { box-sizing:border-box; }
+  body { font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,sans-serif; color:var(--fg); margin:0; padding:1.25rem; max-width:1480px; margin:0 auto; background:#fff; }
+  a { color:var(--link); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  h1 { font-size:1.55rem; margin:0 0 .15rem; }
+  h2, h3, h4 { margin:.2rem 0 .6rem; }
+  .sub, .muted { color:var(--sub); }
+  .nav { display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:.65rem; font-size:.92rem; }
+  #err { color:var(--bad); margin:.8rem 0; }
+  .controls { position:sticky; top:0; z-index:10; background:#fff; padding:.8rem 0 .9rem; border-bottom:1px solid var(--line); }
+  .controls-card { display:flex; flex-wrap:wrap; gap:1rem 1.2rem; align-items:flex-start; padding:.9rem; background:var(--bg); border:1px solid var(--line); border-radius:10px; }
+  .group { display:flex; flex-direction:column; gap:.35rem; min-width:0; }
+  .lbl { font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; color:var(--sub); }
+  .btns { display:flex; gap:.28rem; flex-wrap:wrap; }
+  button.seg, button.chip { border:1px solid var(--line); background:#fff; padding:.28rem .65rem; border-radius:999px; cursor:pointer; font-size:.82rem; }
+  button.seg.on, button.chip.on { background:#2563eb; color:#fff; border-color:#2563eb; }
+  button.chip { border-radius:14px; }
+  .select, .search { border:1px solid var(--line); border-radius:8px; background:#fff; padding:.42rem .55rem; font-size:.88rem; min-height:36px; }
+  .select { min-width:220px; }
+  .search { min-width:260px; width:320px; }
+  #customRange { display:none; gap:.35rem; flex-wrap:wrap; }
+  #customRange input { border:1px solid var(--line); border-radius:8px; padding:.4rem .5rem; font-size:.88rem; }
+  .chip-groups { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:.7rem 1rem; width:100%; }
+  .chip-group { display:flex; flex-direction:column; gap:.35rem; }
+  .chip-list { display:flex; flex-wrap:wrap; gap:.3rem; }
+  .summary-strip { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:.75rem; margin:1rem 0; }
+  .kpi { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:.75rem .9rem; }
+  .kpi .v { font-size:1.35rem; font-weight:700; }
+  .kpi .l { color:var(--sub); font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; }
+  .layout { display:grid; grid-template-columns:minmax(320px, 430px) minmax(0, 1fr); gap:1rem; align-items:start; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 1px 2px rgba(16,24,40,.05); }
+  .panel-head { padding:.85rem .95rem; border-bottom:1px solid var(--line); }
+  .panel-body { padding:.85rem .95rem; }
+  #explorerResults { display:flex; flex-direction:column; gap:.65rem; }
+  .result-row { border:1px solid var(--line); border-radius:10px; background:var(--bg); padding:.75rem .8rem; cursor:pointer; }
+  .result-row:hover { background:#f8fbff; }
+  .result-row.is-selected { background:var(--selected); border-color:var(--selected-line); box-shadow: inset 3px 0 0 var(--selected-line); }
+  .result-top { display:flex; justify-content:space-between; gap:.8rem; margin-bottom:.3rem; }
+  .result-title { font-weight:600; }
+  .result-money { font-weight:700; text-align:right; }
+  .result-meta { color:var(--sub); font-size:.82rem; display:flex; gap:.55rem; flex-wrap:wrap; margin-bottom:.45rem; }
+  .tags { display:flex; flex-wrap:wrap; gap:.35rem; }
+  .tag { display:inline-flex; align-items:center; gap:.25rem; padding:.16rem .52rem; border-radius:999px; background:var(--tag); color:#334155; font-size:.76rem; }
+  .detail-empty, .empty { border:1px dashed var(--line); border-radius:10px; padding:1rem; color:var(--sub); background:var(--bg); }
+  .detail-head { display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; }
+  .detail-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:.65rem; margin:.8rem 0; }
+  .detail-card { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:.7rem .8rem; }
+  .detail-card .v { font-size:1.2rem; font-weight:700; }
+  .detail-card .l { color:var(--sub); font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; }
+  .footnote { color:var(--sub); font-size:.78rem; margin-top:.4rem; }
+  table { width:100%; border-collapse:collapse; font-size:.86rem; }
+  th, td { padding:.42rem .5rem; border-bottom:1px solid #eef1f4; text-align:left; vertical-align:top; }
+  th.n, td.n { text-align:right; font-variant-numeric:tabular-nums; }
+  .timeline { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:.65rem; margin:.75rem 0 1rem; }
+  .chunk-card { border:1px solid var(--line); border-radius:10px; background:var(--bg); padding:.75rem .8rem; cursor:pointer; }
+  .chunk-card.is-active { border-color:var(--selected-line); box-shadow: inset 3px 0 0 var(--selected-line); background:var(--selected); }
+  .chunk-meta { color:var(--sub); font-size:.78rem; display:flex; flex-wrap:wrap; gap:.45rem; margin:.25rem 0 .45rem; }
+  .step-section { border:1px solid var(--line); border-radius:10px; padding:.8rem; margin:.8rem 0; background:#fff; }
+  .step-section.is-active { border-color:var(--selected-line); box-shadow: inset 3px 0 0 var(--selected-line); }
+  .step-section ul { margin:.45rem 0 0 1rem; padding:0; }
+  .table-wrap { overflow:auto; }
+  #commandTable tbody tr.is-highlighted { background:var(--highlight); }
+  #commandTable tbody tr.is-issue-match td.fixing-cause::after { content:"match"; margin-left:.4rem; font-size:.7rem; color:#1d4ed8; background:#dbeafe; border-radius:999px; padding:.08rem .35rem; }
+  #commandTable td.preview { min-width:320px; white-space:normal; word-break:break-word; }
+  @media (max-width:960px){
+    body { padding:1rem; }
+    .layout { grid-template-columns:1fr; }
+    .controls { position:static; }
+    .search { width:100%; min-width:0; }
+  }
+</style>
+</head>
+<body>
+  <div class="nav"><a href="/insights">← All insights</a><a href="/fixing-cost">Fixing cost explainer</a><a href="/cost">Fleet cost</a></div>
+  <h1>Cost Explorer</h1>
+  <div class="sub" id="meta">Loading explorer data…</div>
+  <div id="err"></div>
+
+  <section class="controls" id="explorerFilters">
+    <div class="controls-card">
+      <div class="group">
+        <span class="lbl">Time range</span>
+        <div class="btns" id="rangeBtns">
+          <button class="seg" data-range="7d">7d</button>
+          <button class="seg" data-range="30d">30d</button>
+          <button class="seg" data-range="90d">90d</button>
+          <button class="seg" data-range="ytd">ytd</button>
+          <button class="seg" data-range="all">all</button>
+          <button class="seg" data-range="custom">custom</button>
+        </div>
+        <div class="btns" id="customRange">
+          <input type="date" id="fromDate">
+          <input type="date" id="toDate">
+        </div>
+      </div>
+      <div class="group">
+        <span class="lbl">Issue kind</span>
+        <select class="select" id="issueKind">
+          <option value="fixing_cause">fixing_cause</option>
+          <option value="task_type">task_type</option>
+          <option value="request_pattern">request_pattern</option>
+          <option value="agent_tool_intention">agent_tool_intention</option>
+          <option value="function_name">function_name</option>
+          <option value="shell_verb">shell_verb</option>
+        </select>
+      </div>
+      <div class="group">
+        <span class="lbl">Issue value</span>
+        <select class="select" id="issueValue"></select>
+      </div>
+      <div class="group">
+        <span class="lbl">Token bucket</span>
+        <div class="btns" id="tokenBtns">
+          <button class="seg" data-token-bucket="all">all</button>
+          <button class="seg" data-token-bucket="context">context</button>
+          <button class="seg" data-token-bucket="cache_read">cache read</button>
+          <button class="seg" data-token-bucket="output">output</button>
+        </div>
+      </div>
+      <div class="group">
+        <span class="lbl">Text search</span>
+        <input class="search" id="textSearch" type="search" placeholder="Search short title, prompt, or task label">
+      </div>
+      <div class="chip-groups" id="chipGroups"></div>
+    </div>
+  </section>
+
+  <div class="summary-strip" id="explorerSummaryStrip"></div>
+
+  <div class="layout">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Matching prompt windows</h2>
+        <div class="sub" id="resultsMeta">Run a search to load prompt windows.</div>
+      </div>
+      <div class="panel-body" id="explorerResults"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Proof detail</h2>
+        <div class="sub">Chunk cards highlight matching command rows.</div>
+      </div>
+      <div class="panel-body" id="explorerDetail"><div class="detail-empty">Select a prompt window.</div></div>
+    </section>
+  </div>
+
+<script>
+const ISSUE_KIND_FIELDS = {
+  fixing_cause: { key: "fixing_cause", label: row => row.fixing_cause || "" },
+  task_type: { key: "task_type", label: row => row.label || row.task_type || "" },
+  request_pattern: { key: "request_pattern", label: row => row.request_pattern || "" },
+  agent_tool_intention: { key: "agent_tool_intention", label: row => row.agent_tool_intention || "" },
+  function_name: { key: "function_name", label: row => row.function_name || "" },
+  shell_verb: { key: "shell_verb", label: row => row.shell_verb || "" },
+};
+const CHIP_GROUPS = [
+  { field: "task_type", label: "Task type", summaryKey: "task_type", labelField: row => row.label || row.task_type || "" },
+  { field: "request_pattern", label: "Request pattern", summaryKey: "request_pattern", labelField: row => row.request_pattern || "" },
+  { field: "function_name", label: "Function", summaryKey: "function_name", labelField: row => row.function_name || "" },
+  { field: "shell_verb", label: "Shell verb", summaryKey: "shell_verb", labelField: row => row.shell_verb || "" },
+  { field: "model", label: "Model", summaryKey: "model", labelField: row => row.model || "" },
+  { field: "origin", label: "Origin", summaryKey: "origin", labelField: row => row.origin || "" },
+];
+let summary = null;
+let searchPayload = null;
+let selectedRow = null;
+let currentWindow = null;
+let selectedChunkIndex = -1;
+const state = {
+  range: "30d",
+  from: "",
+  to: "",
+  issue_kind: "fixing_cause",
+  issue_value: "",
+  token_bucket: "all",
+  text: "",
+  task_type: "",
+  request_pattern: "",
+  function_name: "",
+  shell_verb: "",
+  model: "",
+  origin: "",
+  agent_tool_intention: "",
+};
+
+function escapeHtml(value){
+  return String(value ?? "").replace(/[&<>\"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[ch]);
+}
+function money(value){ return "$" + Number(value || 0).toLocaleString(undefined, { minimumFractionDigits:2, maximumFractionDigits:2 }); }
+function count(value){ return Number(value || 0).toLocaleString(); }
+function tokens(value){ return Number(value || 0).toLocaleString(undefined, { maximumFractionDigits:0 }); }
+function fetchJson(url){
+  return fetch(url).then(async res => {
+    const data = await res.json().catch(() => ({}));
+    if(!res.ok){
+      const error = new Error((data && data.error) || (url + " HTTP " + res.status));
+      error.status = res.status;
+      throw error;
+    }
+    return data;
+  });
+}
+function resultKey(row){ return `${row.session_id}::${row.prompt_index}`; }
+function setActiveButtons(containerId, attr, value){
+  document.querySelectorAll(`#${containerId} .seg`).forEach(node => node.classList.toggle("on", node.dataset[attr] === value));
+}
+function latestDate(){ return (summary && summary.date_range && summary.date_range.to) || "9999-12-31"; }
+function earliestDate(){ return (summary && summary.date_range && summary.date_range.from) || "0000-00-00"; }
+function rangeBounds(){
+  const hi = latestDate();
+  if(state.range === "all") return ["", ""];
+  if(state.range === "custom") return [state.from || "", state.to || ""];
+  if(state.range === "ytd") return [hi ? `${hi.slice(0,4)}-01-01` : "", hi || ""];
+  const days = {"7d":7, "30d":30, "90d":90}[state.range] || 30;
+  if(!hi) return ["", ""];
+  const date = new Date(hi + "T00:00:00Z");
+  date.setUTCDate(date.getUTCDate() - (days - 1));
+  return [date.toISOString().slice(0,10), hi];
+}
+function applyUrlState(){
+  const params = new URLSearchParams(window.location.search);
+  if(params.get("range")) state.range = params.get("range");
+  if(params.get("from") || params.get("to")) state.range = "custom";
+  state.from = params.get("from") || state.from;
+  state.to = params.get("to") || state.to;
+  state.issue_kind = params.get("issue_kind") || "fixing_cause";
+  state.issue_value = params.get("issue_value") || "";
+  state.token_bucket = params.get("token_bucket") || "all";
+  state.text = params.get("text") || "";
+  for(const group of CHIP_GROUPS){ state[group.field] = params.get(group.field) || ""; }
+  state.agent_tool_intention = params.get("agent_tool_intention") || "";
+}
+function syncUrl(){
+  const params = new URLSearchParams();
+  params.set("issue_kind", state.issue_kind || "fixing_cause");
+  params.set("token_bucket", state.token_bucket || "all");
+  if(state.range !== "30d") params.set("range", state.range);
+  if(state.range === "custom"){
+    if(state.from) params.set("from", state.from);
+    if(state.to) params.set("to", state.to);
+  }
+  if(state.issue_value) params.set("issue_value", state.issue_value);
+  if(state.text) params.set("text", state.text);
+  if(state.agent_tool_intention) params.set("agent_tool_intention", state.agent_tool_intention);
+  for(const group of CHIP_GROUPS){ if(state[group.field]) params.set(group.field, state[group.field]); }
+  const next = params.toString();
+  history.replaceState(null, "", next ? `?${next}` : window.location.pathname);
+}
+function summaryOptions(key){ return (summary && summary.filter_options && summary.filter_options[key]) || []; }
+function renderIssueValueOptions(){
+  const select = document.getElementById("issueValue");
+  const spec = ISSUE_KIND_FIELDS[state.issue_kind] || ISSUE_KIND_FIELDS.fixing_cause;
+  const rows = summaryOptions(state.issue_kind);
+  const options = [`<option value="">All values</option>`].concat(rows.map(row => {
+    const value = row[spec.key] || "";
+    const label = spec.label(row);
+    return `<option value="${escapeHtml(value)}">${escapeHtml(label)} · ${money(row.cost_usd || 0)}</option>`;
+  }));
+  select.innerHTML = options.join("");
+  const allowedValues = new Set(rows.map(row => row[spec.key] || ""));
+  if(state.issue_value && !allowedValues.has(state.issue_value)) state.issue_value = "";
+  if(state.issue_value){
+    if(!allowedValues.has(state.issue_value)){
+      const custom = document.createElement("option");
+      custom.value = state.issue_value;
+      custom.textContent = state.issue_value;
+      select.appendChild(custom);
+    }
+    select.value = state.issue_value;
+  }else{
+    select.value = "";
+  }
+}
+function renderChipGroups(){
+  const root = document.getElementById("chipGroups");
+  root.innerHTML = CHIP_GROUPS.map(group => {
+    const rows = summaryOptions(group.summaryKey).slice(0, 12);
+    const chips = rows.map(row => {
+      const value = row[group.summaryKey] || "";
+      const label = group.labelField(row);
+      const active = state[group.field] === value ? " on" : "";
+      return `<button class="chip${active}" data-chip-field="${group.field}" data-chip-value="${escapeHtml(value)}" title="${escapeHtml(label)}">${escapeHtml(label)}</button>`;
+    }).join("") || `<span class="muted">No values.</span>`;
+    return `<div class="chip-group"><span class="lbl">${escapeHtml(group.label)}</span><div class="chip-list">${chips}</div></div>`;
+  }).join("");
+}
+function renderSummaryStrip(totals){
+  document.getElementById("explorerSummaryStrip").innerHTML = [
+    [money(totals.matching_cost_usd), "Matching cost"],
+    [money(totals.headline_context_cost_usd), "Context cost"],
+    [money(totals.headline_cache_read_cost_usd), "Cache-read cost"],
+    [money(totals.headline_output_cost_usd), "Output cost"],
+    [count(totals.prompt_window_count), "Prompt windows"],
+  ].map(([value, label]) => `<div class="kpi"><div class="v">${value}</div><div class="l">${label}</div></div>`).join("");
+}
+function renderResults(rows){
+  const root = document.getElementById("explorerResults");
+  document.getElementById("resultsMeta").textContent = `${count(searchPayload.total_rows || 0)} grouped windows before paging`;
+  if(!rows.length){
+    root.innerHTML = '<div class="empty">No prompt windows match the current filters.</div>';
+    document.getElementById("explorerDetail").innerHTML = '<div class="detail-empty">No prompt windows match the current filters.</div>';
+    currentWindow = null;
+    selectedRow = null;
+    return;
+  }
+  root.innerHTML = rows.map(row => {
+    const active = selectedRow && resultKey(selectedRow) === resultKey(row) ? " is-selected" : "";
+    return `<div class="result-row${active}" data-session-id="${escapeHtml(row.session_id)}" data-prompt-index="${escapeHtml(row.prompt_index)}">
+      <div class="result-top">
+        <div>
+          <div class="result-title">${escapeHtml(row.short_title || `${row.session_id} prompt ${row.prompt_index}`)}</div>
+          <div class="result-meta"><span>${escapeHtml(row.session_date || "")}</span><span>Prompt ${escapeHtml(row.prompt_index)}</span></div>
+        </div>
+        <div class="result-money">${money(row.matching_cost_usd)}<div class="muted">Total ${money(row.total_cost_usd)}</div></div>
+      </div>
+      <div class="tags">
+        <span class="tag">${escapeHtml(row.task_type_label || row.task_type || "")}</span>
+        <span class="tag">${escapeHtml(row.request_pattern || "")}</span>
+        <span class="tag">${escapeHtml(row.dominant_fixing_cause || "")}</span>
+      </div>
+    </div>`;
+  }).join("");
+}
+function chooseDefaultChunk(payload){
+  const chunks = payload.timeline || [];
+  if(!chunks.length) return -1;
+  const matching = state.issue_kind === "fixing_cause" && state.issue_value
+    ? chunks.filter(chunk => (chunk.fixing_cause || "") === state.issue_value)
+    : [];
+  const pool = matching.length ? matching : chunks;
+  const winner = pool.slice().sort((a, b) => Number(b.cost_usd || 0) - Number(a.cost_usd || 0))[0];
+  return chunks.indexOf(winner);
+}
+function bucketCell(cost, tokenCount){
+  return `${money(cost)}<div class="muted">${tokens(tokenCount)} tok</div>`;
+}
+function reasoningCell(tokenCount){
+  return `${tokens(tokenCount)} tok<div class="muted">tracked only</div>`;
+}
+function renderDetail(){
+  const root = document.getElementById("explorerDetail");
+  if(!currentWindow || !selectedRow){
+    root.innerHTML = '<div class="detail-empty">Select a prompt window.</div>';
+    return;
+  }
+  const payload = currentWindow;
+  const timeline = payload.timeline || [];
+  const activeChunk = timeline[selectedChunkIndex] || null;
+  root.innerHTML = `
+    <div class="detail-head">
+      <div>
+        <h3>${escapeHtml(payload.short_title || `${payload.session_id} prompt ${payload.prompt_index}`)}</h3>
+        <div class="sub">${escapeHtml(payload.session_id || "")} · prompt ${escapeHtml(payload.prompt_index || "")} · ${escapeHtml(payload.session_date || "")}</div>
+      </div>
+      <div class="muted">Total ${money(payload.total_cost_usd || 0)}</div>
+    </div>
+    <div class="tags">
+      <span class="tag">${escapeHtml(payload.task_type_label || "")}</span>
+      <span class="tag">${escapeHtml(payload.request_pattern || "")}</span>
+      <span class="tag">${escapeHtml(payload.dominant_fixing_cause || "")}</span>
+      <span class="tag">${escapeHtml(selectedRow.model || "")}</span>
+      <span class="tag">${escapeHtml(selectedRow.origin || "")}</span>
+    </div>
+    <div class="detail-grid">
+      <div class="detail-card"><div class="v">${money(payload.headline_context_cost_usd || 0)}</div><div class="l">Context</div><div class="muted">${tokens(payload.headline_context_tokens || 0)} tok</div></div>
+      <div class="detail-card"><div class="v">${money(payload.headline_cache_read_cost_usd || 0)}</div><div class="l">Cache read</div><div class="muted">${tokens(payload.headline_cache_read_tokens || 0)} tok</div></div>
+      <div class="detail-card"><div class="v">${money(payload.headline_output_cost_usd || 0)}</div><div class="l">Output</div><div class="muted">${tokens(payload.headline_output_tokens || 0)} tok</div></div>
+    </div>
+    <div class="footnote">Context rolls fresh input and cache creation together. Reasoning tokens stay tracked-only: ${tokens(payload.reasoning_tokens_tracked || 0)} reasoning tok.</div>
+    <h4>Fixing-cause rollup</h4>
+    <div class="table-wrap"><table><thead><tr><th>Cause</th><th class="n">Cost</th><th class="n">Share</th><th class="n">Events</th></tr></thead><tbody>
+      ${(payload.fixing_cause_rollup || []).map(row => `<tr><td>${escapeHtml(row.cause || "")}</td><td class="n">${money(row.cost_usd || 0)}</td><td class="n">${Number(row.cost_pct || 0).toFixed(1)}%</td><td class="n">${count(row.events || 0)}</td></tr>`).join("") || '<tr><td colspan="4" class="muted">No fixing-cause rows.</td></tr>'}
+    </tbody></table></div>
+    <h4>Chunk timeline</h4>
+    <div class="timeline" id="chunkTimeline">
+      ${timeline.map((chunk, index) => `<div class="chunk-card${index === selectedChunkIndex ? ' is-active' : ''}" data-chunk-index="${index}">
+        <div><strong>${escapeHtml(chunk.start_command_index)}-${escapeHtml(chunk.end_command_index)}</strong></div>
+        <div class="chunk-meta"><span>${escapeHtml(chunk.workflow_phase || "")}</span><span>${escapeHtml(chunk.efficiency_label || "")}</span><span>${escapeHtml(chunk.fixing_cause || "")}</span><span>${money(chunk.cost_usd || 0)}</span></div>
+        <div class="muted">Context ${money(chunk.headline_context_cost_usd || 0)} · Cache ${money(chunk.headline_cache_read_cost_usd || 0)} · Output ${money(chunk.headline_output_cost_usd || 0)}</div>
+      </div>`).join("") || '<div class="empty">No chunk timeline.</div>'}
+    </div>
+    <h4>Prompt steps</h4>
+    ${((timeline.map((chunk, index) => `<section class="step-section${index === selectedChunkIndex ? ' is-active' : ''}">
+      <h4>Step ${index + 1} · ${escapeHtml(chunk.workflow_phase || "")}</h4>
+      <div class="chunk-meta"><span>${escapeHtml(chunk.efficiency_label || "")}</span><span>${escapeHtml(chunk.fixing_cause || 'No fixing cause')}</span><span>Commands ${escapeHtml(chunk.start_command_index)}-${escapeHtml(chunk.end_command_index)}</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Metric</th><th class="n">Value</th></tr></thead><tbody>
+        <tr><td>Total cost</td><td class="n">${money(chunk.cost_usd || 0)}</td></tr>
+        <tr><td>Context</td><td class="n">${bucketCell(chunk.headline_context_cost_usd || 0, chunk.headline_context_tokens || 0)}</td></tr>
+        <tr><td>Cache read</td><td class="n">${bucketCell(chunk.headline_cache_read_cost_usd || 0, chunk.headline_cache_read_tokens || 0)}</td></tr>
+        <tr><td>Output</td><td class="n">${bucketCell(chunk.headline_output_cost_usd || 0, chunk.headline_output_tokens || 0)}</td></tr>
+        <tr><td>Reasoning</td><td class="n">${reasoningCell(chunk.reasoning_tokens || 0)}</td></tr>
+      </tbody></table></div>
+      <ul>${(chunk.examples || []).map(example => `<li>${escapeHtml(example)}</li>`).join("") || '<li class="muted">No examples.</li>'}</ul>
+    </section>`).join("")) || '<div class="empty">No prompt steps.</div>')}
+    <h4>Command table</h4>
+    <div class="table-wrap">
+      <table id="commandTable">
+        <thead><tr><th>#</th><th class="n">Cost</th><th class="n">Context</th><th class="n">Cache read</th><th class="n">Output</th><th class="n">Reasoning</th><th>Phase</th><th>Fixing cause</th><th>Tool</th><th>Preview</th></tr></thead>
+        <tbody>
+          ${(payload.commands || []).map(row => {
+            const highlighted = activeChunk && Number(row.command_index) >= Number(activeChunk.start_command_index) && Number(row.command_index) <= Number(activeChunk.end_command_index);
+            const issueMatch = state.issue_kind === 'fixing_cause' && state.issue_value && (row.fixing_cause || '') === state.issue_value;
+            const tool = [row.function_name, row.shell_verb].filter(Boolean).join(' / ');
+            return `<tr class="${highlighted ? 'is-highlighted' : ''} ${issueMatch ? 'is-issue-match' : ''}"><td class="n">${escapeHtml(row.command_index)}</td><td class="n">${money(row.cost_usd || 0)}</td><td class="n">${bucketCell(row.headline_context_cost_usd || 0, row.headline_context_tokens || 0)}</td><td class="n">${bucketCell(row.headline_cache_read_cost_usd || 0, row.headline_cache_read_tokens || 0)}</td><td class="n">${bucketCell(row.headline_output_cost_usd || 0, row.headline_output_tokens || 0)}</td><td class="n">${reasoningCell(row.allocated_reasoning_tokens || 0)}</td><td>${escapeHtml(row.workflow_phase || '')}</td><td class="fixing-cause">${escapeHtml(row.fixing_cause || '')}</td><td>${escapeHtml(tool)}</td><td class="preview">${escapeHtml(row.preview || '')}</td></tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>`;
+}
+async function loadWindow(row){
+  selectedRow = row;
+  currentWindow = null;
+  selectedChunkIndex = -1;
+  renderResults(searchPayload.rows || []);
+  document.getElementById("explorerDetail").innerHTML = '<div class="detail-empty">Loading proof payload…</div>';
+  try{
+    const payload = await fetchJson(`/api/cost-explorer-window?session_id=${encodeURIComponent(row.session_id)}&prompt_index=${encodeURIComponent(row.prompt_index)}`);
+    currentWindow = payload;
+    selectedChunkIndex = chooseDefaultChunk(payload);
+    renderResults(searchPayload.rows || []);
+    renderDetail();
+  }catch(error){
+    if(error.status === 404){
+      document.getElementById("explorerDetail").innerHTML = '<div class="detail-empty">Proof payload missing; rerun the warehouse refresh.</div>';
+      return;
+    }
+    document.getElementById("explorerDetail").innerHTML = `<div class="detail-empty">Failed to load proof payload: ${escapeHtml(error.message || 'unknown error')}</div>`;
+  }
+}
+async function runSearch(){
+  syncUrl();
+  const [from, to] = rangeBounds();
+  const params = new URLSearchParams();
+  if(from) params.set("from", from);
+  if(to) params.set("to", to);
+  params.set("issue_kind", state.issue_kind || "fixing_cause");
+  if(state.issue_value) params.set("issue_value", state.issue_value);
+  params.set("token_bucket", state.token_bucket || "all");
+  if(state.text) params.set("text", state.text);
+  if(state.task_type) params.set("task_type", state.task_type);
+  if(state.request_pattern) params.set("request_pattern", state.request_pattern);
+  if(state.function_name) params.set("function_name", state.function_name);
+  if(state.shell_verb) params.set("shell_verb", state.shell_verb);
+  if(state.model) params.set("model", state.model);
+  if(state.origin) params.set("origin", state.origin);
+  if(state.agent_tool_intention) params.set("agent_tool_intention", state.agent_tool_intention);
+  params.set("limit", "50");
+  params.set("offset", "0");
+  try{
+    document.getElementById("err").textContent = "";
+    const payload = await fetchJson(`/api/cost-explorer-search?${params.toString()}`);
+    searchPayload = payload;
+    renderSummaryStrip(payload.totals || {});
+    renderResults(payload.rows || []);
+    if((payload.rows || []).length){
+      const keep = selectedRow && (payload.rows || []).find(row => resultKey(row) === resultKey(selectedRow));
+      await loadWindow(keep || payload.rows[0]);
+    }
+  }catch(error){
+    document.getElementById("err").textContent = `Failed to load explorer search: ${error.message}`;
+    document.getElementById("explorerResults").innerHTML = '<div class="empty">No prompt windows match the current filters.</div>';
+    document.getElementById("explorerDetail").innerHTML = '<div class="detail-empty">Select a prompt window.</div>';
+  }
+}
+function bindControls(){
+  document.getElementById("issueKind").addEventListener("change", event => {
+    state.issue_kind = event.target.value || "fixing_cause";
+    state.issue_value = "";
+    renderIssueValueOptions();
+    runSearch();
+  });
+  document.getElementById("issueValue").addEventListener("change", event => {
+    state.issue_value = event.target.value || "";
+    runSearch();
+  });
+  document.getElementById("textSearch").addEventListener("change", event => { state.text = event.target.value.trim(); runSearch(); });
+  document.getElementById("textSearch").addEventListener("keydown", event => {
+    if(event.key === "Enter"){ state.text = event.target.value.trim(); runSearch(); }
+  });
+  document.querySelectorAll("#rangeBtns .seg").forEach(button => button.addEventListener("click", () => {
+    state.range = button.dataset.range || "30d";
+    document.getElementById("customRange").style.display = state.range === "custom" ? "flex" : "none";
+    setActiveButtons("rangeBtns", "range", state.range);
+    if(state.range !== "custom") runSearch();
+  }));
+  document.querySelectorAll("#tokenBtns .seg").forEach(button => button.addEventListener("click", () => {
+    state.token_bucket = button.dataset.tokenBucket || "all";
+    setActiveButtons("tokenBtns", "tokenBucket", state.token_bucket);
+    runSearch();
+  }));
+  document.getElementById("fromDate").addEventListener("change", event => { state.from = event.target.value; if(state.range === "custom") runSearch(); });
+  document.getElementById("toDate").addEventListener("change", event => { state.to = event.target.value; if(state.range === "custom") runSearch(); });
+  document.getElementById("chipGroups").addEventListener("click", event => {
+    const chip = event.target.closest("button[data-chip-field][data-chip-value]");
+    if(!chip) return;
+    const field = chip.dataset.chipField;
+    const value = chip.dataset.chipValue || "";
+    state[field] = state[field] === value ? "" : value;
+    renderChipGroups();
+    runSearch();
+  });
+  document.getElementById("explorerResults").addEventListener("click", event => {
+    const row = event.target.closest(".result-row[data-session-id][data-prompt-index]");
+    if(!row || !searchPayload) return;
+    const target = (searchPayload.rows || []).find(item => String(item.session_id) === String(row.dataset.sessionId) && String(item.prompt_index) === String(row.dataset.promptIndex));
+    if(target) loadWindow(target);
+  });
+  document.getElementById("explorerDetail").addEventListener("click", event => {
+    const chunk = event.target.closest(".chunk-card[data-chunk-index]");
+    if(!chunk || !currentWindow) return;
+    selectedChunkIndex = Number(chunk.dataset.chunkIndex || -1);
+    renderDetail();
+  });
+}
+async function init(){
+  applyUrlState();
+  bindControls();
+  try{
+    summary = await fetchJson("/api/cost-explorer-summary");
+    document.getElementById("meta").textContent = `Warehouse-backed detail · ${summary.date_range?.from || ''} → ${summary.date_range?.to || ''} · ${count(summary.headline_totals?.command_count || 0)} commands indexed`;
+    document.getElementById("issueKind").value = state.issue_kind;
+    document.getElementById("textSearch").value = state.text;
+    document.getElementById("fromDate").value = state.from;
+    document.getElementById("toDate").value = state.to;
+    document.getElementById("customRange").style.display = state.range === "custom" ? "flex" : "none";
+    setActiveButtons("rangeBtns", "range", state.range);
+    setActiveButtons("tokenBtns", "tokenBucket", state.token_bucket);
+    renderIssueValueOptions();
+    renderChipGroups();
+    await runSearch();
+  }catch(error){
+    document.getElementById("err").textContent = `Failed to load explorer summary: ${error.message}`;
+    document.getElementById("meta").textContent = "Cost explorer data is unavailable.";
+  }
+}
+init();
+</script>
+</body>
+</html>

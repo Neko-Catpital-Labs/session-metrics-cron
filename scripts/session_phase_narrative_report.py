@@ -22,8 +22,6 @@ DEFAULT_INPUT = REPO_ROOT / "reports" / "usage-command-attribution-v4_5.csv"
 DEFAULT_OUTPUT = REPO_ROOT / "reports" / "session-phase-narratives-v1"
 SCHEMA_VERSION = "usage_command_attribution_v4_5"
 CLASSIFICATION_REVISION = "classifier_v4_5"
-DEFAULT_START_DATE = "2026-04-29"
-DEFAULT_END_DATE = "2026-05-29"
 
 PHASES = [
     "orientation",
@@ -37,6 +35,14 @@ PHASES = [
     "operational_waiting",
 ]
 EFFICIENCY_LABELS = ["productive", "expected_overhead", "thrash"]
+
+FIXING_CAUSE_LABELS = [
+    "Failure diagnosis thrash",
+    "Expected failure investigation overhead",
+    "Repeated repair/test loops",
+    "Orientation in service of fixing",
+    "CI/merge monitoring thrash",
+]
 
 
 @dataclass
@@ -52,8 +58,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate prompt-window phase narrative reports.")
     parser.add_argument("--input", default=str(DEFAULT_INPUT))
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT))
-    parser.add_argument("--start-date", default=DEFAULT_START_DATE)
-    parser.add_argument("--end-date", default=DEFAULT_END_DATE)
+    parser.add_argument("--start-date")
+    parser.add_argument("--end-date")
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--llm-review", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--codex-timeout-seconds", type=int, default=120)
@@ -85,6 +91,8 @@ def pct(value: float, total: float) -> str:
 def compact(text: str, limit: int = 220) -> str:
     value = " ".join(str(text or "").split())
     return value if len(value) <= limit else value[: max(0, limit - 3)].rstrip() + "..."
+def deterministic_short_title(prompt: str) -> str:
+    return compact(prompt, 80)
 
 
 def session_id(row: dict[str, str]) -> str:
@@ -101,6 +109,33 @@ def rows_cost(rows: list[dict[str, str]] | list[ClassifiedRow]) -> float:
         row = item.row if isinstance(item, ClassifiedRow) else item
         total += row_cost(row)
     return total
+
+
+def fixing_cause_for(workflow_phase: str, efficiency_label: str) -> str | None:
+    if workflow_phase == "failure_diagnosis" and efficiency_label == "thrash":
+        return FIXING_CAUSE_LABELS[0]
+    if workflow_phase == "failure_diagnosis" and efficiency_label == "expected_overhead":
+        return FIXING_CAUSE_LABELS[1]
+    if workflow_phase == "repair_loop":
+        return FIXING_CAUSE_LABELS[2]
+    if workflow_phase == "orientation":
+        return FIXING_CAUSE_LABELS[3]
+    if workflow_phase == "ci_merge_monitoring" and efficiency_label == "thrash":
+        return FIXING_CAUSE_LABELS[4]
+    return None
+
+
+def command_preview(row: dict[str, str]) -> str:
+    for value in (
+        row.get("command_preview"),
+        row.get("stdin_preview"),
+        row.get("terminal_context_parent_command_preview"),
+        row.get("function_name"),
+    ):
+        preview = compact(value or "", 220)
+        if preview:
+            return preview
+    return ""
 
 
 def event_text(row: dict[str, str]) -> str:
@@ -339,7 +374,7 @@ def classify_prompt_window(rows: list[dict[str, str]]) -> list[ClassifiedRow]:
     return classified
 
 
-def load_rows(path: Path, start_date: str, end_date: str) -> list[dict[str, str]]:
+def load_rows(path: Path, start_date: str | None, end_date: str | None) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as handle:
         rows = []
         for row in csv.DictReader(handle):
@@ -347,7 +382,10 @@ def load_rows(path: Path, start_date: str, end_date: str) -> list[dict[str, str]
                 continue
             if row.get("classification_revision") != CLASSIFICATION_REVISION:
                 continue
-            if not (start_date <= (row.get("session_date") or "") <= end_date):
+            session_date = row.get("session_date") or ""
+            if start_date and session_date < start_date:
+                continue
+            if end_date and session_date > end_date:
                 continue
             rows.append(row)
         return rows
@@ -374,6 +412,46 @@ def rollup_classified(classified: list[ClassifiedRow], key: str) -> list[dict[st
         }
         for name, items in sorted(grouped.items(), key=lambda pair: rows_cost(pair[1]), reverse=True)
     ]
+
+
+def fixing_cause_rollup(classified: list[ClassifiedRow]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[ClassifiedRow]] = defaultdict(list)
+    total = rows_cost(classified)
+    for item in classified:
+        cause = fixing_cause_for(item.workflow_phase, item.efficiency_label)
+        if cause:
+            grouped[cause].append(item)
+    return [
+        {
+            "cause": cause,
+            "cost_usd": rows_cost(items),
+            "cost_pct": round(rows_cost(items) / total * 100.0, 4) if total else 0.0,
+            "events": len(items),
+        }
+        for cause, items in sorted(grouped.items(), key=lambda item: rows_cost(item[1]), reverse=True)
+    ]
+
+
+def command_rows(classified: list[ClassifiedRow]) -> list[dict[str, Any]]:
+    commands: list[dict[str, Any]] = []
+    for item in sorted(classified, key=lambda current: to_int(current.row.get("command_index"))):
+        row = item.row
+        commands.append(
+            {
+                "command_index": to_int(row.get("command_index")),
+                "cost_usd": row_cost(row),
+                "workflow_phase": item.workflow_phase,
+                "efficiency_label": item.efficiency_label,
+                "fixing_cause": fixing_cause_for(item.workflow_phase, item.efficiency_label),
+                "agent_tool_intention": row.get("agent_tool_intention") or "",
+                "function_name": row.get("function_name") or "",
+                "shell_verb": row.get("shell_verb") or "",
+                "preview": command_preview(row),
+                "stdin_preview": compact(row.get("stdin_preview") or "", 220),
+                "terminal_context_parent_command_preview": compact(row.get("terminal_context_parent_command_preview") or "", 220),
+            }
+        )
+    return commands
 
 
 def top_events(rows: list[dict[str, str]], limit: int = 10) -> list[dict[str, Any]]:
@@ -417,9 +495,11 @@ def segment_payload(items: list[ClassifiedRow], key: tuple[str, str]) -> dict[st
             commands.append(preview)
         if len(commands) >= 3:
             break
+    fixing_cause = fixing_cause_for(key[0], key[1])
     return {
         "workflow_phase": key[0],
         "efficiency_label": key[1],
+        "fixing_cause": fixing_cause,
         "cost_usd": rows_cost(rows),
         "events": len(rows),
         "start_command_index": to_int(rows[0].get("command_index")),
@@ -454,7 +534,7 @@ def deterministic_narrative(payload: dict[str, Any]) -> dict[str, Any]:
         )
     return {
         "review_status": "deterministic_only",
-        "short_title": compact(prompt, 80),
+        "short_title": deterministic_short_title(prompt),
         "what_happened": bullets,
         "why_expensive": why,
         "confidence": "medium",
@@ -532,6 +612,7 @@ def build_window_payload(
     sid, prompt_index = key
     ordered = sorted(rows, key=lambda row: to_int(row.get("command_index")))
     classified = classify_prompt_window(ordered)
+    cause_rollup = fixing_cause_rollup(classified)
     payload = {
         "rank": rank,
         "session_id": sid,
@@ -544,7 +625,10 @@ def build_window_payload(
         "event_count": len(ordered),
         "phase_rollup": rollup_classified(classified, "workflow_phase"),
         "efficiency_rollup": rollup_classified(classified, "efficiency_label"),
+        "fixing_cause_rollup": cause_rollup,
+        "dominant_fixing_cause": cause_rollup[0]["cause"] if cause_rollup else "",
         "timeline": segment_timeline(classified),
+        "commands": command_rows(classified),
         "top_events": top_events(ordered),
         "agent_tool_intentions": [
             {"agent_tool_intention": name, "events": count}
@@ -567,7 +651,8 @@ def safe_slug(value: str, limit: int = 90) -> str:
 
 def write_window_files(payload: dict[str, Any], windows_dir: Path) -> tuple[Path, Path]:
     name = f"{payload['rank']:03d}-{safe_slug(payload['session_id'], 64)}-p{payload['prompt_index']}"
-    json_path = windows_dir / f"{name}.json"
+    payload["window_file"] = f"{name}.json"
+    json_path = windows_dir / payload["window_file"]
     md_path = windows_dir / f"{name}.md"
     json_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
     md_path.write_text(window_markdown(payload))
@@ -642,6 +727,9 @@ def write_summary(payloads: list[dict[str, Any]], output_dir: Path) -> None:
                 "session_date": payload["session_date"],
                 "total_cost_usd": payload["total_cost_usd"],
                 "event_count": payload["event_count"],
+                "window_file": payload.get("window_file", ""),
+                "dominant_fixing_cause": payload.get("dominant_fixing_cause", ""),
+                "fixing_cause_rollup": payload.get("fixing_cause_rollup", []),
                 "short_title": payload["narrative"].get("short_title", ""),
                 "review_status": payload["narrative"].get("review_status", ""),
             }
@@ -651,7 +739,7 @@ def write_summary(payloads: list[dict[str, Any]], output_dir: Path) -> None:
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
 
     with (output_dir / "summary.csv").open("w", newline="", encoding="utf-8") as handle:
-        fieldnames = ["rank", "session_id", "prompt_index", "session_date", "total_cost_usd", "event_count", "short_title", "review_status"]
+        fieldnames = ["rank", "session_id", "prompt_index", "session_date", "total_cost_usd", "event_count", "window_file", "dominant_fixing_cause", "fixing_cause_rollup", "short_title", "review_status"]
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(summary["windows"])

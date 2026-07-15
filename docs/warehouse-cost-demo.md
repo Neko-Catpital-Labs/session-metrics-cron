@@ -1,11 +1,19 @@
 # Publishing Analytics Warehouse Demo
 
-The `session-metrics` publishing analytics demo exports the cleaned v4.5 command attribution report into a compact one-row-per-command table, then can load the same table into BigQuery and ClickHouse for matching Metabase dashboards.
+The `session-metrics` warehouse demo now publishes two tables from the same
+v4.5 command-attribution run:
+
+- `command_costs` — the compact legacy one-row-per-command table that keeps only
+  the stable phase/dimension/cost fields used by the existing `/cost` charts.
+- `cost_explorer_commands_v1` — the high-cardinality sidecar that keeps readable
+  previews, request/task taxonomy, fixing-cause labels, and the hybrid
+  context/cache/output buckets used by `/cost-explorer`.
 
 Source data:
 
 ```bash
 reports/usage-command-attribution-v4_5.csv
+reports/cost-explorer-v1/commands.csv
 ```
 
 One-command full run:
@@ -14,21 +22,40 @@ One-command full run:
 bash scripts/run-warehouse-analytics.sh
 ```
 
-That wrapper validates the local export, loads BigQuery, loads ClickHouse, and creates the matching Metabase dashboards. See `docs/run-your-own-analytics.md` for the full setup.
+That wrapper validates the local exports, loads BigQuery, loads ClickHouse, and
+creates the matching Metabase dashboards. See `docs/run-your-own-analytics.md`
+for the full setup.
 
-Local export only:
+Local validation:
 
 ```bash
+python3 scripts/cost_explorer_report.py --input reports/usage-command-attribution-v4_5.csv --output-dir reports/cost-explorer-v1 --request-pattern-config config/request-patterns.yaml --task-categorization-config config/task-categorization.yaml
 python3 scripts/warehouse_cost_demo.py validate-local --expect-full-row-count
 ```
 
-The normalized output is:
+The compact normalized output is:
 
 ```bash
 reports/warehouse-command-costs-v4_5.csv
 ```
 
-It keeps `session_id`, phase fields, core dimensions, token metrics, total allocated cost, and numeric component-cost columns. It intentionally drops previews, hashes, file paths, `workdir`, delegated task text, terminal context fields, confidence/source/debug metadata, and it does not create a `usage_command_cost_component` fanout table.
+The local explorer artifact family is:
+
+```bash
+reports/cost-explorer-v1/
+├── summary.json
+├── summary.md
+├── windows.csv
+├── commands.csv
+└── windows/<window_file>.json
+```
+
+`command_costs` intentionally drops previews, hashes, file paths, `workdir`,
+delegated task text, terminal context fields, confidence/source/debug metadata,
+and it does not create a `usage_command_cost_component` fanout table.
+`cost_explorer_commands_v1` keeps the readable fields the explorer needs, but it
+still excludes the hash-only debug columns such as `command_hash`,
+`stdin_hash`, and `delegated_task_hash`.
 
 ## Credentials
 
@@ -81,3 +108,11 @@ export METABASE_CLICKHOUSE_DATABASE_ID=...
 The dashboards created are `Session Cost Demo - BigQuery` and `Session Cost Demo - ClickHouse`, each with matching cost, token, phase, efficiency, intention, origin, model, and session drilldown cards.
 
 By default the Metabase command queries each card after creation and fails if a card returns no rows. Use `--skip-card-validation` only when the warehouse connection has not finished syncing yet.
+The explorer page reads the local artifact family plus the new APIs on
+`scripts/splitter_metric_tree_app.py`:
+
+- `/cost-explorer`
+- `/api/cost-explorer-summary`
+- `/api/cost-explorer-search`
+- `/api/cost-explorer-window`
+

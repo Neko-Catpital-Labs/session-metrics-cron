@@ -27,9 +27,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT = REPO_ROOT / "reports" / "usage-command-attribution-v4_5.csv"
 DEFAULT_OUTPUT = REPO_ROOT / "reports" / "warehouse-command-costs-v4_5.csv"
 DEFAULT_LOCAL_SUMMARY = REPO_ROOT / "reports" / "warehouse-command-costs-v4_5-summary.json"
+DEFAULT_EXPLORER_INPUT = REPO_ROOT / "reports" / "cost-explorer-v1" / "commands.csv"
 DEFAULT_DATASET = "session_metrics_demo"
 DEFAULT_TABLE = "command_costs"
-EXPECTED_FULL_ROW_COUNT = 115_868
+DEFAULT_EXPLORER_TABLE = "cost_explorer_commands_v1"
+EXPECTED_FULL_ROW_COUNT = 261_576
 
 DIMENSION_COLUMNS = [
     "workflow_phase",
@@ -75,6 +77,28 @@ OUTPUT_COLUMNS = [
 INTEGER_COLUMNS = {"prompt_index", "command_index"}
 DATE_COLUMNS = {"session_date"}
 NUMERIC_COLUMNS = set(OUTPUT_COLUMNS) - set(DIMENSION_COLUMNS) - {"session_date", "session_id"}
+EXPLORER_INTEGER_COLUMNS = {"prompt_index", "command_index", "request_pattern_depth"}
+EXPLORER_DATE_COLUMNS = {"session_date"}
+EXPLORER_NUMERIC_COLUMNS = set(NUMERIC_COLUMNS) | {
+    "headline_context_tokens",
+    "headline_context_cost_usd",
+    "headline_cache_read_tokens",
+    "headline_cache_read_cost_usd",
+    "headline_output_tokens",
+    "headline_output_cost_usd",
+}
+EXPLORER_FORBIDDEN_COLUMNS = {
+    "command_hash",
+    "stdin_hash",
+    "delegated_task_hash",
+    "terminal_context_parent_command_hash",
+}
+
+
+def explorer_commands_columns() -> list[str]:
+    from cost_explorer_report import COMMANDS_COLUMNS
+
+    return list(COMMANDS_COLUMNS)
 
 VIEW_QUERIES = {
     "daily_cost_by_phase": """
@@ -197,6 +221,7 @@ def parse_args() -> argparse.Namespace:
     bq_parser.add_argument("--project-id", default=os.environ.get("BIGQUERY_PROJECT_ID", ""))
     bq_parser.add_argument("--dataset", default=os.environ.get("BIGQUERY_DATASET", DEFAULT_DATASET))
     bq_parser.add_argument("--table", default=DEFAULT_TABLE)
+    bq_parser.add_argument("--explorer-table", default=DEFAULT_EXPLORER_TABLE)
     bq_parser.add_argument("--skip-export", action="store_true")
 
     ch_parser = subparsers.add_parser("load-clickhouse", help="Load normalized CSV into ClickHouse Cloud over HTTPS.")
@@ -207,6 +232,7 @@ def parse_args() -> argparse.Namespace:
     ch_parser.add_argument("--password", default=os.environ.get("CLICKHOUSE_PASSWORD", ""))
     ch_parser.add_argument("--database", default=os.environ.get("CLICKHOUSE_DATABASE", DEFAULT_DATASET))
     ch_parser.add_argument("--table", default=DEFAULT_TABLE)
+    ch_parser.add_argument("--explorer-table", default=DEFAULT_EXPLORER_TABLE)
     ch_parser.add_argument("--skip-export", action="store_true")
 
     mb_parser = subparsers.add_parser("create-metabase", help="Create Metabase databases, dashboards, and cards.")
@@ -234,6 +260,7 @@ def add_export_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input", default=str(DEFAULT_INPUT))
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--summary-output", default=str(DEFAULT_LOCAL_SUMMARY))
+    parser.add_argument("--explorer-input", default=str(DEFAULT_EXPLORER_INPUT))
     parser.add_argument("--pricing-table", default=os.environ.get("USAGE_PRICING_TABLE", ""))
     parser.add_argument("--limit", type=int, default=0, help="Limit source rows for fixtures or smoke tests.")
 
@@ -394,7 +421,6 @@ def read_summary_from_csv(path: Path) -> ExportSummary:
             summary.total_output_tokens += to_float(row.get("allocated_output_tokens"))
     return summary
 
-
 def validate_local(args: argparse.Namespace) -> None:
     summary = export_csv(Path(args.input), Path(args.output), Path(args.summary_output), args.pricing_table, args.limit)
     missing = [column for column in OUTPUT_COLUMNS if column not in csv_header(Path(args.output))]
@@ -409,7 +435,8 @@ def validate_local(args: argparse.Namespace) -> None:
         raise RuntimeError("component fanout table was generated unexpectedly")
     if args.expect_full_row_count and summary.rows != EXPECTED_FULL_ROW_COUNT:
         raise RuntimeError(f"expected {EXPECTED_FULL_ROW_COUNT} rows, got {summary.rows}")
-    print(json.dumps(summary.as_dict(), indent=2))
+    explorer_summary = validate_explorer_local(Path(args.explorer_input))
+    print(json.dumps({"command_costs": summary.as_dict(), "cost_explorer_commands_v1": explorer_summary.as_dict()}, indent=2))
 
 
 def csv_header(path: Path) -> list[str]:
@@ -418,17 +445,41 @@ def csv_header(path: Path) -> list[str]:
         return next(reader)
 
 
-def bigquery_schema(path: Path) -> None:
-    schema = []
-    for column in OUTPUT_COLUMNS:
-        field_type = "STRING"
-        if column in DATE_COLUMNS:
-            field_type = "DATE"
-        elif column in INTEGER_COLUMNS:
-            field_type = "INTEGER"
-        elif column in NUMERIC_COLUMNS:
-            field_type = "FLOAT"
-        schema.append({"name": column, "type": field_type, "mode": "NULLABLE"})
+def validate_explorer_local(path: Path) -> ExportSummary:
+    if not path.exists():
+        raise RuntimeError(f"explorer commands CSV is missing: {path}")
+    header = csv_header(path)
+    expected = explorer_commands_columns()
+    if header != expected:
+        raise RuntimeError(f"explorer commands header mismatch: expected {len(expected)} columns, got {len(header)}")
+    leaked = sorted(column for column in header if column in EXPLORER_FORBIDDEN_COLUMNS)
+    if leaked:
+        raise RuntimeError(f"hash/debug columns leaked into explorer commands CSV: {leaked}")
+    return read_summary_from_csv(path)
+
+
+def bigquery_field_type(column: str, *, date_columns: set[str], integer_columns: set[str], numeric_columns: set[str]) -> str:
+    if column in date_columns:
+        return "DATE"
+    if column in integer_columns:
+        return "INTEGER"
+    if column in numeric_columns:
+        return "FLOAT"
+    return "STRING"
+
+
+def write_bigquery_schema(
+    path: Path,
+    *,
+    columns: list[str],
+    date_columns: set[str],
+    integer_columns: set[str],
+    numeric_columns: set[str],
+) -> None:
+    schema = [
+        {"name": column, "type": bigquery_field_type(column, date_columns=date_columns, integer_columns=integer_columns, numeric_columns=numeric_columns), "mode": "NULLABLE"}
+        for column in columns
+    ]
     path.write_text(json.dumps(schema, indent=2), encoding="utf-8")
 
 
@@ -443,9 +494,42 @@ def run_capture_json(command: list[str]) -> Any:
     return json.loads(completed.stdout)
 
 
+def load_bigquery_csv(
+    project_id: str,
+    dataset: str,
+    table: str,
+    csv_path: Path,
+    schema_path: Path,
+    *,
+    allow_quoted_newlines: bool = False,
+) -> None:
+    command = [
+        "bq",
+        "--project_id",
+        project_id,
+        "load",
+        "--replace",
+        "--source_format=CSV",
+        "--skip_leading_rows=1",
+    ]
+    if allow_quoted_newlines:
+        command.append("--allow_quoted_newlines")
+    command.extend(
+        [
+            "--schema",
+            str(schema_path),
+            f"{project_id}:{dataset}.{table}",
+            str(csv_path),
+        ]
+    )
+    run_checked(command)
+
+
 def load_bigquery(args: argparse.Namespace) -> None:
     if not args.skip_export:
         export_csv(Path(args.input), Path(args.output), Path(args.summary_output), args.pricing_table, args.limit)
+    explorer_path = Path(args.explorer_input)
+    validate_explorer_local(explorer_path)
     if not args.project_id:
         raise RuntimeError("Missing BIGQUERY_PROJECT_ID or --project-id")
     if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
@@ -453,28 +537,37 @@ def load_bigquery(args: argparse.Namespace) -> None:
     if not shutil.which("bq"):
         raise RuntimeError("The bq CLI is required for BigQuery loading in this repo environment")
 
-    table_ref = f"{args.project_id}:{args.dataset}.{args.table}"
+    ensure_bigquery_dataset(args.project_id, args.dataset)
     with tempfile.TemporaryDirectory() as temp_dir:
-        schema_path = Path(temp_dir) / "schema.json"
-        bigquery_schema(schema_path)
-        ensure_bigquery_dataset(args.project_id, args.dataset)
-        run_checked(
-            [
-                "bq",
-                "--project_id",
-                args.project_id,
-                "load",
-                "--replace",
-                "--source_format=CSV",
-                "--skip_leading_rows=1",
-                "--schema",
-                str(schema_path),
-                table_ref,
-                str(Path(args.output)),
-            ]
+        temp = Path(temp_dir)
+        compact_schema_path = temp / "command_costs.schema.json"
+        explorer_schema_path = temp / "cost_explorer_commands_v1.schema.json"
+        write_bigquery_schema(
+            compact_schema_path,
+            columns=OUTPUT_COLUMNS,
+            date_columns=DATE_COLUMNS,
+            integer_columns=INTEGER_COLUMNS,
+            numeric_columns=NUMERIC_COLUMNS,
+        )
+        write_bigquery_schema(
+            explorer_schema_path,
+            columns=explorer_commands_columns(),
+            date_columns=EXPLORER_DATE_COLUMNS,
+            integer_columns=EXPLORER_INTEGER_COLUMNS,
+            numeric_columns=EXPLORER_NUMERIC_COLUMNS,
+        )
+        load_bigquery_csv(args.project_id, args.dataset, args.table, Path(args.output), compact_schema_path)
+        load_bigquery_csv(
+            args.project_id,
+            args.dataset,
+            args.explorer_table,
+            explorer_path,
+            explorer_schema_path,
+            allow_quoted_newlines=True,
         )
         create_bigquery_views(args.project_id, args.dataset, args.table)
     validate_bigquery(args.project_id, args.dataset, args.table, Path(args.output))
+    validate_bigquery(args.project_id, args.dataset, args.explorer_table, explorer_path)
 
 
 def ensure_bigquery_dataset(project_id: str, dataset: str) -> None:
@@ -505,16 +598,16 @@ def validate_bigquery(project_id: str, dataset: str, table: str, output_path: Pa
         remote_rows=to_int(remote.get("row_count")),
         remote_cost=to_float(remote.get("total_cost_usd")),
         remote_tokens=to_float(remote.get("total_tokens")),
-        label="BigQuery",
+        label=f"BigQuery {table}",
     )
 
 
-def clickhouse_type(column: str) -> str:
-    if column in DATE_COLUMNS:
+def clickhouse_type(column: str, *, date_columns: set[str], integer_columns: set[str], numeric_columns: set[str]) -> str:
+    if column in date_columns:
         return "Date"
-    if column in INTEGER_COLUMNS:
+    if column in integer_columns:
         return "UInt32"
-    if column in NUMERIC_COLUMNS:
+    if column in numeric_columns:
         return "Float64"
     return "LowCardinality(String)" if column in DIMENSION_COLUMNS else "String"
 
@@ -539,25 +632,60 @@ def clickhouse_query(args: argparse.Namespace, query: str, data: bytes | None = 
         return response.read()
 
 
+def load_clickhouse_csv(
+    args: argparse.Namespace,
+    *,
+    table: str,
+    csv_path: Path,
+    columns: list[str],
+    date_columns: set[str],
+    integer_columns: set[str],
+    numeric_columns: set[str],
+) -> None:
+    column_sql = ",\n  ".join(
+        f"{column} {clickhouse_type(column, date_columns=date_columns, integer_columns=integer_columns, numeric_columns=numeric_columns)}"
+        for column in columns
+    )
+    clickhouse_query(args, f"DROP TABLE IF EXISTS {table}")
+    clickhouse_query(args, f"CREATE TABLE {table} (\n  {column_sql}\n) ENGINE = MergeTree ORDER BY (session_date, session_id, prompt_index, command_index)")
+    clickhouse_query(args, f"INSERT INTO {table} FORMAT CSVWithNames", data=csv_path.read_bytes())
+
+
 def load_clickhouse(args: argparse.Namespace) -> None:
     if not args.skip_export:
         export_csv(Path(args.input), Path(args.output), Path(args.summary_output), args.pricing_table, args.limit)
+    explorer_path = Path(args.explorer_input)
+    validate_explorer_local(explorer_path)
     clickhouse_query(args, f"CREATE DATABASE IF NOT EXISTS {args.database}")
-    columns = ",\n  ".join(f"{column} {clickhouse_type(column)}" for column in OUTPUT_COLUMNS)
-    clickhouse_query(args, f"DROP TABLE IF EXISTS {args.table}")
-    clickhouse_query(args, f"CREATE TABLE {args.table} (\n  {columns}\n) ENGINE = MergeTree ORDER BY (session_date, session_id, prompt_index, command_index)")
-    csv_data = Path(args.output).read_bytes()
-    clickhouse_query(args, f"INSERT INTO {args.table} FORMAT CSVWithNames", data=csv_data)
+    load_clickhouse_csv(
+        args,
+        table=args.table,
+        csv_path=Path(args.output),
+        columns=OUTPUT_COLUMNS,
+        date_columns=DATE_COLUMNS,
+        integer_columns=INTEGER_COLUMNS,
+        numeric_columns=NUMERIC_COLUMNS,
+    )
+    load_clickhouse_csv(
+        args,
+        table=args.explorer_table,
+        csv_path=explorer_path,
+        columns=explorer_commands_columns(),
+        date_columns=EXPLORER_DATE_COLUMNS,
+        integer_columns=EXPLORER_INTEGER_COLUMNS,
+        numeric_columns=EXPLORER_NUMERIC_COLUMNS,
+    )
     for view_name, query in VIEW_QUERIES.items():
         clickhouse_query(args, f"CREATE OR REPLACE VIEW {view_name} AS {query.format(table=args.table, any_value='any')}")
-    validate_clickhouse(args, Path(args.output))
+    validate_clickhouse(args, args.table, Path(args.output))
+    validate_clickhouse(args, args.explorer_table, explorer_path)
 
 
-def validate_clickhouse(args: argparse.Namespace, output_path: Path) -> None:
+def validate_clickhouse(args: argparse.Namespace, table: str, output_path: Path) -> None:
     local = read_summary_from_csv(output_path)
     result = clickhouse_query(
         args,
-        f"SELECT count() AS rows, sum(allocated_total_cost_usd) AS total_cost_usd, sum(allocated_total_tokens) AS total_tokens FROM {args.table} FORMAT JSON",
+        f"SELECT count() AS rows, sum(allocated_total_cost_usd) AS total_cost_usd, sum(allocated_total_tokens) AS total_tokens FROM {table} FORMAT JSON",
     )
     payload = json.loads(result.decode("utf-8"))
     remote = payload.get("data", [{}])[0]
@@ -566,7 +694,7 @@ def validate_clickhouse(args: argparse.Namespace, output_path: Path) -> None:
         remote_rows=to_int(remote.get("rows")),
         remote_cost=to_float(remote.get("total_cost_usd")),
         remote_tokens=to_float(remote.get("total_tokens")),
-        label="ClickHouse",
+        label=f"ClickHouse {table}",
     )
 
 
@@ -712,7 +840,14 @@ def validate_metabase_card(client: MetabaseClient, card_id: int, name: str) -> N
 
 def run_all(args: argparse.Namespace) -> None:
     export_csv(Path(args.input), Path(args.output), Path(args.summary_output), args.pricing_table, args.limit)
-    bq_args = argparse.Namespace(**vars(args), project_id=os.environ.get("BIGQUERY_PROJECT_ID", ""), dataset=os.environ.get("BIGQUERY_DATASET", DEFAULT_DATASET), table=DEFAULT_TABLE, skip_export=True)
+    bq_args = argparse.Namespace(
+        **vars(args),
+        project_id=os.environ.get("BIGQUERY_PROJECT_ID", ""),
+        dataset=os.environ.get("BIGQUERY_DATASET", DEFAULT_DATASET),
+        table=DEFAULT_TABLE,
+        explorer_table=DEFAULT_EXPLORER_TABLE,
+        skip_export=True,
+    )
     ch_args = argparse.Namespace(
         **vars(args),
         host=os.environ.get("CLICKHOUSE_HOST", ""),
@@ -721,6 +856,7 @@ def run_all(args: argparse.Namespace) -> None:
         password=os.environ.get("CLICKHOUSE_PASSWORD", ""),
         database=os.environ.get("CLICKHOUSE_DATABASE", DEFAULT_DATASET),
         table=DEFAULT_TABLE,
+        explorer_table=DEFAULT_EXPLORER_TABLE,
         skip_export=True,
     )
     load_bigquery(bq_args)
