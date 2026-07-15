@@ -23,8 +23,11 @@
   .btns { display:flex; gap:.28rem; flex-wrap:wrap; }
   button.seg, button.chip { border:1px solid var(--line); background:#fff; padding:.28rem .65rem; border-radius:999px; cursor:pointer; font-size:.82rem; }
   button.seg.on, button.chip.on { background:#2563eb; color:#fff; border-color:#2563eb; }
+  .help-wrap { position:relative; display:inline-flex; align-items:center; }
   .help { display:inline-flex; align-items:center; justify-content:center; width:1rem; height:1rem; border-radius:999px; border:1px solid var(--line); background:#fff; color:var(--sub); font-size:.68rem; font-weight:700; cursor:help; }
   .help:focus { outline:2px solid #93c5fd; outline-offset:2px; }
+  .help-bubble { position:absolute; top:calc(100% + .4rem); left:0; z-index:20; width:min(22rem, 70vw); padding:.55rem .65rem; border:1px solid var(--line); border-radius:8px; background:#111827; color:#fff; font-size:.78rem; line-height:1.4; text-transform:none; letter-spacing:normal; box-shadow:0 8px 20px rgba(0,0,0,.18); display:none; }
+  .help-wrap:hover .help-bubble, .help-wrap:focus-within .help-bubble { display:block; }
   button.chip { border-radius:14px; }
   .select, .search { border:1px solid var(--line); border-radius:8px; background:#fff; padding:.42rem .55rem; font-size:.88rem; min-height:36px; }
   .select { min-width:220px; }
@@ -180,7 +183,8 @@ const FILTER_HELP = {
 };
 
 function helpBadge(text){
-  return `<span class="help" tabindex="0" role="img" aria-label="${escapeHtml(text)}" title="${escapeHtml(text)}">?</span>`;
+  const escaped = escapeHtml(text);
+  return `<span class="help-wrap"><span class="help" tabindex="0" role="img" aria-label="${escaped}" title="${escaped}">?</span><span class="help-bubble" role="tooltip">${escaped}</span></span>`;
 }
 
 function labelWithHelp(label, helpText){
