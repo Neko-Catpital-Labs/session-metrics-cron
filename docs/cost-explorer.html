@@ -7,6 +7,7 @@
 <style>
   :root { --fg:#1b1f24; --sub:#57606a; --line:#e2e6ea; --bg:#f6f8fa; --panel:#fff; --link:#2563eb; --good:#166534; --bad:#b91c1c; --selected:#eff6ff; --selected-line:#2563eb; --highlight:#fff7cc; --tag:#eef2ff; }
   * { box-sizing:border-box; }
+  html, body { overflow-y:auto; }
   body { font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,sans-serif; color:var(--fg); margin:0; padding:1.25rem; max-width:1480px; margin:0 auto; background:#fff; }
   a { color:var(--link); text-decoration:none; }
   a:hover { text-decoration:underline; }
@@ -36,10 +37,10 @@
   .kpi .v { font-size:1.35rem; font-weight:700; }
   .kpi .l { color:var(--sub); font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; }
   .layout { display:grid; grid-template-columns:minmax(320px, 430px) minmax(0, 1fr); gap:1rem; align-items:start; }
-  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 1px 2px rgba(16,24,40,.05); }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 1px 2px rgba(16,24,40,.05); overflow:visible; }
   .panel-head { padding:.85rem .95rem; border-bottom:1px solid var(--line); }
-  .panel-body { padding:.85rem .95rem; }
-  #explorerResults { display:flex; flex-direction:column; gap:.65rem; }
+  .panel-body { padding:.85rem .95rem; overflow:visible; }
+  #explorerResults, #explorerDetail { overflow:visible; }
   .result-row { border:1px solid var(--line); border-radius:10px; background:var(--bg); padding:.75rem .8rem; cursor:pointer; }
   .result-row:hover { background:#f8fbff; }
   .result-row.is-selected { background:var(--selected); border-color:var(--selected-line); box-shadow: inset 3px 0 0 var(--selected-line); }
@@ -66,7 +67,7 @@
   .step-section { border:1px solid var(--line); border-radius:10px; padding:.8rem; margin:.8rem 0; background:#fff; }
   .step-section.is-active { border-color:var(--selected-line); box-shadow: inset 3px 0 0 var(--selected-line); }
   .step-section ul { margin:.45rem 0 0 1rem; padding:0; }
-  .table-wrap { overflow:auto; }
+  .table-wrap { overflow-x:auto; overflow-y:visible; }
   #commandTable tbody tr.is-highlighted { background:var(--highlight); }
   #commandTable tbody tr.is-issue-match td.fixing-cause::after { content:"match"; margin-left:.4rem; font-size:.7rem; color:#1d4ed8; background:#dbeafe; border-radius:999px; padding:.08rem .35rem; }
   #commandTable td.preview { min-width:320px; white-space:normal; word-break:break-word; }
