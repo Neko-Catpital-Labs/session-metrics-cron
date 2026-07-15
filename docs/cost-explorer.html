@@ -19,16 +19,19 @@
   .controls { position:sticky; top:0; z-index:10; background:#fff; padding:.8rem 0 .9rem; border-bottom:1px solid var(--line); }
   .controls-card { display:flex; flex-wrap:wrap; gap:1rem 1.2rem; align-items:flex-start; padding:.9rem; background:var(--bg); border:1px solid var(--line); border-radius:10px; }
   .group { display:flex; flex-direction:column; gap:.35rem; min-width:0; }
-  .lbl { font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; color:var(--sub); }
+  .lbl { font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; color:var(--sub); display:inline-flex; align-items:center; gap:.3rem; }
   .btns { display:flex; gap:.28rem; flex-wrap:wrap; }
   button.seg, button.chip { border:1px solid var(--line); background:#fff; padding:.28rem .65rem; border-radius:999px; cursor:pointer; font-size:.82rem; }
   button.seg.on, button.chip.on { background:#2563eb; color:#fff; border-color:#2563eb; }
+  .help { display:inline-flex; align-items:center; justify-content:center; width:1rem; height:1rem; border-radius:999px; border:1px solid var(--line); background:#fff; color:var(--sub); font-size:.68rem; font-weight:700; cursor:help; }
+  .help:focus { outline:2px solid #93c5fd; outline-offset:2px; }
   button.chip { border-radius:14px; }
   .select, .search { border:1px solid var(--line); border-radius:8px; background:#fff; padding:.42rem .55rem; font-size:.88rem; min-height:36px; }
   .select { min-width:220px; }
   .search { min-width:260px; width:320px; }
   #customRange { display:none; gap:.35rem; flex-wrap:wrap; }
   #customRange input { border:1px solid var(--line); border-radius:8px; padding:.4rem .5rem; font-size:.88rem; }
+  .controls-note { width:100%; margin:0; color:var(--sub); font-size:.8rem; }
   .chip-groups { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:.7rem 1rem; width:100%; }
   .chip-group { display:flex; flex-direction:column; gap:.35rem; }
   .chip-list { display:flex; flex-wrap:wrap; gap:.3rem; }
@@ -130,6 +133,7 @@
         <span class="lbl">Text search</span>
         <input class="search" id="textSearch" type="search" placeholder="Search short title, prompt, or task label">
       </div>
+      <p class="controls-note">Task type = the broad kind of work, like review, repair, or implementation. Request pattern = the more exact ask shape, like PR review, CI loop cleanup, or invoker plan submission.</p>
       <div class="chip-groups" id="chipGroups"></div>
     </div>
   </section>
@@ -170,6 +174,18 @@ const CHIP_GROUPS = [
   { field: "model", label: "Model", summaryKey: "model", labelField: row => row.model || "" },
   { field: "origin", label: "Origin", summaryKey: "origin", labelField: row => row.origin || "" },
 ];
+const FILTER_HELP = {
+  task_type: "Broad work bucket. This says what kind of work the model was doing overall, like review, repair, or implementation.",
+  request_pattern: "Specific ask shape. This says what kind of request started the work, like PR review, CI loop cleanup, or invoker plan submission.",
+};
+
+function helpBadge(text){
+  return `<span class="help" tabindex="0" role="img" aria-label="${escapeHtml(text)}" title="${escapeHtml(text)}">?</span>`;
+}
+
+function labelWithHelp(label, helpText){
+  return helpText ? `${escapeHtml(label)} ${helpBadge(helpText)}` : escapeHtml(label);
+}
 let summary = null;
 let searchPayload = null;
 let selectedRow = null;
@@ -290,7 +306,7 @@ function renderChipGroups(){
       const active = state[group.field] === value ? " on" : "";
       return `<button class="chip${active}" data-chip-field="${group.field}" data-chip-value="${escapeHtml(value)}" title="${escapeHtml(label)}">${escapeHtml(label)}</button>`;
     }).join("") || `<span class="muted">No values.</span>`;
-    return `<div class="chip-group"><span class="lbl">${escapeHtml(group.label)}</span><div class="chip-list">${chips}</div></div>`;
+    return `<div class="chip-group"><span class="lbl">${labelWithHelp(group.label, FILTER_HELP[group.field] || "")}</span><div class="chip-list">${chips}</div></div>`;
   }).join("");
 }
 function renderSummaryStrip(totals){
