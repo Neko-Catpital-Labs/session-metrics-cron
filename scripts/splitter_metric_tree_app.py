@@ -638,6 +638,13 @@ def cost_explorer_issue_column(issue_kind: str) -> str:
         "function_name": "function_name",
         "shell_verb": "shell_verb",
     }[issue_kind]
+def cost_explorer_issue_presence_filter(issue_kind: str, issue_value: str) -> str:
+    issue_column = cost_explorer_issue_column(issue_kind)
+    if issue_kind == "request_pattern" and not issue_value:
+        return f"COALESCE({issue_column}, '') NOT IN ('', 'uncategorized')"
+    return f"COALESCE({issue_column}, '') != ''"
+
+
 
 
 def cost_explorer_match_expression(token_bucket: str) -> str:
@@ -694,7 +701,7 @@ def cost_explorer_search_sql(
         )
     if issue_kind:
         issue_column = cost_explorer_issue_column(issue_kind)
-        filters.append(f"COALESCE({issue_column}, '') != ''")
+        filters.append(cost_explorer_issue_presence_filter(issue_kind, issue_value))
         if issue_value:
             filters.append(f"{issue_column} = {sql_string(issue_value)}")
     filtered_where = warehouse_date_where(start, end, filters)

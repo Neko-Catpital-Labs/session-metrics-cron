@@ -401,6 +401,41 @@ function applyLoadedSummary(metaText){
 function activeRequestPatternFilter(){
   return String(state.request_pattern || (state.issue_kind === "request_pattern" ? state.issue_value : "") || "").trim();
 }
+function requestPatternAllValuesMode(){
+  return state.issue_kind === "request_pattern" && !state.issue_value && !state.request_pattern;
+}
+function isVisibleRequestPattern(value){
+  const normalized = String(value || "").trim();
+  if(!normalized) return false;
+  if(requestPatternAllValuesMode()) return normalized !== "uncategorized";
+  return true;
+}
+function clearLabelFamilyFilters(){
+  state.issue_value = "";
+  state.task_type = "";
+  state.request_pattern = "";
+  state.agent_tool_intention = "";
+  state.function_name = "";
+  state.shell_verb = "";
+  state.model = "";
+  state.origin = "";
+}
+function applyChipSelection(field, value){
+  const nextValue = String(value || "");
+  const toggledOff = state[field] === nextValue;
+  clearLabelFamilyFilters();
+  if(toggledOff){
+    state.issue_value = "";
+    return;
+  }
+  state[field] = nextValue;
+  if(ISSUE_KIND_FIELDS[field]){
+    state.issue_kind = field;
+    state.issue_value = nextValue;
+  }else{
+    state.issue_value = "";
+  }
+}
 function staticWindowMatches(row, from, to){
   const sessionDate = String(row.session_date || "");
   if(from && sessionDate && sessionDate < from) return false;
@@ -419,9 +454,18 @@ function staticCommandMatches(row){
   if(state.agent_tool_intention && String(row.agent_tool_intention || "") !== state.agent_tool_intention) return false;
   if(state.function_name && String(row.function_name || "") !== state.function_name) return false;
   if(state.shell_verb && String(row.shell_verb || "") !== state.shell_verb) return false;
+  const requestPattern = activeRequestPatternFilter();
+  if(requestPattern){
+    if(String(row.request_pattern || "") !== requestPattern) return false;
+    return true;
+  }
   const issueField = state.issue_kind || "request_pattern";
   const issueValue = String(row[issueField] || "").trim();
-  if(!issueValue) return false;
+  if(issueField === "request_pattern"){
+    if(!isVisibleRequestPattern(issueValue)) return false;
+  }else if(!issueValue){
+    return false;
+  }
   if(state.issue_value && issueValue !== state.issue_value) return false;
   return true;
 }
@@ -661,8 +705,9 @@ function renderResults(rows){
 function filteredDetailCommands(payload){
   const commands = payload.commands || [];
   const requestPattern = activeRequestPatternFilter();
-  if(!requestPattern) return commands;
-  return commands.filter(row => String(row.request_pattern || "") === requestPattern);
+  if(requestPattern) return commands.filter(row => String(row.request_pattern || "") === requestPattern);
+  if(requestPatternAllValuesMode()) return commands.filter(row => isVisibleRequestPattern(row.request_pattern));
+  return commands;
 }
 function timelineEntriesForCommands(payload, commandRows){
   const timeline = payload.timeline || [];
@@ -979,13 +1024,13 @@ async function runSearch(){
       : `Failed to load explorer search: ${error.message}`;
     document.getElementById("explorerResults").innerHTML = '<div class="empty">No prompt windows match the current filters.</div>';
     document.getElementById("explorerDetail").innerHTML = '<div class="detail-empty">Select a prompt window.</div>';
-    state.issue_kind = event.target.value || "request_pattern";
+    searchPayload = null;
   }
 }
 function bindControls(){
   document.getElementById("issueKind").addEventListener("change", event => {
     state.issue_kind = event.target.value || "request_pattern";
-    state.issue_value = "";
+    clearLabelFamilyFilters();
     renderIssueValueOptions();
     runSearch();
   });
@@ -1015,7 +1060,8 @@ function bindControls(){
     if(!chip) return;
     const field = chip.dataset.chipField;
     const value = chip.dataset.chipValue || "";
-    state[field] = state[field] === value ? "" : value;
+    applyChipSelection(field, value);
+    renderIssueValueOptions();
     renderChipGroups();
     runSearch();
   });

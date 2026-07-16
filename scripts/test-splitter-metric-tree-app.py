@@ -228,6 +228,28 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertEqual(app.derive_cost_explorer_table("proj.ds.command_costs"), "proj.ds.cost_explorer_commands_v1")
         with self.assertRaises(ValueError):
             app.clamp_cost_explorer_limit("oops")
+    def test_cost_explorer_request_pattern_all_values_hides_uncategorized(self) -> None:
+        sql = app.cost_explorer_search_sql(
+            "proj.ds.cost_explorer_commands_v1",
+            start=None,
+            end=None,
+            issue_kind="request_pattern",
+            issue_value="",
+            token_bucket="all",
+            task_type="",
+            request_pattern="",
+            agent_tool_intention="",
+            function_name="",
+            shell_verb="",
+            model="",
+            origin="",
+            text="",
+            limit=50,
+            offset=0,
+        )
+        self.assertIn("COALESCE(request_pattern, '') NOT IN ('', 'uncategorized')", sql)
+        self.assertNotIn("request_pattern = 'uncategorized'", sql)
+
 
     def test_warehouse_routes_registered(self) -> None:
         source = SCRIPT_PATH.read_text()
@@ -267,6 +289,10 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn('.chunk-body[hidden] { display:none; }', explorer_html)
         self.assertIn('class=\"chunk-body\" data-chunk-index="${index}" ${isActive ? \'\' : \'hidden\'}>${isActive ? renderChunkBody(payload, chunk, visibleCommands) : \'\'}', explorer_html)
         self.assertIn('function activeRequestPatternFilter(){', explorer_html)
+        self.assertIn('function requestPatternAllValuesMode(){', explorer_html)
+        self.assertIn('function clearLabelFamilyFilters(){', explorer_html)
+        self.assertIn('function applyChipSelection(field, value){', explorer_html)
+        self.assertIn('if(requestPatternAllValuesMode()) return normalized !== "uncategorized";', explorer_html)
         self.assertIn('function renderLabelEvidence(payload){', explorer_html)
         self.assertIn('Why this request pattern?', explorer_html)
         self.assertIn('Why this task type?', explorer_html)
@@ -274,7 +300,8 @@ class SplitterMetricTreeAppTests(unittest.TestCase):
         self.assertIn('function filteredDetailCommands(payload){', explorer_html)
         self.assertIn('function timelineEntriesForCommands(payload, commandRows){', explorer_html)
         self.assertIn('String(activeRequestPatternFilter() || windowRow.request_pattern || "")', explorer_html)
-        self.assertIn('return commands.filter(row => String(row.request_pattern || "") === requestPattern);', explorer_html)
+        self.assertIn('if(String(row.request_pattern || "") !== requestPattern) return false;', explorer_html)
+        self.assertIn('if(requestPatternAllValuesMode()) return commands.filter(row => isVisibleRequestPattern(row.request_pattern));', explorer_html)
         self.assertIn('No session steps match the current request pattern.', explorer_html)
         self.assertIn('function setSelectedChunk(nextIndex){', explorer_html)
         self.assertIn('Session steps (cost + summary)', explorer_html)
