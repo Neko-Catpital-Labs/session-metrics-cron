@@ -71,11 +71,12 @@ layers:
       - id: invoker_plan_submission
         confidence: high
         regex:
-          - "\\binvoker\\b"
           - "plan-to-invoker"
           - "submit to invoker"
           - "workflow chain"
           - "workflow submission"
+          - "generate invoker yaml"
+          - "generated-plan"
       - id: ui_terminal_visual
         confidence: high
         regex:

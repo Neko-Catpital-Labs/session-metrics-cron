@@ -17,13 +17,13 @@ sys.modules["mixpanel_export_usage"] = exporter
 spec.loader.exec_module(exporter)
 
 
-def row(text: str, cost: str = "1.0") -> dict[str, str]:
+def row(text: str, cost: str = "1.0", *, session_cwd: str = "") -> dict[str, str]:
     return {
         "prompt_preview": text,
         "previous_prompt_preview": "",
         "first_prompt_preview": "",
         "final_answer_preview": "",
-        "session_cwd": "",
+        "session_cwd": session_cwd,
         "file": "/tmp/session-1.jsonl",
         "model": "codex",
         "provider": "openai",
@@ -107,7 +107,8 @@ class RequestPatternCategorizationTests(unittest.TestCase):
             ("Implement the refactor and make the code change.", "implementation_refactor", "2.0"),
             ("Analyze Mixpanel usage metrics and token cost share.", "cost_usage_analysis", "2.0"),
             ("Please review this PR body.", "pr_review", "2.0"),
-            ("Install pnpm dependencies for the project.", "dependency_setup", "2.0"),
+            ("Use /plan-to-invoker to generate Invoker YAML for this benchmark.", "invoker_plan_submission", "2.0"),
+            ("Implement keyboard navigation for every Invoker context menu.", "implementation_refactor", "2.0"),
             ("What is a concise name for this utility?", "uncategorized", "0.2"),
         ]
         total_cost = 0.0
@@ -122,6 +123,11 @@ class RequestPatternCategorizationTests(unittest.TestCase):
             if expected == "uncategorized":
                 uncategorized_cost += float(cost)
         self.assertLess(uncategorized_cost / total_cost, 0.05)
+
+    def test_invoker_repo_context_alone_does_not_mean_plan_submission(self) -> None:
+        categorizer = exporter.RequestPatternCategorizer(base_config())
+        result = categorizer.classify(row("Fix the failing command.", session_cwd="/home/invoker/.invoker/worktrees/demo"))
+        self.assertEqual(result.request_pattern, "uncategorized")
 
     def test_request_payload_omits_request_subpattern(self) -> None:
         task_categorizer = exporter.TaskCategorizer(exporter.DEFAULT_TASK_CATEGORIZATION_CONFIG)

@@ -383,12 +383,14 @@ function applyLoadedSummary(metaText){
   renderIssueValueOptions();
   renderChipGroups();
 }
+function activeRequestPatternFilter(){
+  return String(state.request_pattern || (state.issue_kind === "request_pattern" ? state.issue_value : "") || "").trim();
+}
 function staticWindowMatches(row, from, to){
   const sessionDate = String(row.session_date || "");
   if(from && sessionDate && sessionDate < from) return false;
   if(to && sessionDate && sessionDate > to) return false;
   if(state.task_type && String(row.task_type || "") !== state.task_type) return false;
-  if(state.request_pattern && String(row.request_pattern || "") !== state.request_pattern) return false;
   if(state.model && String(row.model || "") !== state.model) return false;
   if(state.origin && String(row.origin || "") !== state.origin) return false;
   const needle = (state.text || "").trim().toLowerCase();
@@ -399,6 +401,8 @@ function staticWindowMatches(row, from, to){
   return true;
 }
 function staticCommandMatches(row){
+  const requestPattern = activeRequestPatternFilter();
+  if(requestPattern && String(row.request_pattern || "") !== requestPattern) return false;
   if(state.agent_tool_intention && String(row.agent_tool_intention || "") !== state.agent_tool_intention) return false;
   if(state.function_name && String(row.function_name || "") !== state.function_name) return false;
   if(state.shell_verb && String(row.shell_verb || "") !== state.shell_verb) return false;
@@ -429,7 +433,7 @@ function buildStaticSearchPayload(filters){
       session_date: String(windowRow.session_date || ""),
       window_file: String(windowRow.window_file || ""),
       short_title: String(windowRow.short_title || ""),
-      request_pattern: String(windowRow.request_pattern || ""),
+      request_pattern: String(activeRequestPatternFilter() || windowRow.request_pattern || ""),
       task_type: String(windowRow.task_type || ""),
       task_type_label: String(windowRow.task_type_label || ""),
       dominant_fixing_cause: String(windowRow.dominant_fixing_cause || ""),
@@ -643,15 +647,35 @@ function renderResults(rows){
     </div>`;
   }).join("");
 }
+function filteredDetailCommands(payload){
+  const commands = payload.commands || [];
+  const requestPattern = activeRequestPatternFilter();
+  if(!requestPattern) return commands;
+  return commands.filter(row => String(row.request_pattern || "") === requestPattern);
+}
+function timelineEntriesForCommands(payload, commandRows){
+  const timeline = payload.timeline || [];
+  if(commandRows.length === (payload.commands || []).length) return timeline.map((chunk, index) => ({ chunk, index }));
+  const matchingIndexes = new Set(commandRows.map(row => Number(row.command_index)));
+  return timeline.map((chunk, index) => ({ chunk, index })).filter(({ chunk }) => {
+    const start = Number(chunk.start_command_index);
+    const end = Number(chunk.end_command_index);
+    for(const commandIndex of matchingIndexes){
+      if(commandIndex >= start && commandIndex <= end) return true;
+    }
+    return false;
+  });
+}
 function chooseDefaultChunk(payload){
-  const chunks = payload.timeline || [];
-  if(!chunks.length) return -1;
+  const visibleCommands = filteredDetailCommands(payload);
+  const entries = timelineEntriesForCommands(payload, visibleCommands);
+  if(!entries.length) return -1;
   const matching = state.issue_kind === "fixing_cause" && state.issue_value
-    ? chunks.filter(chunk => (chunk.fixing_cause || "") === state.issue_value)
+    ? entries.filter(({ chunk }) => (chunk.fixing_cause || "") === state.issue_value)
     : [];
-  const pool = matching.length ? matching : chunks;
-  const winner = pool.slice().sort((a, b) => Number(b.cost_usd || 0) - Number(a.cost_usd || 0))[0];
-  return chunks.indexOf(winner);
+  const pool = matching.length ? matching : entries;
+  const winner = pool.slice().sort((a, b) => chunkCommandRows(payload, b.chunk, visibleCommands).length - chunkCommandRows(payload, a.chunk, visibleCommands).length || Number(b.chunk.cost_usd || 0) - Number(a.chunk.cost_usd || 0))[0];
+  return winner ? winner.index : -1;
 }
 function bucketCell(cost, tokenCount){
   return `${money(cost)}<div class="muted">${tokens(tokenCount)} tok</div>`;
@@ -679,24 +703,88 @@ function renderConversationBlock(chunk){
   }
   return `<div class="step-subsection">Command previews</div><div class="muted">No conversation captured for this bucket.</div>`;
 }
+function chunkCommandRows(payload, chunk, commandRows = payload.commands || []){
+  return commandRows.filter(row => {
+    const index = Number(row.command_index);
+    return index >= Number(chunk.start_command_index) && index <= Number(chunk.end_command_index);
+  });
+}
+function aggregateCommandMetrics(rows){
+  return rows.reduce((acc, row) => {
+    acc.cost_usd += Number(row.cost_usd || 0);
+    acc.headline_context_cost_usd += Number(row.headline_context_cost_usd || 0);
+    acc.headline_context_tokens += Number(row.headline_context_tokens || 0);
+    acc.headline_cache_read_cost_usd += Number(row.headline_cache_read_cost_usd || 0);
+    acc.headline_cache_read_tokens += Number(row.headline_cache_read_tokens || 0);
+    acc.headline_output_cost_usd += Number(row.headline_output_cost_usd || 0);
+    acc.headline_output_tokens += Number(row.headline_output_tokens || 0);
+    acc.reasoning_tokens += Number(row.allocated_reasoning_tokens || 0);
+    return acc;
+  }, {
+    cost_usd: 0,
+    headline_context_cost_usd: 0,
+    headline_context_tokens: 0,
+    headline_cache_read_cost_usd: 0,
+    headline_cache_read_tokens: 0,
+    headline_output_cost_usd: 0,
+    headline_output_tokens: 0,
+    reasoning_tokens: 0,
+  });
+}
+function commandRowsTotalCost(payload, commandRows = payload.commands || []){
+  if(commandRows.length === (payload.commands || []).length) return Number(payload.total_cost_usd || 0);
+  return commandRows.reduce((sum, row) => sum + Number(row.cost_usd || 0), 0);
+}
+function summarizeChunk(payload, chunk, commandRows = payload.commands || [], totalCostUsd = commandRowsTotalCost(payload, commandRows)){
+  const rows = chunkCommandRows(payload, chunk, commandRows);
+  const metrics = aggregateCommandMetrics(rows);
+  const intents = counterField(rows, "agent_tool_intention");
+  const tools = counterField(rows, "function_name");
+  const verbs = counterField(rows, "shell_verb");
+  const intentPhrase = intents.length ? (INTENT_LABELS[intents[0][0]] || intents[0][0].replaceAll("_", " ")) : "working on the request";
+  const summaryLead = chunkUserAsk(chunk) || compactText(chunk.message_preview || "", 220) || "Follow-up request in the session";
+  const summaryText = `${summaryLead.replace(/[.?!]+$/, "")}. Mostly ${intentPhrase}.`;
+  const activityParts = tools.slice(0, 3).map(([name, total]) => `${TOOL_LABELS[name] || name} (${total}x)`);
+  const shellParts = verbs.slice(0, 3).map(([name]) => name).filter(Boolean);
+  if(shellParts.length) activityParts.push(`shell: ${shellParts.join(", ")}`);
+  const actionLines = [];
+  if(activityParts.length) actionLines.push(`Agent activity: ${activityParts.join("; ")}`);
+  if(intents.length) actionLines.push(`Work type: ${intents.slice(0, 2).map(([name]) => INTENT_LABELS[name] || name.replaceAll("_", " ")).join(", ")}`);
+  const exampleCommands = [];
+  rows.forEach(row => {
+    const preview = compactText(row.preview || row.stdin_preview || "", 100);
+    if(!preview || exampleCommands.includes(preview) || exampleCommands.length >= 2) return;
+    exampleCommands.push(preview);
+  });
+  exampleCommands.forEach(command => actionLines.push(`Example command: ${command}`));
+  return {
+    commandCount: rows.length,
+    costSharePct: totalCostUsd > 0 ? (100 * metrics.cost_usd / totalCostUsd) : 0,
+    summaryText,
+    actionLines,
+    userAsked: summaryLead,
+    metrics,
+  };
+}
 function chunkSummaries(payload){
   if(!Array.isArray(payload._chunkSummaries)){
     payload._chunkSummaries = (payload.timeline || []).map(chunk => summarizeChunk(payload, chunk));
   }
   return payload._chunkSummaries;
 }
-function renderChunkBody(chunk){
+function renderChunkBody(payload, chunk, commandRows = payload.commands || []){
+  const metrics = aggregateCommandMetrics(chunkCommandRows(payload, chunk, commandRows));
   return `<div class="table-wrap"><table><thead><tr><th>Metric</th><th class="n">Value</th></tr></thead><tbody>
-      <tr><td>Total cost</td><td class="n">${money(chunk.cost_usd || 0)}</td></tr>
-      <tr><td>Context</td><td class="n">${bucketCell(chunk.headline_context_cost_usd || 0, chunk.headline_context_tokens || 0)}</td></tr>
-      <tr><td>Cache read</td><td class="n">${bucketCell(chunk.headline_cache_read_cost_usd || 0, chunk.headline_cache_read_tokens || 0)}</td></tr>
-      <tr><td>Output</td><td class="n">${bucketCell(chunk.headline_output_cost_usd || 0, chunk.headline_output_tokens || 0)}</td></tr>
-      <tr><td>Reasoning</td><td class="n">${reasoningCell(chunk.reasoning_tokens || 0)}</td></tr>
+      <tr><td>Total cost</td><td class="n">${money(metrics.cost_usd)}</td></tr>
+      <tr><td>Context</td><td class="n">${bucketCell(metrics.headline_context_cost_usd, metrics.headline_context_tokens)}</td></tr>
+      <tr><td>Cache read</td><td class="n">${bucketCell(metrics.headline_cache_read_cost_usd, metrics.headline_cache_read_tokens)}</td></tr>
+      <tr><td>Output</td><td class="n">${bucketCell(metrics.headline_output_cost_usd, metrics.headline_output_tokens)}</td></tr>
+      <tr><td>Reasoning</td><td class="n">${reasoningCell(metrics.reasoning_tokens)}</td></tr>
     </tbody></table></div>
     ${renderConversationBlock(chunk)}`;
 }
-function renderCommandTableRows(payload, activeChunk){
-  return (payload.commands || []).map(row => {
+function renderCommandTableRows(payload, activeChunk, commandRows = payload.commands || []){
+  return commandRows.map(row => {
     const commandIndex = Number(row.command_index);
     const highlighted = activeChunk && commandIndex >= Number(activeChunk.start_command_index) && commandIndex <= Number(activeChunk.end_command_index);
     const issueMatch = state.issue_kind === 'fixing_cause' && state.issue_value && (row.fixing_cause || '') === state.issue_value;
@@ -711,7 +799,7 @@ function updateCommandHighlights(activeChunk){
     row.classList.toggle('is-highlighted', !!highlighted);
   });
 }
-function setChunkCardState(card, chunk, index, isActive){
+function setChunkCardState(card, payload, chunk, index, isActive, commandRows){
   if(!card) return;
   card.classList.toggle('is-active', isActive);
   const summary = card.querySelector('.chunk-summary');
@@ -721,7 +809,7 @@ function setChunkCardState(card, chunk, index, isActive){
   const body = card.querySelector(`.chunk-body[data-chunk-index="${index}"]`);
   if(!body) return;
   if(isActive){
-    if(!body.innerHTML) body.innerHTML = renderChunkBody(chunk);
+    if(!body.innerHTML) body.innerHTML = renderChunkBody(payload, chunk, commandRows);
     body.removeAttribute('hidden');
     return;
   }
@@ -732,6 +820,7 @@ function setSelectedChunk(nextIndex){
   if(!currentWindow) return;
   const payload = currentWindow;
   const timeline = payload.timeline || [];
+  const visibleCommands = filteredDetailCommands(payload);
   const root = document.getElementById('explorerDetail');
   if(!root.querySelector('#chunkTimeline') || !root.querySelector('#commandTable')){
     selectedChunkIndex = nextIndex;
@@ -741,10 +830,10 @@ function setSelectedChunk(nextIndex){
   const previousIndex = selectedChunkIndex;
   selectedChunkIndex = nextIndex;
   if(previousIndex >= 0 && timeline[previousIndex]){
-    setChunkCardState(root.querySelector(`.chunk-card[data-chunk-index="${previousIndex}"]`), timeline[previousIndex], previousIndex, false);
+    setChunkCardState(root.querySelector(`.chunk-card[data-chunk-index="${previousIndex}"]`), payload, timeline[previousIndex], previousIndex, false, visibleCommands);
   }
   if(nextIndex >= 0 && timeline[nextIndex]){
-    setChunkCardState(root.querySelector(`.chunk-card[data-chunk-index="${nextIndex}"]`), timeline[nextIndex], nextIndex, true);
+    setChunkCardState(root.querySelector(`.chunk-card[data-chunk-index="${nextIndex}"]`), payload, timeline[nextIndex], nextIndex, true, visibleCommands);
   }
   updateCommandHighlights(nextIndex >= 0 ? timeline[nextIndex] : null);
 }
@@ -755,9 +844,11 @@ function renderDetail(){
     return;
   }
   const payload = currentWindow;
-  const timeline = payload.timeline || [];
+  const visibleCommands = filteredDetailCommands(payload);
+  const timelineEntries = timelineEntriesForCommands(payload, visibleCommands);
   const summaries = chunkSummaries(payload);
-  const activeChunk = timeline[selectedChunkIndex] || null;
+  const visibleTotalCostUsd = commandRowsTotalCost(payload, visibleCommands);
+  const activeChunk = (payload.timeline || [])[selectedChunkIndex] || null;
   root.innerHTML = `
     <div class="detail-head">
       <div>
@@ -785,9 +876,9 @@ function renderDetail(){
     </tbody></table></div>
     <h4>Session steps (cost + summary)</h4>
     <div id="chunkTimeline">
-      ${timeline.map((chunk, index) => {
+      ${timelineEntries.map(({ chunk, index }) => {
         const isActive = index === selectedChunkIndex;
-        const chunkSummary = summaries[index] || summarizeChunk(payload, chunk);
+        const chunkSummary = activeRequestPatternFilter() ? summarizeChunk(payload, chunk, visibleCommands, visibleTotalCostUsd) : (summaries[index] || summarizeChunk(payload, chunk));
         return `<section class="chunk-card${isActive ? ' is-active' : ''}" data-chunk-index="${index}">
           <div class="chunk-summary" data-chunk-index="${index}" aria-expanded="${isActive ? 'true' : 'false'}">
             <div class="chunk-title-row">
@@ -796,22 +887,22 @@ function renderDetail(){
             </div>
             <div class="muted">Commands ${escapeHtml(chunk.start_command_index)}-${escapeHtml(chunk.end_command_index)}</div>
             <div class="chunk-meta"><span>${escapeHtml(chunk.workflow_phase || "")}</span><span>${escapeHtml(chunk.efficiency_label || "")}</span><span>${escapeHtml(chunk.fixing_cause || "")}</span></div>
-            <div class="chunk-cost">${money(chunk.cost_usd || 0)} (${chunkSummary.costSharePct.toFixed(0)}%)</div>
-            <div class="muted">Context ${money(chunk.headline_context_cost_usd || 0)} · Cache ${money(chunk.headline_cache_read_cost_usd || 0)} · Output ${money(chunk.headline_output_cost_usd || 0)}</div>
+            <div class="chunk-cost">${money(chunkSummary.metrics.cost_usd)} (${chunkSummary.costSharePct.toFixed(0)}%)</div>
+            <div class="muted">Context ${money(chunkSummary.metrics.headline_context_cost_usd)} · Cache ${money(chunkSummary.metrics.headline_cache_read_cost_usd)} · Output ${money(chunkSummary.metrics.headline_output_cost_usd)}</div>
             <div class="chunk-summary-text">${escapeHtml(chunkSummary.summaryText)}</div>
             ${chunkSummary.actionLines.length ? `<ul class="chunk-detail-list">${chunkSummary.actionLines.map(line => `<li>${escapeHtml(line)}</li>`).join("")}</ul>` : ""}
             ${chunkSummary.userAsked ? `<div class="chunk-preview">User asked: ${escapeHtml(chunkSummary.userAsked)}</div>` : ""}
           </div>
-          <div class="chunk-body" data-chunk-index="${index}" ${isActive ? '' : 'hidden'}>${isActive ? renderChunkBody(chunk) : ''}</div>
+          <div class="chunk-body" data-chunk-index="${index}" ${isActive ? '' : 'hidden'}>${isActive ? renderChunkBody(payload, chunk, visibleCommands) : ''}</div>
         </section>`;
-      }).join("") || '<div class="empty">No chunk timeline.</div>'}
+      }).join("") || '<div class="empty">No session steps match the current request pattern.</div>'}
     </div>
     <h4>Command table</h4>
     <div class="table-wrap">
       <table id="commandTable">
         <thead><tr><th>#</th><th class="n">Cost</th><th class="n">Context</th><th class="n">Cache read</th><th class="n">Output</th><th class="n">Reasoning</th><th>Phase</th><th>Fixing cause</th><th>Tool</th><th>Preview</th></tr></thead>
         <tbody>
-          ${renderCommandTableRows(payload, activeChunk)}
+          ${renderCommandTableRows(payload, activeChunk, visibleCommands)}
         </tbody>
       </table>
     </div>`;

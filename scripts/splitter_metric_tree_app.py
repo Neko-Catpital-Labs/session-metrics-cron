@@ -699,6 +699,7 @@ def cost_explorer_search_sql(
             filters.append(f"{issue_column} = {sql_string(issue_value)}")
     filtered_where = warehouse_date_where(start, end, filters)
     all_where = warehouse_date_where(start, end)
+    display_request_pattern_expr = sql_string(request_pattern) if request_pattern else "all_commands.request_pattern"
     matching_cost_expr = cost_explorer_match_expression(token_bucket)
     return f"""
 WITH all_commands AS (
@@ -732,7 +733,7 @@ window_totals AS (
     all_commands.prompt_index,
     all_commands.window_file,
     all_commands.short_title,
-    all_commands.request_pattern,
+    {display_request_pattern_expr} AS request_pattern,
     all_commands.task_type,
     all_commands.task_type_label,
     all_commands.model,

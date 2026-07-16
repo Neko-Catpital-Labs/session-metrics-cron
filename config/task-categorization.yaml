@@ -64,11 +64,12 @@ classifiers:
         priority: 850
         confidence: high
         regex:
-          - "\\binvoker\\b"
           - "plan-to-invoker"
           - "submit to invoker"
           - "workflow chain"
           - "workflow submission"
+          - "generate invoker yaml"
+          - "generated-plan"
 
       - id: git_branch_stack
         priority: 800

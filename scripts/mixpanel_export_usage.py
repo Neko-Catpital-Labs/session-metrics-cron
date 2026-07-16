@@ -64,7 +64,7 @@ DEFAULT_TASK_CATEGORIZATION_CONFIG: dict[str, Any] = {
             "enabled": True,
             "rules": [
                 {"id": "pr_review", "priority": 900, "confidence": "high", "regex": [r"\bpr\b", r"\bpull request\b", r"\breview\b", "pr summary", "pr body", "auto-stamp", "landed", "merged"]},
-                {"id": "invoker_plan_submission", "priority": 850, "confidence": "high", "regex": [r"\binvoker\b", "plan-to-invoker", "submit to invoker", "workflow chain", "workflow submission"]},
+                {"id": "invoker_plan_submission", "priority": 850, "confidence": "high", "regex": ["plan-to-invoker", "submit to invoker", "workflow chain", "workflow submission", "generate invoker yaml", "generated-plan"]},
                 {"id": "git_branch_stack", "priority": 800, "confidence": "high", "regex": [r"\brebase\b", r"\bmerge\b", r"\bstack\b", "upstream/master", "origin/master", "branch stack", "recreate all workflows"]},
                 {"id": "debug_repro", "priority": 750, "confidence": "high", "regex": [r"\brepro\b", "root cause", r"\bdebug\b", r"\binvestigate\b", "failure analysis"]},
                 {"id": "ui_terminal_visual", "priority": 700, "confidence": "high", "regex": [r"\bui\b", "terminal", "screenshot", "visual proof", "playwright", "embedded pty", "graph"]},
@@ -108,7 +108,7 @@ DEFAULT_REQUEST_PATTERN_CONFIG: dict[str, Any] = {
             "continue_from": ["other"],
             "rules": [
                 {"id": "pr_review", "confidence": "high", "regex": ["\\bpr\\b", "\\bpull request\\b", "\\breview\\b", "pr summary", "pr body"]},
-                {"id": "invoker_plan_submission", "confidence": "high", "regex": ["\\binvoker\\b", "plan-to-invoker", "submit to invoker", "workflow chain", "workflow submission"]},
+                {"id": "invoker_plan_submission", "confidence": "high", "regex": ["plan-to-invoker", "submit to invoker", "workflow chain", "workflow submission", "generate invoker yaml", "generated-plan"]},
                 {"id": "ui_terminal_visual", "confidence": "high", "regex": ["\\bui\\b", "terminal", "screenshot", "visual proof", "playwright", "embedded pty", "graph"]},
                 {"id": "dependency_setup", "confidence": "medium", "regex": ["\\binstall\\b", "\\bdependency\\b", "\\bdependencies\\b", "\\bpnpm\\b", "\\bnpm\\b", "\\bpip\\b", "\\bbundler\\b"]},
                 {"id": "git_branch_stack", "confidence": "high", "regex": ["\\bgit\\b", "\\bbranch\\b", "\\bstack\\b", "\\brebase\\b", "\\bmerge\\b", "upstream/master", "origin/master"]},

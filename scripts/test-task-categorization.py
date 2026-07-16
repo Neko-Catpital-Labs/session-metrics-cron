@@ -18,13 +18,13 @@ sys.modules["mixpanel_export_usage"] = exporter
 spec.loader.exec_module(exporter)
 
 
-def row(text: str) -> dict[str, str]:
+def row(text: str, *, session_cwd: str = "") -> dict[str, str]:
     return {
         "prompt_preview": text,
         "previous_prompt_preview": "",
         "first_prompt_preview": "",
         "final_answer_preview": "",
-        "session_cwd": "",
+        "session_cwd": session_cwd,
     }
 
 
@@ -65,6 +65,7 @@ class TaskCategorizationTests(unittest.TestCase):
         cases = {
             "please review this PR body": "pr_review",
             "submit to invoker as a workflow chain": "invoker_plan_submission",
+            "rename the Invoker context menu button label": "uncategorized",
             "rebase this branch stack on upstream/master": "git_branch_stack",
             "investigate the root cause with a repro": "debug_repro",
             "capture a Playwright screenshot of the terminal UI": "ui_terminal_visual",
@@ -72,11 +73,14 @@ class TaskCategorizationTests(unittest.TestCase):
             "CI has a failing test in pytest": "test_ci_failure",
             "prepare the release changelog": "release_packaging",
             "workflow failed and needs autofix": "workflow_repair",
-            "write a small utility": "uncategorized",
         }
         for text, expected in cases.items():
             with self.subTest(text=text):
                 self.assertEqual(categorizer.classify(row(text)).task_type, expected)
+    def test_invoker_repo_context_alone_does_not_mean_plan_submission(self) -> None:
+        categorizer = exporter.TaskCategorizer(base_config())
+        result = categorizer.classify(row("Fix the failing command.", session_cwd="/home/invoker/.invoker/worktrees/demo"))
+        self.assertEqual(result.task_type, "uncategorized")
 
     def codex_config(self, command: list[str], timeout_seconds: int = 5) -> dict:
         config = base_config()
