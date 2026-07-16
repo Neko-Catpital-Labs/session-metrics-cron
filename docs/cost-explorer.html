@@ -60,19 +60,22 @@
   .detail-empty, .empty { border:1px dashed var(--line); border-radius:10px; padding:1rem; color:var(--sub); background:var(--bg); }
   .detail-head { display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; }
   .detail-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:.65rem; margin:.8rem 0; }
+  .detail-summary { background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:.8rem .9rem; margin:.8rem 0; }
+  .detail-summary h4 { margin:0 0 .35rem; font-size:.95rem; }
+  .detail-summary .summary-meta { color:var(--sub); font-size:.8rem; display:flex; flex-wrap:wrap; gap:.5rem; margin:.35rem 0; }
+  .detail-summary .summary-text { margin:.35rem 0 0; font-size:.92rem; }
   .detail-card { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:.7rem .8rem; }
   .detail-card .l { color:var(--sub); font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; }
   .label-evidence { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:.65rem; margin:.8rem 0; }
   .label-evidence-card { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:.7rem .8rem; }
   .label-evidence-card h4 { margin:0 0 .45rem; font-size:.92rem; }
-  .label-evidence-list { margin:0; padding-left:1rem; color:var(--sub); font-size:.82rem; }
-  .label-evidence-list li { margin:.2rem 0; }
   .footnote { color:var(--sub); font-size:.78rem; margin-top:.4rem; }
   table { width:100%; border-collapse:collapse; font-size:.86rem; }
   th, td { padding:.42rem .5rem; border-bottom:1px solid #eef1f4; text-align:left; vertical-align:top; }
   th.n, td.n { text-align:right; font-variant-numeric:tabular-nums; }
   #chunkTimeline { display:flex; flex-direction:column; gap:.8rem; width:100%; margin:.75rem 0 1rem; overflow:visible; }
   .chunk-card { width:100%; border:1px solid var(--line); border-radius:12px; background:var(--bg); }
+  .chunk-card.is-task-match { border-color:#c7d2fe; box-shadow: inset 3px 0 0 #6366f1; }
   .chunk-card.is-active { border-color:var(--selected-line); box-shadow: inset 3px 0 0 var(--selected-line); background:var(--selected); }
   .chunk-summary { padding:.75rem .8rem; cursor:pointer; }
   .chunk-summary:hover { background:rgba(37,99,235,.03); }
@@ -81,6 +84,7 @@
   .chunk-toggle { color:var(--link); font-size:.8rem; white-space:nowrap; }
   .chunk-cost { font-weight:600; margin:.3rem 0 .15rem; }
   .chunk-meta { color:var(--sub); font-size:.78rem; display:flex; flex-wrap:wrap; gap:.45rem; margin:.25rem 0 .45rem; }
+  .chunk-meta .task-match-badge { color:#312e81; background:#e0e7ff; border-radius:999px; padding:.08rem .42rem; font-size:.72rem; }
   .chunk-summary-text { margin:.35rem 0 0; font-size:.9rem; }
   .chunk-detail-list { margin:.45rem 0 0; padding-left:1.1rem; color:var(--sub); font-size:.82rem; }
   .chunk-detail-list li { margin:.18rem 0; }
@@ -400,6 +404,9 @@ function applyLoadedSummary(metaText){
 }
 function activeRequestPatternFilter(){
   return String(state.request_pattern || (state.issue_kind === "request_pattern" ? state.issue_value : "") || "").trim();
+}
+function activeTaskTypeFilter(){
+  return String(state.task_type || (state.issue_kind === "task_type" ? state.issue_value : "") || "").trim();
 }
 function requestPatternAllValuesMode(){
   return state.issue_kind === "request_pattern" && !state.issue_value && !state.request_pattern;
@@ -726,10 +733,13 @@ function chooseDefaultChunk(payload){
   const visibleCommands = filteredDetailCommands(payload);
   const entries = timelineEntriesForCommands(payload, visibleCommands);
   if(!entries.length) return -1;
-  const matching = state.issue_kind === "fixing_cause" && state.issue_value
+  const fixingMatches = state.issue_kind === "fixing_cause" && state.issue_value
     ? entries.filter(({ chunk }) => (chunk.fixing_cause || "") === state.issue_value)
     : [];
-  const pool = matching.length ? matching : entries;
+  const taskMatches = activeTaskTypeFilter()
+    ? entries.filter(({ chunk }) => chunkMatchesTaskType(payload, chunk, visibleCommands))
+    : [];
+  const pool = fixingMatches.length ? fixingMatches : (taskMatches.length ? taskMatches : entries);
   const winner = pool.slice().sort((a, b) => chunkCommandRows(payload, b.chunk, visibleCommands).length - chunkCommandRows(payload, a.chunk, visibleCommands).length || Number(b.chunk.cost_usd || 0) - Number(a.chunk.cost_usd || 0))[0];
   return winner ? winner.index : -1;
 }
@@ -822,6 +832,22 @@ function summarizeChunk(payload, chunk, commandRows = payload.commands || [], to
     metrics,
   };
 }
+function chunkMatchesTaskType(payload, chunk, commandRows = payload.commands || []){
+  const taskType = activeTaskTypeFilter();
+  if(!taskType) return false;
+  return chunkCommandRows(payload, chunk, commandRows).some(row => String(row.task_type || "") === taskType);
+}
+function detailFocusChunk(payload, timelineEntries, visibleCommands, visibleTotalCostUsd){
+  if(!timelineEntries.length) return null;
+  const active = timelineEntries.find(({ index }) => index === selectedChunkIndex);
+  if(active){
+    return { ...active, summary: summarizeChunk(payload, active.chunk, visibleCommands, visibleTotalCostUsd) };
+  }
+  const taskType = activeTaskTypeFilter();
+  const taskMatch = taskType ? timelineEntries.find(({ chunk }) => chunkMatchesTaskType(payload, chunk, visibleCommands)) : null;
+  const chosen = taskMatch || timelineEntries[0];
+  return chosen ? { ...chosen, summary: summarizeChunk(payload, chosen.chunk, visibleCommands, visibleTotalCostUsd) } : null;
+}
 function chunkSummaries(payload){
   if(!Array.isArray(payload._chunkSummaries)){
     payload._chunkSummaries = (payload.timeline || []).map(chunk => summarizeChunk(payload, chunk));
@@ -858,10 +884,13 @@ function updateCommandHighlights(activeChunk){
 function setChunkCardState(card, payload, chunk, index, isActive, commandRows){
   if(!card) return;
   card.classList.toggle('is-active', isActive);
+  card.classList.toggle('is-task-match', chunkMatchesTaskType(payload, chunk, commandRows));
   const summary = card.querySelector('.chunk-summary');
   if(summary) summary.setAttribute('aria-expanded', isActive ? 'true' : 'false');
   const toggle = card.querySelector('.chunk-toggle');
   if(toggle) toggle.textContent = isActive ? 'Collapse' : 'Expand';
+  const badge = card.querySelector('.task-match-badge');
+  if(badge) badge.hidden = !chunkMatchesTaskType(payload, chunk, commandRows);
   const body = card.querySelector(`.chunk-body[data-chunk-index="${index}"]`);
   if(!body) return;
   if(isActive){
@@ -905,6 +934,7 @@ function renderDetail(){
   const summaries = chunkSummaries(payload);
   const visibleTotalCostUsd = commandRowsTotalCost(payload, visibleCommands);
   const activeChunk = (payload.timeline || [])[selectedChunkIndex] || null;
+  const focusChunk = detailFocusChunk(payload, timelineEntries, visibleCommands, visibleTotalCostUsd);
   root.innerHTML = `
     <div class="detail-head">
       <div>
@@ -921,6 +951,12 @@ function renderDetail(){
       <span class="tag">${escapeHtml(selectedRow.origin || "")}</span>
     </div>
     ${renderLabelEvidence(payload)}
+    ${focusChunk ? `<div class="detail-summary">
+      <h4>Step summary</h4>
+      <div class="summary-meta"><span>${escapeHtml(focusChunk.chunk.display_title || `Step ${focusChunk.index + 1}`)}</span><span>Commands ${escapeHtml(focusChunk.chunk.start_command_index)}-${escapeHtml(focusChunk.chunk.end_command_index)}</span><span>${money(focusChunk.summary.metrics.cost_usd)}</span></div>
+      <div class="summary-text">${escapeHtml(focusChunk.summary.summaryText)}</div>
+      ${focusChunk.summary.actionLines.length ? `<ul class="chunk-detail-list">${focusChunk.summary.actionLines.map(line => `<li>${escapeHtml(line)}</li>`).join("")}</ul>` : ""}
+    </div>` : ""}
     <div class="detail-grid">
       <div class="detail-card"><div class="v">${money(payload.headline_context_cost_usd || 0)}</div><div class="l">Context</div><div class="muted">${tokens(payload.headline_context_tokens || 0)} tok</div></div>
       <div class="detail-card"><div class="v">${money(payload.headline_cache_read_cost_usd || 0)}</div><div class="l">Cache read</div><div class="muted">${tokens(payload.headline_cache_read_tokens || 0)} tok</div></div>
@@ -935,15 +971,16 @@ function renderDetail(){
     <div id="chunkTimeline">
       ${timelineEntries.map(({ chunk, index }) => {
         const isActive = index === selectedChunkIndex;
+        const isTaskMatch = chunkMatchesTaskType(payload, chunk, visibleCommands);
         const chunkSummary = activeRequestPatternFilter() ? summarizeChunk(payload, chunk, visibleCommands, visibleTotalCostUsd) : (summaries[index] || summarizeChunk(payload, chunk));
-        return `<section class="chunk-card${isActive ? ' is-active' : ''}" data-chunk-index="${index}">
+        return `<section class="chunk-card${isActive ? ' is-active' : ''}${isTaskMatch ? ' is-task-match' : ''}" data-chunk-index="${index}">
           <div class="chunk-summary" data-chunk-index="${index}" aria-expanded="${isActive ? 'true' : 'false'}">
             <div class="chunk-title-row">
               <div class="chunk-title">${escapeHtml(chunk.display_title || `Step ${index + 1} · ${chunk.workflow_phase || ""}`)} · ${count(chunkSummary.commandCount)} commands</div>
               <div class="chunk-toggle">${isActive ? 'Collapse' : 'Expand'}</div>
             </div>
             <div class="muted">Commands ${escapeHtml(chunk.start_command_index)}-${escapeHtml(chunk.end_command_index)}</div>
-            <div class="chunk-meta"><span>${escapeHtml(chunk.workflow_phase || "")}</span><span>${escapeHtml(chunk.efficiency_label || "")}</span><span>${escapeHtml(chunk.fixing_cause || "")}</span></div>
+            <div class="chunk-meta"><span>${escapeHtml(chunk.workflow_phase || "")}</span><span>${escapeHtml(chunk.efficiency_label || "")}</span><span>${escapeHtml(chunk.fixing_cause || "")}</span><span class="task-match-badge" ${isTaskMatch ? '' : 'hidden'}>task match</span></div>
             <div class="chunk-cost">${money(chunkSummary.metrics.cost_usd)} (${chunkSummary.costSharePct.toFixed(0)}%)</div>
             <div class="muted">Context ${money(chunkSummary.metrics.headline_context_cost_usd)} · Cache ${money(chunkSummary.metrics.headline_cache_read_cost_usd)} · Output ${money(chunkSummary.metrics.headline_output_cost_usd)}</div>
             <div class="chunk-summary-text">${escapeHtml(chunkSummary.summaryText)}</div>
