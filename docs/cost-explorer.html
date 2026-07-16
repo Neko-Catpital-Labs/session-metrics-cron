@@ -679,6 +679,75 @@ function renderConversationBlock(chunk){
   }
   return `<div class="step-subsection">Command previews</div><div class="muted">No conversation captured for this bucket.</div>`;
 }
+function chunkSummaries(payload){
+  if(!Array.isArray(payload._chunkSummaries)){
+    payload._chunkSummaries = (payload.timeline || []).map(chunk => summarizeChunk(payload, chunk));
+  }
+  return payload._chunkSummaries;
+}
+function renderChunkBody(chunk){
+  return `<div class="table-wrap"><table><thead><tr><th>Metric</th><th class="n">Value</th></tr></thead><tbody>
+      <tr><td>Total cost</td><td class="n">${money(chunk.cost_usd || 0)}</td></tr>
+      <tr><td>Context</td><td class="n">${bucketCell(chunk.headline_context_cost_usd || 0, chunk.headline_context_tokens || 0)}</td></tr>
+      <tr><td>Cache read</td><td class="n">${bucketCell(chunk.headline_cache_read_cost_usd || 0, chunk.headline_cache_read_tokens || 0)}</td></tr>
+      <tr><td>Output</td><td class="n">${bucketCell(chunk.headline_output_cost_usd || 0, chunk.headline_output_tokens || 0)}</td></tr>
+      <tr><td>Reasoning</td><td class="n">${reasoningCell(chunk.reasoning_tokens || 0)}</td></tr>
+    </tbody></table></div>
+    ${renderConversationBlock(chunk)}`;
+}
+function renderCommandTableRows(payload, activeChunk){
+  return (payload.commands || []).map(row => {
+    const commandIndex = Number(row.command_index);
+    const highlighted = activeChunk && commandIndex >= Number(activeChunk.start_command_index) && commandIndex <= Number(activeChunk.end_command_index);
+    const issueMatch = state.issue_kind === 'fixing_cause' && state.issue_value && (row.fixing_cause || '') === state.issue_value;
+    const tool = [row.function_name, row.shell_verb].filter(Boolean).join(' / ');
+    return `<tr data-command-index="${escapeHtml(row.command_index)}" class="${highlighted ? 'is-highlighted' : ''} ${issueMatch ? 'is-issue-match' : ''}"><td class="n">${escapeHtml(row.command_index)}</td><td class="n">${money(row.cost_usd || 0)}</td><td class="n">${bucketCell(row.headline_context_cost_usd || 0, row.headline_context_tokens || 0)}</td><td class="n">${bucketCell(row.headline_cache_read_cost_usd || 0, row.headline_cache_read_tokens || 0)}</td><td class="n">${bucketCell(row.headline_output_cost_usd || 0, row.headline_output_tokens || 0)}</td><td class="n">${reasoningCell(row.allocated_reasoning_tokens || 0)}</td><td>${escapeHtml(row.workflow_phase || '')}</td><td class="fixing-cause">${escapeHtml(row.fixing_cause || '')}</td><td>${escapeHtml(tool)}</td><td class="preview">${escapeHtml(row.preview || '')}</td></tr>`;
+  }).join("");
+}
+function updateCommandHighlights(activeChunk){
+  document.querySelectorAll('#commandTable tbody tr[data-command-index]').forEach(row => {
+    const commandIndex = Number(row.dataset.commandIndex || -1);
+    const highlighted = activeChunk && commandIndex >= Number(activeChunk.start_command_index) && commandIndex <= Number(activeChunk.end_command_index);
+    row.classList.toggle('is-highlighted', !!highlighted);
+  });
+}
+function setChunkCardState(card, chunk, index, isActive){
+  if(!card) return;
+  card.classList.toggle('is-active', isActive);
+  const summary = card.querySelector('.chunk-summary');
+  if(summary) summary.setAttribute('aria-expanded', isActive ? 'true' : 'false');
+  const toggle = card.querySelector('.chunk-toggle');
+  if(toggle) toggle.textContent = isActive ? 'Collapse' : 'Expand';
+  const body = card.querySelector(`.chunk-body[data-chunk-index="${index}"]`);
+  if(!body) return;
+  if(isActive){
+    if(!body.innerHTML) body.innerHTML = renderChunkBody(chunk);
+    body.removeAttribute('hidden');
+    return;
+  }
+  body.setAttribute('hidden', '');
+  body.innerHTML = '';
+}
+function setSelectedChunk(nextIndex){
+  if(!currentWindow) return;
+  const payload = currentWindow;
+  const timeline = payload.timeline || [];
+  const root = document.getElementById('explorerDetail');
+  if(!root.querySelector('#chunkTimeline') || !root.querySelector('#commandTable')){
+    selectedChunkIndex = nextIndex;
+    renderDetail();
+    return;
+  }
+  const previousIndex = selectedChunkIndex;
+  selectedChunkIndex = nextIndex;
+  if(previousIndex >= 0 && timeline[previousIndex]){
+    setChunkCardState(root.querySelector(`.chunk-card[data-chunk-index="${previousIndex}"]`), timeline[previousIndex], previousIndex, false);
+  }
+  if(nextIndex >= 0 && timeline[nextIndex]){
+    setChunkCardState(root.querySelector(`.chunk-card[data-chunk-index="${nextIndex}"]`), timeline[nextIndex], nextIndex, true);
+  }
+  updateCommandHighlights(nextIndex >= 0 ? timeline[nextIndex] : null);
+}
 function renderDetail(){
   const root = document.getElementById("explorerDetail");
   if(!currentWindow || !selectedRow){
@@ -687,6 +756,7 @@ function renderDetail(){
   }
   const payload = currentWindow;
   const timeline = payload.timeline || [];
+  const summaries = chunkSummaries(payload);
   const activeChunk = timeline[selectedChunkIndex] || null;
   root.innerHTML = `
     <div class="detail-head">
@@ -717,7 +787,7 @@ function renderDetail(){
     <div id="chunkTimeline">
       ${timeline.map((chunk, index) => {
         const isActive = index === selectedChunkIndex;
-        const chunkSummary = summarizeChunk(payload, chunk);
+        const chunkSummary = summaries[index] || summarizeChunk(payload, chunk);
         return `<section class="chunk-card${isActive ? ' is-active' : ''}" data-chunk-index="${index}">
           <div class="chunk-summary" data-chunk-index="${index}" aria-expanded="${isActive ? 'true' : 'false'}">
             <div class="chunk-title-row">
@@ -732,16 +802,7 @@ function renderDetail(){
             ${chunkSummary.actionLines.length ? `<ul class="chunk-detail-list">${chunkSummary.actionLines.map(line => `<li>${escapeHtml(line)}</li>`).join("")}</ul>` : ""}
             ${chunkSummary.userAsked ? `<div class="chunk-preview">User asked: ${escapeHtml(chunkSummary.userAsked)}</div>` : ""}
           </div>
-          <div class="chunk-body" ${isActive ? '' : 'hidden'}>
-            <div class="table-wrap"><table><thead><tr><th>Metric</th><th class="n">Value</th></tr></thead><tbody>
-              <tr><td>Total cost</td><td class="n">${money(chunk.cost_usd || 0)}</td></tr>
-              <tr><td>Context</td><td class="n">${bucketCell(chunk.headline_context_cost_usd || 0, chunk.headline_context_tokens || 0)}</td></tr>
-              <tr><td>Cache read</td><td class="n">${bucketCell(chunk.headline_cache_read_cost_usd || 0, chunk.headline_cache_read_tokens || 0)}</td></tr>
-              <tr><td>Output</td><td class="n">${bucketCell(chunk.headline_output_cost_usd || 0, chunk.headline_output_tokens || 0)}</td></tr>
-              <tr><td>Reasoning</td><td class="n">${reasoningCell(chunk.reasoning_tokens || 0)}</td></tr>
-            </tbody></table></div>
-            ${renderConversationBlock(chunk)}
-          </div>
+          <div class="chunk-body" data-chunk-index="${index}" ${isActive ? '' : 'hidden'}>${isActive ? renderChunkBody(chunk) : ''}</div>
         </section>`;
       }).join("") || '<div class="empty">No chunk timeline.</div>'}
     </div>
@@ -750,12 +811,7 @@ function renderDetail(){
       <table id="commandTable">
         <thead><tr><th>#</th><th class="n">Cost</th><th class="n">Context</th><th class="n">Cache read</th><th class="n">Output</th><th class="n">Reasoning</th><th>Phase</th><th>Fixing cause</th><th>Tool</th><th>Preview</th></tr></thead>
         <tbody>
-          ${(payload.commands || []).map(row => {
-            const highlighted = activeChunk && Number(row.command_index) >= Number(activeChunk.start_command_index) && Number(row.command_index) <= Number(activeChunk.end_command_index);
-            const issueMatch = state.issue_kind === 'fixing_cause' && state.issue_value && (row.fixing_cause || '') === state.issue_value;
-            const tool = [row.function_name, row.shell_verb].filter(Boolean).join(' / ');
-            return `<tr class="${highlighted ? 'is-highlighted' : ''} ${issueMatch ? 'is-issue-match' : ''}"><td class="n">${escapeHtml(row.command_index)}</td><td class="n">${money(row.cost_usd || 0)}</td><td class="n">${bucketCell(row.headline_context_cost_usd || 0, row.headline_context_tokens || 0)}</td><td class="n">${bucketCell(row.headline_cache_read_cost_usd || 0, row.headline_cache_read_tokens || 0)}</td><td class="n">${bucketCell(row.headline_output_cost_usd || 0, row.headline_output_tokens || 0)}</td><td class="n">${reasoningCell(row.allocated_reasoning_tokens || 0)}</td><td>${escapeHtml(row.workflow_phase || '')}</td><td class="fixing-cause">${escapeHtml(row.fixing_cause || '')}</td><td>${escapeHtml(tool)}</td><td class="preview">${escapeHtml(row.preview || '')}</td></tr>`;
-          }).join("")}
+          ${renderCommandTableRows(payload, activeChunk)}
         </tbody>
       </table>
     </div>`;
@@ -874,8 +930,7 @@ function bindControls(){
     const chunk = event.target.closest(".chunk-summary[data-chunk-index]");
     if(!chunk || !currentWindow) return;
     const chunkIndex = Number(chunk.dataset.chunkIndex || -1);
-    selectedChunkIndex = selectedChunkIndex === chunkIndex ? -1 : chunkIndex;
-    renderDetail();
+    setSelectedChunk(selectedChunkIndex === chunkIndex ? -1 : chunkIndex);
   });
 }
 function renderLocalFileMode(){
