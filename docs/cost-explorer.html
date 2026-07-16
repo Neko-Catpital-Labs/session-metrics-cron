@@ -61,8 +61,12 @@
   .detail-head { display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; }
   .detail-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:.65rem; margin:.8rem 0; }
   .detail-card { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:.7rem .8rem; }
-  .detail-card .v { font-size:1.2rem; font-weight:700; }
   .detail-card .l { color:var(--sub); font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; }
+  .label-evidence { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:.65rem; margin:.8rem 0; }
+  .label-evidence-card { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:.7rem .8rem; }
+  .label-evidence-card h4 { margin:0 0 .45rem; font-size:.92rem; }
+  .label-evidence-list { margin:0; padding-left:1rem; color:var(--sub); font-size:.82rem; }
+  .label-evidence-list li { margin:.2rem 0; }
   .footnote { color:var(--sub); font-size:.78rem; margin-top:.4rem; }
   table { width:100%; border-collapse:collapse; font-size:.86rem; }
   th, td { padding:.42rem .5rem; border-bottom:1px solid #eef1f4; text-align:left; vertical-align:top; }
@@ -122,18 +126,18 @@
         </div>
       </div>
       <div class="group">
-        <span class="lbl">Issue kind</span>
+        <span class="lbl">Filter field</span>
         <select class="select" id="issueKind">
-          <option value="fixing_cause">fixing_cause</option>
-          <option value="task_type">task_type</option>
-          <option value="request_pattern">request_pattern</option>
-          <option value="agent_tool_intention">agent_tool_intention</option>
-          <option value="function_name">function_name</option>
-          <option value="shell_verb">shell_verb</option>
+          <option value="request_pattern">request pattern</option>
+          <option value="fixing_cause">fixing cause</option>
+          <option value="task_type">task type</option>
+          <option value="agent_tool_intention">tool intent</option>
+          <option value="function_name">function</option>
+          <option value="shell_verb">shell verb</option>
         </select>
       </div>
       <div class="group">
-        <span class="lbl">Issue value</span>
+        <span class="lbl">Filter value</span>
         <select class="select" id="issueValue"></select>
       </div>
       <div class="group">
@@ -149,7 +153,7 @@
         <span class="lbl">Text search</span>
         <input class="search" id="textSearch" type="search" placeholder="Search short title, prompt, or task label">
       </div>
-      <p class="controls-note">Task type = the broad kind of work, like review, repair, or implementation. Request pattern = the more exact ask shape, like PR review, CI loop cleanup, or invoker plan submission.</p>
+      <p class="controls-note">Filter field picks the label family. Filter value picks the exact label inside it. Request pattern = the ask shape. Fixing cause = why the spend happened inside the work.</p>
       <div class="chip-groups" id="chipGroups"></div>
     </div>
   </section>
@@ -175,9 +179,9 @@
 
 <script>
 const ISSUE_KIND_FIELDS = {
+  request_pattern: { key: "request_pattern", label: row => row.request_pattern || "" },
   fixing_cause: { key: "fixing_cause", label: row => row.fixing_cause || "" },
   task_type: { key: "task_type", label: row => row.label || row.task_type || "" },
-  request_pattern: { key: "request_pattern", label: row => row.request_pattern || "" },
   agent_tool_intention: { key: "agent_tool_intention", label: row => row.agent_tool_intention || "" },
   function_name: { key: "function_name", label: row => row.function_name || "" },
   shell_verb: { key: "shell_verb", label: row => row.shell_verb || "" },
@@ -193,6 +197,13 @@ const CHIP_GROUPS = [
 const FILTER_HELP = {
   task_type: "Broad work bucket. This says what kind of work the model was doing overall, like review, repair, or implementation.",
   request_pattern: "Specific ask shape. This says what kind of request started the work, like PR review, CI loop cleanup, or invoker plan submission.",
+};
+const SOURCE_FIELD_LABELS = {
+  prompt_preview: "current prompt",
+  previous_prompt_preview: "previous prompt",
+  first_prompt_preview: "first prompt",
+  final_answer_preview: "assistant answer",
+  session_cwd: "working directory",
 };
 const INTENT_LABELS = {
   failure_diagnosis_inspection: "diagnosing failures and reading code",
@@ -252,7 +263,7 @@ const state = {
   range: "30d",
   from: "",
   to: "",
-  issue_kind: "fixing_cause",
+  issue_kind: "request_pattern",
   issue_value: "",
   token_bucket: "all",
   text: "",
@@ -285,44 +296,48 @@ function counterField(rows, field){
   });
   return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
-function chunkCommandRows(payload, chunk){
-  return (payload.commands || []).filter(row => {
-    const index = Number(row.command_index);
-    return index >= Number(chunk.start_command_index) && index <= Number(chunk.end_command_index);
-  });
+function sourceFieldLabel(fieldName){
+  return SOURCE_FIELD_LABELS[fieldName] || fieldName.replaceAll("_", " ");
+}
+function requestPatternSourceField(ruleId){
+  const parts = String(ruleId || "").split(":");
+  return parts.length >= 3 ? parts[2] : "";
+}
+function requestPatternRuleLabel(ruleId){
+  const parts = String(ruleId || "").split(":");
+  if(parts.length >= 2) return `${parts[0]} / ${parts[1]}`;
+  return String(ruleId || "");
+}
+function classifierEvidence(label, items){
+  const rows = items.filter(item => item && item.value);
+  if(!rows.length) return "";
+  return `<div class="label-evidence-card"><h4>${escapeHtml(label)}</h4><ul class="label-evidence-list">${rows.map(item => `<li><strong>${escapeHtml(item.label)}:</strong> ${escapeHtml(item.value)}</li>`).join("")}</ul></div>`;
+}
+function renderLabelEvidence(payload){
+  const requestSource = requestPatternSourceField(payload.request_pattern_rule_id);
+  const requestSnippet = requestSource ? compactText(payload[requestSource] || "", 180) : "";
+  const taskSource = String(payload.task_type_source || "");
+  const taskSnippet = taskSource ? compactText(payload[taskSource] || "", 180) : "";
+  const requestCard = classifierEvidence("Why this request pattern?", [
+    { label: "Label", value: payload.request_pattern || "" },
+    { label: "Rule", value: requestPatternRuleLabel(payload.request_pattern_rule_id) },
+    { label: "Matched in", value: requestSource ? sourceFieldLabel(requestSource) : "" },
+    { label: "Confidence", value: payload.request_pattern_confidence || "" },
+    { label: "Example text", value: requestSnippet },
+  ]);
+  const taskCard = classifierEvidence("Why this task type?", [
+    { label: "Label", value: payload.task_type_label || payload.task_type || "" },
+    { label: "Classifier", value: payload.task_type_classifier || "" },
+    { label: "Reason", value: payload.task_type_reason || "" },
+    { label: "Matched in", value: taskSource ? sourceFieldLabel(taskSource) : "" },
+    { label: "Example text", value: taskSnippet },
+  ]);
+  if(!requestCard && !taskCard) return "";
+  return `<div class="label-evidence">${requestCard}${taskCard}</div>`;
 }
 function chunkUserAsk(chunk){
   const userEntry = (chunk.conversation_entries || []).find(entry => entry.role_label === "User" && compactText(entry.text, 0));
   return compactText(userEntry ? userEntry.text : (chunk.message_preview || (chunk.examples || [])[0] || ""), 220);
-}
-function summarizeChunk(payload, chunk){
-  const rows = chunkCommandRows(payload, chunk);
-  const intents = counterField(rows, "agent_tool_intention");
-  const tools = counterField(rows, "function_name");
-  const verbs = counterField(rows, "shell_verb");
-  const intentPhrase = intents.length ? (INTENT_LABELS[intents[0][0]] || intents[0][0].replaceAll("_", " ")) : "working on the request";
-  const summaryLead = chunkUserAsk(chunk) || compactText(chunk.message_preview || "", 220) || "Follow-up request in the session";
-  const summaryText = `${summaryLead.replace(/[.?!]+$/, "")}. Mostly ${intentPhrase}.`;
-  const activityParts = tools.slice(0, 3).map(([name, total]) => `${TOOL_LABELS[name] || name} (${total}x)`);
-  const shellParts = verbs.slice(0, 3).map(([name]) => name).filter(Boolean);
-  if(shellParts.length) activityParts.push(`shell: ${shellParts.join(", ")}`);
-  const actionLines = [];
-  if(activityParts.length) actionLines.push(`Agent activity: ${activityParts.join("; ")}`);
-  if(intents.length) actionLines.push(`Work type: ${intents.slice(0, 2).map(([name]) => INTENT_LABELS[name] || name.replaceAll("_", " ")).join(", ")}`);
-  const exampleCommands = [];
-  rows.forEach(row => {
-    const preview = compactText(row.preview || row.stdin_preview || "", 100);
-    if(!preview || exampleCommands.includes(preview) || exampleCommands.length >= 2) return;
-    exampleCommands.push(preview);
-  });
-  exampleCommands.forEach(command => actionLines.push(`Example command: ${command}`));
-  return {
-    commandCount: Number(chunk.events || rows.length || 0),
-    costSharePct: Number(payload.total_cost_usd || 0) > 0 ? (100 * Number(chunk.cost_usd || 0) / Number(payload.total_cost_usd || 0)) : 0,
-    summaryText,
-    actionLines,
-    userAsked: summaryLead,
-  };
 }
 function isLocalFileMode(){ return window.location.protocol === "file:"; }
 function fetchJson(url){
@@ -349,7 +364,7 @@ function loadScriptOnce(src){
 }
 function explorerStateFilters(){
   return {
-    issue_kind: state.issue_kind || "fixing_cause",
+    issue_kind: state.issue_kind || "request_pattern",
     issue_value: state.issue_value || "",
     token_bucket: state.token_bucket || "all",
     text: state.text || "",
@@ -401,12 +416,10 @@ function staticWindowMatches(row, from, to){
   return true;
 }
 function staticCommandMatches(row){
-  const requestPattern = activeRequestPatternFilter();
-  if(requestPattern && String(row.request_pattern || "") !== requestPattern) return false;
   if(state.agent_tool_intention && String(row.agent_tool_intention || "") !== state.agent_tool_intention) return false;
   if(state.function_name && String(row.function_name || "") !== state.function_name) return false;
   if(state.shell_verb && String(row.shell_verb || "") !== state.shell_verb) return false;
-  const issueField = state.issue_kind || "fixing_cause";
+  const issueField = state.issue_kind || "request_pattern";
   const issueValue = String(row[issueField] || "").trim();
   if(!issueValue) return false;
   if(state.issue_value && issueValue !== state.issue_value) return false;
@@ -545,20 +558,18 @@ function rangeBounds(){
 }
 function applyUrlState(){
   const params = new URLSearchParams(window.location.search);
-  if(params.get("range")) state.range = params.get("range");
   if(params.get("from") || params.get("to")) state.range = "custom";
   state.from = params.get("from") || state.from;
   state.to = params.get("to") || state.to;
-  state.issue_kind = params.get("issue_kind") || "fixing_cause";
+  state.issue_kind = params.get("issue_kind") || "request_pattern";
   state.issue_value = params.get("issue_value") || "";
   state.token_bucket = params.get("token_bucket") || "all";
   state.text = params.get("text") || "";
   for(const group of CHIP_GROUPS){ state[group.field] = params.get(group.field) || ""; }
-  state.agent_tool_intention = params.get("agent_tool_intention") || "";
 }
 function syncUrl(){
   const params = new URLSearchParams();
-  params.set("issue_kind", state.issue_kind || "fixing_cause");
+  params.set("issue_kind", state.issue_kind || "request_pattern");
   params.set("token_bucket", state.token_bucket || "all");
   if(state.range !== "30d") params.set("range", state.range);
   if(state.range === "custom"){
@@ -575,7 +586,7 @@ function syncUrl(){
 function summaryOptions(key){ return (summary && summary.filter_options && summary.filter_options[key]) || []; }
 function renderIssueValueOptions(){
   const select = document.getElementById("issueValue");
-  const spec = ISSUE_KIND_FIELDS[state.issue_kind] || ISSUE_KIND_FIELDS.fixing_cause;
+  const spec = ISSUE_KIND_FIELDS[state.issue_kind] || ISSUE_KIND_FIELDS.request_pattern;
   const rows = summaryOptions(state.issue_kind);
   const options = [`<option value="">All values</option>`].concat(rows.map(row => {
     const value = row[spec.key] || "";
@@ -864,6 +875,7 @@ function renderDetail(){
       <span class="tag">${escapeHtml(selectedRow.model || "")}</span>
       <span class="tag">${escapeHtml(selectedRow.origin || "")}</span>
     </div>
+    ${renderLabelEvidence(payload)}
     <div class="detail-grid">
       <div class="detail-card"><div class="v">${money(payload.headline_context_cost_usd || 0)}</div><div class="l">Context</div><div class="muted">${tokens(payload.headline_context_tokens || 0)} tok</div></div>
       <div class="detail-card"><div class="v">${money(payload.headline_cache_read_cost_usd || 0)}</div><div class="l">Cache read</div><div class="muted">${tokens(payload.headline_cache_read_tokens || 0)} tok</div></div>
@@ -967,11 +979,12 @@ async function runSearch(){
       : `Failed to load explorer search: ${error.message}`;
     document.getElementById("explorerResults").innerHTML = '<div class="empty">No prompt windows match the current filters.</div>';
     document.getElementById("explorerDetail").innerHTML = '<div class="detail-empty">Select a prompt window.</div>';
+    state.issue_kind = event.target.value || "request_pattern";
   }
 }
 function bindControls(){
   document.getElementById("issueKind").addEventListener("change", event => {
-    state.issue_kind = event.target.value || "fixing_cause";
+    state.issue_kind = event.target.value || "request_pattern";
     state.issue_value = "";
     renderIssueValueOptions();
     runSearch();

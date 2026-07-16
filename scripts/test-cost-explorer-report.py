@@ -272,7 +272,9 @@ class CostExplorerReportTests(unittest.TestCase):
 
             payload = json.loads((output_dir / "windows" / "session-a-p1.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["request_pattern"], "ci_fix")
+            self.assertEqual(payload["request_pattern_rule_id"], "base:ci_fix:prompt_preview")
             self.assertEqual(payload["task_type"], "ci_repair")
+            self.assertEqual(payload["task_type_reason"], "regex_rule:ci_repair")
             self.assertEqual(payload["headline_context_tokens"], 80.0)
             self.assertEqual(payload["headline_cache_read_tokens"], 20.0)
             self.assertEqual(payload["headline_output_tokens"], 10.0)
@@ -301,8 +303,14 @@ class CostExplorerReportTests(unittest.TestCase):
                 "request_pattern",
                 "request_pattern_path",
                 "request_pattern_depth",
+                "request_pattern_rule_id",
+                "request_pattern_confidence",
                 "task_type",
                 "task_type_label",
+                "task_type_confidence",
+                "task_type_classifier",
+                "task_type_reason",
+                "task_type_source",
                 "task_label",
                 "dominant_fixing_cause",
                 "fixing_cause_rollup",
