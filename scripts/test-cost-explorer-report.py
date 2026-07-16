@@ -112,6 +112,11 @@ def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
 
 def write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
+def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
+    content = "\n".join(json.dumps(row) for row in rows) + "\n"
+    path.write_text(content, encoding="utf-8")
+
+
 
 
 class CostExplorerReportTests(unittest.TestCase):
@@ -275,8 +280,11 @@ class CostExplorerReportTests(unittest.TestCase):
             self.assertEqual(payload["window_file"], "session-a-p1.json")
             self.assertEqual(payload["commands"][0]["headline_context_tokens"], 50.0)
             self.assertEqual(payload["commands"][0]["request_pattern"], "ci_fix")
-            self.assertTrue(payload["timeline"]) 
+            self.assertTrue(payload["timeline"])
             self.assertIn("headline_context_cost_usd", payload["timeline"][0])
+            self.assertIn("conversation_entries", payload["timeline"][0])
+            self.assertIn("message_preview", payload["timeline"][0])
+
 
             expected_payload_fields = {
                 "window_file",
@@ -321,6 +329,16 @@ class CostExplorerReportTests(unittest.TestCase):
                 "commands",
             }
             self.assertEqual(set(payload.keys()), expected_payload_fields)
+            explorer_html = (output_dir / "explorer.html").read_text(encoding="utf-8")
+            self.assertIn("function loadStaticBootstrap()", explorer_html)
+            self.assertIn("window.__COST_EXPLORER_STATIC_SUMMARY__", (output_dir / "summary.js").read_text(encoding="utf-8"))
+            self.assertIn("window.__COST_EXPLORER_STATIC_WINDOW_ROWS__", (output_dir / "window-rows.js").read_text(encoding="utf-8"))
+            self.assertIn("window.__COST_EXPLORER_STATIC_COMMAND_ROWS__", (output_dir / "command-rows.js").read_text(encoding="utf-8"))
+            self.assertIn(
+                'window.__COST_EXPLORER_STATIC_WINDOWS__["session-a-p1.json"]',
+                (output_dir / "windows-js" / "session-a-p1.json.js").read_text(encoding="utf-8"),
+            )
+
 
             with (output_dir / "commands.csv").open(newline="", encoding="utf-8") as handle:
                 header = next(csv.reader(handle))
@@ -328,6 +346,122 @@ class CostExplorerReportTests(unittest.TestCase):
             with (output_dir / "windows.csv").open(newline="", encoding="utf-8") as handle:
                 header = next(csv.reader(handle))
             self.assertEqual(header, report.WINDOWS_COLUMNS)
+
+    def test_builder_buckets_conversation_entries_by_chunk(self) -> None:
+        request_pattern_config = {
+            "version": "patterns-test",
+            "layers": [
+                {
+                    "id": "base",
+                    "default": "other",
+                    "rules": [
+                        {"id": "ci_fix", "regex": ["fix ci failure"], "confidence": "high"},
+                    ],
+                }
+            ],
+        }
+        task_config = {
+            "version": "tasks-test",
+            "categories": [
+                {"id": "uncategorized", "label": "Uncategorized"},
+                {"id": "ci_repair", "label": "CI Repair"},
+            ],
+            "defaults": {"id": "uncategorized", "confidence": "low", "reason": "default"},
+            "context": {"fields": [{"name": "prompt_preview", "weight": 1.0}]},
+            "classifiers": [
+                {
+                    "id": "regex-primary",
+                    "type": "regex",
+                    "enabled": True,
+                    "rules": [
+                        {"id": "ci_repair", "regex": ["fix ci failure"], "confidence": "high"},
+                    ],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            session_path = root / "session-a.jsonl"
+            write_jsonl(
+                session_path,
+                [
+                    {"message": {"role": "user", "content": [{"type": "input_text", "text": "Please fix the parser tests."}]}},
+                    {"payload": {"type": "function_call", "name": "edit", "arguments": "{\"path\":\"src/parser.py\"}"}},
+                    {"payload": {"type": "function_call_output", "output": "patched src/parser.py"}},
+                    {"payload": {"type": "message", "role": "assistant", "content": [{"text": "Updated the parser guard and am about to run tests."}]}},
+                    {"payload": {"type": "function_call", "name": "bash", "arguments": "pytest tests/test_parser.py"}},
+                    {"payload": {"type": "message", "role": "assistant", "content": [{"text": "Tests are green now."}]}},
+                ],
+            )
+            rows = [
+                fixture_row(
+                    file=str(session_path),
+                    prompt_index="1",
+                    command_index="1",
+                    prompt_preview="Fix CI failure in parser",
+                    agent_tool_intention="feature_implementation_edit",
+                    function_name="edit",
+                    shell_verb="",
+                    command_preview="edit src/parser.py",
+                    allocated_input_tokens="30",
+                    allocated_cache_read_tokens="5",
+                    allocated_cache_creation_tokens="0",
+                    allocated_output_tokens="5",
+                    allocated_reasoning_tokens="1",
+                    allocated_total_tokens="35",
+                    allocated_total_cost_usd="0.4",
+                ),
+                fixture_row(
+                    file=str(session_path),
+                    prompt_index="1",
+                    command_index="2",
+                    prompt_preview="Fix CI failure in parser",
+                    agent_tool_intention="test_execution",
+                    function_name="bash",
+                    shell_verb="pytest",
+                    command_preview="pytest tests/test_parser.py",
+                    allocated_input_tokens="20",
+                    allocated_cache_read_tokens="5",
+                    allocated_cache_creation_tokens="0",
+                    allocated_output_tokens="5",
+                    allocated_reasoning_tokens="1",
+                    allocated_total_tokens="25",
+                    allocated_total_cost_usd="0.3",
+                ),
+            ]
+            input_path = root / "usage.csv"
+            output_dir = root / "out"
+            write_csv(input_path, rows)
+            write_json(root / "request-patterns.json", request_pattern_config)
+            write_json(root / "task-categories.json", task_config)
+            argv = sys.argv[:]
+            try:
+                sys.argv = [
+                    str(SCRIPT_PATH),
+                    "--input",
+                    str(input_path),
+                    "--output-dir",
+                    str(output_dir),
+                    "--request-pattern-config",
+                    str(root / "request-patterns.json"),
+                    "--task-categorization-config",
+                    str(root / "task-categories.json"),
+                ]
+                self.assertEqual(report.main(), 0)
+            finally:
+                sys.argv = argv
+
+            payload = json.loads((output_dir / "windows" / "session-a-p1.json").read_text(encoding="utf-8"))
+        timeline = payload["timeline"]
+        self.assertEqual(len(timeline), 2)
+        self.assertEqual(timeline[0]["display_title"], "Step 1 · implementation")
+        self.assertEqual(timeline[0]["message_preview"], "Please fix the parser tests.")
+        self.assertEqual([entry["line_number"] for entry in timeline[0]["conversation_entries"]], [1, 2, 3, 4])
+        self.assertEqual([entry["role_label"] for entry in timeline[0]["conversation_entries"]], ["User", "Tool", "Tool", "Assistant"])
+        self.assertEqual([entry["command_index"] for entry in timeline[0]["conversation_entries"]], [1, 1, 1, 1])
+        self.assertEqual([entry["line_number"] for entry in timeline[1]["conversation_entries"]], [5, 6])
+        self.assertEqual(timeline[1]["conversation_entries"][1]["text"], "Tests are green now.")
+        self.assertTrue(timeline[0]["examples"])
 
     def test_load_task_categorizer_disables_codex_classifiers(self) -> None:
         config = {

@@ -32,6 +32,8 @@ from session_phase_narrative_report import (
     session_id,
 )
 from usage_costing import load_pricing_table
+from ci_session_viewer import parse_prompt_windows, summarize_line
+
 from warehouse_cost_demo import (
     CLASSIFICATION_REVISION,
     OUTPUT_COLUMNS,
@@ -46,6 +48,45 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT = REPO_ROOT / "reports" / "usage-command-attribution-v4_5.csv"
 DEFAULT_OUTPUT = REPO_ROOT / "reports" / "cost-explorer-v1"
 DEFAULT_REQUEST_PATTERN_CONFIG = REPO_ROOT / "config" / "request-patterns.yaml"
+COST_EXPLORER_HTML = REPO_ROOT / "docs" / "cost-explorer.html"
+STATIC_WINDOW_ROW_FIELDS = [
+    "session_date",
+    "session_id",
+    "prompt_index",
+    "window_file",
+    "short_title",
+    "prompt_preview",
+    "request_pattern",
+    "task_type",
+    "task_type_label",
+    "task_label",
+    "dominant_fixing_cause",
+    "origin",
+    "model",
+    "total_cost_usd",
+    "headline_context_cost_usd",
+    "headline_cache_read_cost_usd",
+    "headline_output_cost_usd",
+]
+STATIC_COMMAND_ROW_FIELDS = [
+    "session_date",
+    "session_id",
+    "prompt_index",
+    "window_file",
+    "fixing_cause",
+    "task_type",
+    "request_pattern",
+    "agent_tool_intention",
+    "function_name",
+    "shell_verb",
+    "model",
+    "origin",
+    "allocated_total_cost_usd",
+    "headline_context_cost_usd",
+    "headline_cache_read_cost_usd",
+    "headline_output_cost_usd",
+]
+
 DEFAULT_TASK_CATEGORIZATION_CONFIG = REPO_ROOT / "config" / "task-categorization.yaml"
 DIAGNOSIS_VERSION = os.getenv("USAGE_DIAGNOSIS_VERSION", "request_pattern_layers_v1")
 WINDOWS_COLUMNS = [
@@ -261,6 +302,65 @@ def top_cost_name(rows: list[dict[str, str]], key: str) -> str:
     if not totals:
         return ""
     return sorted(totals.items(), key=lambda item: (-item[1], item[0]))[0][0]
+def role_label_for(kind: str) -> str:
+    if kind == "user":
+        return "User"
+    if kind == "message":
+        return "Assistant"
+    if kind == "tool":
+        return "Tool"
+    return "Meta"
+
+
+def load_window_conversation_entries(source_file: str, prompt_index: str) -> list[dict[str, Any]]:
+    if not source_file:
+        return []
+    try:
+        source_path = Path(source_file)
+        windows = parse_prompt_windows(source_path)
+    except Exception:
+        return []
+    window_number = str(prompt_index)
+    window_index = next(
+        (index for index, window in enumerate(windows) if str(window.get("prompt_index") or "") == window_number),
+        -1,
+    )
+    if window_index < 0:
+        return []
+    start_line = to_int(windows[window_index].get("start_line"))
+    end_line = to_int(windows[window_index + 1].get("start_line")) - 1 if window_index + 1 < len(windows) else None
+    if start_line <= 0:
+        return []
+    entries: list[dict[str, Any]] = []
+    try:
+        with source_path.open(encoding="utf-8", errors="replace") as handle:
+            for line_number, raw in enumerate(handle, start=1):
+                if line_number < start_line:
+                    continue
+                if end_line is not None and line_number > end_line:
+                    break
+                stripped = raw.strip()
+                if not stripped:
+                    continue
+                entry = summarize_line(line_number, stripped)
+                if entry.get("type") == "invalid-json":
+                    continue
+                entries.append(
+                    {
+                        "entry_index": len(entries) + 1,
+                        "line_number": line_number,
+                        "kind": str(entry.get("kind") or "meta"),
+                        "role_label": role_label_for(str(entry.get("kind") or "meta")),
+                        "text": str(entry.get("text") or "").strip(),
+                        "tool_name": str(entry.get("tool_name") or ""),
+                        "command_index": None,
+                        "billing_kind": str(entry.get("billing_kind") or "none"),
+                    }
+                )
+    except Exception:
+        return []
+    return entries
+
 
 
 def normalize_command(
@@ -366,7 +466,10 @@ def normalize_command(
     }
 
 
-def segment_timeline(command_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def segment_timeline(
+    command_records: list[dict[str, Any]],
+    conversation_entries: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     segments: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
     current_key: tuple[str, str] | None = None
@@ -382,9 +485,12 @@ def segment_timeline(command_records: list[dict[str, Any]]) -> list[dict[str, An
         segments.append(current)
 
     payload: list[dict[str, Any]] = []
-    for items in segments:
+    command_numbers: list[int] = []
+    command_to_chunk: dict[int, int] = {}
+    for step_index, items in enumerate(segments, start=1):
         first_item = items[0]["classified"]
         commands = [record["command"] for record in items]
+        command_numbers.extend(to_int(command.get("command_index")) for command in commands)
         examples: list[str] = []
         for command in commands:
             preview = compact(str(command.get("preview") or ""), 130)
@@ -392,36 +498,80 @@ def segment_timeline(command_records: list[dict[str, Any]]) -> list[dict[str, An
                 examples.append(preview)
             if len(examples) >= 3:
                 break
-        payload.append(
+        chunk = {
+            "step_index": step_index,
+            "display_title": f"Step {step_index} · {first_item.workflow_phase}",
+            "workflow_phase": first_item.workflow_phase,
+            "efficiency_label": first_item.efficiency_label,
+            "fixing_cause": fixing_cause_for(first_item.workflow_phase, first_item.efficiency_label) or "",
+            "cost_usd": sum(to_float(command.get("cost_usd")) for command in commands),
+            "events": len(commands),
+            "start_command_index": commands[0]["command_index"],
+            "end_command_index": commands[-1]["command_index"],
+            "confidence_counts": dict(Counter(record["classified"].confidence for record in items)),
+            "reason_counts": dict(Counter(record["classified"].reason for record in items).most_common(5)),
+            "examples": examples,
+            "conversation_entries": [],
+            "message_preview": "",
+            "fresh_input_tokens": sum(to_float(command.get("allocated_fresh_input_tokens")) for command in commands),
+            "cache_read_tokens": sum(to_float(command.get("allocated_cache_read_tokens")) for command in commands),
+            "cache_creation_tokens": sum(to_float(command.get("allocated_cache_creation_tokens")) for command in commands),
+            "output_tokens": sum(to_float(command.get("allocated_output_tokens")) for command in commands),
+            "reasoning_tokens": sum(to_float(command.get("allocated_reasoning_tokens")) for command in commands),
+            "fresh_input_cost_usd": sum(to_float(command.get("allocated_fresh_input_cost_usd")) for command in commands),
+            "cache_read_cost_usd": sum(to_float(command.get("allocated_cache_read_cost_usd")) for command in commands),
+            "cache_creation_cost_usd": sum(to_float(command.get("allocated_cache_creation_cost_usd")) for command in commands),
+            "output_cost_usd": sum(to_float(command.get("allocated_output_cost_usd")) for command in commands),
+            "headline_context_tokens": sum(to_float(command.get("headline_context_tokens")) for command in commands),
+            "headline_context_cost_usd": sum(to_float(command.get("headline_context_cost_usd")) for command in commands),
+            "headline_cache_read_tokens": sum(to_float(command.get("headline_cache_read_tokens")) for command in commands),
+            "headline_cache_read_cost_usd": sum(to_float(command.get("headline_cache_read_cost_usd")) for command in commands),
+            "headline_output_tokens": sum(to_float(command.get("headline_output_tokens")) for command in commands),
+            "headline_output_cost_usd": sum(to_float(command.get("headline_output_cost_usd")) for command in commands),
+        }
+        payload.append(chunk)
+        for command in commands:
+            command_to_chunk[to_int(command.get("command_index"))] = len(payload) - 1
+
+    if not payload:
+        return payload
+
+    raw_entries = conversation_entries or []
+    raw_command_total = sum(1 for entry in raw_entries if entry.get("billing_kind") == "command")
+    raw_command_seen = 0
+    csv_command_total = len(command_numbers)
+    for entry in raw_entries:
+        if entry.get("billing_kind") == "command":
+            raw_command_seen += 1
+            command_ordinal = raw_command_seen
+        elif raw_command_seen == 0:
+            command_ordinal = 1
+        elif raw_command_total != csv_command_total and raw_command_seen >= raw_command_total:
+            command_ordinal = csv_command_total
+        else:
+            command_ordinal = raw_command_seen
+        command_ordinal = min(max(command_ordinal, 1), csv_command_total)
+        command_index = command_numbers[command_ordinal - 1]
+        chunk_index = command_to_chunk.get(command_index, 0 if command_ordinal == 1 else len(payload) - 1)
+        payload[chunk_index]["conversation_entries"].append(
             {
-                "workflow_phase": first_item.workflow_phase,
-                "efficiency_label": first_item.efficiency_label,
-                "fixing_cause": fixing_cause_for(first_item.workflow_phase, first_item.efficiency_label),
-                "cost_usd": sum(to_float(command.get("cost_usd")) for command in commands),
-                "events": len(commands),
-                "start_command_index": commands[0]["command_index"],
-                "end_command_index": commands[-1]["command_index"],
-                "confidence_counts": dict(Counter(record["classified"].confidence for record in items)),
-                "reason_counts": dict(Counter(record["classified"].reason for record in items).most_common(5)),
-                "examples": examples,
-                "fresh_input_tokens": sum(to_float(command.get("allocated_fresh_input_tokens")) for command in commands),
-                "cache_read_tokens": sum(to_float(command.get("allocated_cache_read_tokens")) for command in commands),
-                "cache_creation_tokens": sum(to_float(command.get("allocated_cache_creation_tokens")) for command in commands),
-                "output_tokens": sum(to_float(command.get("allocated_output_tokens")) for command in commands),
-                "reasoning_tokens": sum(to_float(command.get("allocated_reasoning_tokens")) for command in commands),
-                "fresh_input_cost_usd": sum(to_float(command.get("allocated_fresh_input_cost_usd")) for command in commands),
-                "cache_read_cost_usd": sum(to_float(command.get("allocated_cache_read_cost_usd")) for command in commands),
-                "cache_creation_cost_usd": sum(to_float(command.get("allocated_cache_creation_cost_usd")) for command in commands),
-                "output_cost_usd": sum(to_float(command.get("allocated_output_cost_usd")) for command in commands),
-                "headline_context_tokens": sum(to_float(command.get("headline_context_tokens")) for command in commands),
-                "headline_context_cost_usd": sum(to_float(command.get("headline_context_cost_usd")) for command in commands),
-                "headline_cache_read_tokens": sum(to_float(command.get("headline_cache_read_tokens")) for command in commands),
-                "headline_cache_read_cost_usd": sum(to_float(command.get("headline_cache_read_cost_usd")) for command in commands),
-                "headline_output_tokens": sum(to_float(command.get("headline_output_tokens")) for command in commands),
-                "headline_output_cost_usd": sum(to_float(command.get("headline_output_cost_usd")) for command in commands),
+                "entry_index": entry["entry_index"],
+                "line_number": entry["line_number"],
+                "kind": entry["kind"],
+                "role_label": entry["role_label"],
+                "text": entry["text"],
+                "tool_name": entry["tool_name"],
+                "command_index": command_index,
             }
         )
+
+    for chunk in payload:
+        preview = next((compact(str(item.get("text") or ""), 180) for item in chunk["conversation_entries"] if str(item.get("text") or "").strip()), "")
+        if not preview and chunk["examples"]:
+            preview = chunk["examples"][0]
+        chunk["message_preview"] = preview or ""
     return payload
+
 
 
 def build_window_payload(
@@ -456,6 +606,10 @@ def build_window_payload(
     cause_rollup = fixing_cause_rollup(classified)
     prompt_totals = prompt_headline_totals(first_row, pricing_table)
     command_payloads = [record["command"] for record in commands]
+    timeline = segment_timeline(
+        commands,
+        load_window_conversation_entries(first_row.get("file") or "", prompt_index),
+    )
     payload = {
         "window_file": window_file,
         "session_id": session_name,
@@ -478,7 +632,7 @@ def build_window_payload(
         "fixing_cause_rollup": cause_rollup,
         "phase_rollup": rollup_classified(classified, "workflow_phase"),
         "efficiency_rollup": rollup_classified(classified, "efficiency_label"),
-        "timeline": segment_timeline(commands),
+        "timeline": timeline,
         **prompt_totals,
         "command_count": len(command_payloads),
         "tool_count": len({tool_label(command) for command in command_payloads}),
@@ -721,6 +875,43 @@ def write_window_jsons(windows_dir: Path, payloads: list[dict[str, Any]]) -> Non
         (windows_dir / str(payload["window_file"])).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def static_window_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {field: row.get(field, "") for field in STATIC_WINDOW_ROW_FIELDS}
+
+
+def static_command_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {field: row.get(field, "") for field in STATIC_COMMAND_ROW_FIELDS}
+
+
+def write_js_assignment(path: Path, target: str, payload: Any) -> None:
+    path.write_text(f"{target} = {json.dumps(payload, indent=2, sort_keys=True)};\n", encoding="utf-8")
+
+
+def write_static_explorer(output_dir: Path, summary: dict[str, Any], window_rows: list[dict[str, Any]], command_rows: list[dict[str, Any]], payloads: list[dict[str, Any]]) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "explorer.html").write_text(COST_EXPLORER_HTML.read_text(encoding="utf-8"), encoding="utf-8")
+    write_js_assignment(output_dir / "summary.js", "window.__COST_EXPLORER_STATIC_SUMMARY__", summary)
+    write_js_assignment(
+        output_dir / "window-rows.js",
+        "window.__COST_EXPLORER_STATIC_WINDOW_ROWS__",
+        [static_window_row(row) for row in window_rows],
+    )
+    write_js_assignment(
+        output_dir / "command-rows.js",
+        "window.__COST_EXPLORER_STATIC_COMMAND_ROWS__",
+        [static_command_row(row) for row in command_rows],
+    )
+    windows_js_dir = output_dir / "windows-js"
+    windows_js_dir.mkdir(parents=True, exist_ok=True)
+    for payload in payloads:
+        window_file = str(payload["window_file"])
+        script = (
+            "window.__COST_EXPLORER_STATIC_WINDOWS__ = window.__COST_EXPLORER_STATIC_WINDOWS__ || {};\n"
+            f"window.__COST_EXPLORER_STATIC_WINDOWS__[{json.dumps(window_file)}] = "
+            f"{json.dumps(payload, indent=2, sort_keys=True)};\n"
+        )
+        (windows_js_dir / f"{window_file}.js").write_text(script, encoding="utf-8")
+
 def main() -> int:
     args = parse_args()
     rows = source_rows(args.input)
@@ -760,6 +951,7 @@ def main() -> int:
     summary = build_summary(window_rows, command_rows, args.input)
     (args.output_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (args.output_dir / "summary.md").write_text(summary_markdown(summary), encoding="utf-8")
+    write_static_explorer(args.output_dir, summary, window_rows, command_rows, payloads)
     return 0
 
 

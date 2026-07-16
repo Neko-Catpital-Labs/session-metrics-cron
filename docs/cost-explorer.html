@@ -55,7 +55,8 @@
   .result-money { font-weight:700; text-align:right; }
   .result-meta { color:var(--sub); font-size:.82rem; display:flex; gap:.55rem; flex-wrap:wrap; margin-bottom:.45rem; }
   .tags { display:flex; flex-wrap:wrap; gap:.35rem; }
-  .tag { display:inline-flex; align-items:center; gap:.25rem; padding:.16rem .52rem; border-radius:999px; background:var(--tag); color:#334155; font-size:.76rem; }
+  .tag, .tag-button { display:inline-flex; align-items:center; gap:.25rem; padding:.16rem .52rem; border-radius:999px; background:var(--tag); color:#334155; font-size:.76rem; }
+  .tag-button { border:0; cursor:pointer; }
   .detail-empty, .empty { border:1px dashed var(--line); border-radius:10px; padding:1rem; color:var(--sub); background:var(--bg); }
   .detail-head { display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; }
   .detail-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:.65rem; margin:.8rem 0; }
@@ -66,13 +67,25 @@
   table { width:100%; border-collapse:collapse; font-size:.86rem; }
   th, td { padding:.42rem .5rem; border-bottom:1px solid #eef1f4; text-align:left; vertical-align:top; }
   th.n, td.n { text-align:right; font-variant-numeric:tabular-nums; }
-  .timeline { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:.65rem; margin:.75rem 0 1rem; }
-  .chunk-card { border:1px solid var(--line); border-radius:10px; background:var(--bg); padding:.75rem .8rem; cursor:pointer; }
+  #chunkTimeline { display:flex; flex-direction:column; gap:.8rem; width:100%; margin:.75rem 0 1rem; overflow:visible; }
+  .chunk-card { width:100%; border:1px solid var(--line); border-radius:12px; background:var(--bg); }
   .chunk-card.is-active { border-color:var(--selected-line); box-shadow: inset 3px 0 0 var(--selected-line); background:var(--selected); }
+  .chunk-summary { padding:.75rem .8rem; cursor:pointer; }
+  .chunk-summary:hover { background:rgba(37,99,235,.03); }
+  .chunk-title-row { display:flex; align-items:flex-start; justify-content:space-between; gap:.75rem; }
+  .chunk-title { font-weight:600; margin-bottom:.2rem; }
+  .chunk-toggle { color:var(--link); font-size:.8rem; white-space:nowrap; }
+  .chunk-cost { font-weight:600; margin:.3rem 0 .15rem; }
   .chunk-meta { color:var(--sub); font-size:.78rem; display:flex; flex-wrap:wrap; gap:.45rem; margin:.25rem 0 .45rem; }
-  .step-section { border:1px solid var(--line); border-radius:10px; padding:.8rem; margin:.8rem 0; background:#fff; }
-  .step-section.is-active { border-color:var(--selected-line); box-shadow: inset 3px 0 0 var(--selected-line); }
-  .step-section ul { margin:.45rem 0 0 1rem; padding:0; }
+  .chunk-summary-text { margin:.35rem 0 0; font-size:.9rem; }
+  .chunk-detail-list { margin:.45rem 0 0; padding-left:1.1rem; color:var(--sub); font-size:.82rem; }
+  .chunk-detail-list li { margin:.18rem 0; }
+  .chunk-preview { color:var(--sub); font-size:.82rem; white-space:pre-wrap; word-break:break-word; margin-top:.35rem; }
+  .chunk-body { border-top:1px solid var(--line); padding:.85rem .8rem .9rem; background:#fff; }
+  .chunk-body[hidden] { display:none; }
+  .step-subsection { font-size:.82rem; font-weight:600; margin:.7rem 0 .35rem; }
+  .command-preview-list { margin:.35rem 0 0 1rem; padding:0; }
+  .conversation-transcript { margin:0; border:1px solid #eef1f4; border-radius:8px; background:var(--bg); padding:.7rem .75rem; white-space:pre-wrap; word-break:break-word; font:13px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,sans-serif; }
   .table-wrap { overflow-x:auto; overflow-y:visible; }
   #commandTable tbody tr.is-highlighted { background:var(--highlight); }
   #commandTable tbody tr.is-issue-match td.fixing-cause::after { content:"match"; margin-left:.4rem; font-size:.7rem; color:#1d4ed8; background:#dbeafe; border-radius:999px; padding:.08rem .35rem; }
@@ -181,6 +194,42 @@ const FILTER_HELP = {
   task_type: "Broad work bucket. This says what kind of work the model was doing overall, like review, repair, or implementation.",
   request_pattern: "Specific ask shape. This says what kind of request started the work, like PR review, CI loop cleanup, or invoker plan submission.",
 };
+const INTENT_LABELS = {
+  failure_diagnosis_inspection: "diagnosing failures and reading code",
+  implementation_planning_inspection: "planning how to implement changes",
+  ci_monitoring: "checking CI / GitHub Actions status",
+  environment_initialization: "setting up the dev environment",
+  test_execution: "running tests",
+  full_validation: "running full validation",
+  repo_orientation: "exploring the repo layout",
+  diff_review: "reviewing diffs and changes",
+  bug_fix_edit: "editing code to fix bugs",
+  feature_implementation_edit: "implementing feature code",
+  refactor_edit: "refactoring code",
+  test_or_proof_edit: "writing tests or proof scripts",
+  pr_creation_or_update: "creating or updating PRs",
+  branch_stack_orchestration: "managing stacked PR branches",
+  fixing_failure: "fixing a reported failure",
+  remote_orchestration: "orchestrating remote agents/workers",
+  process_control: "controlling running processes",
+  planning_or_task_tracking: "planning or tracking tasks",
+  analytics_reporting: "building analytics/report output",
+  documentation_edit: "editing documentation",
+  failure_reproduction: "reproducing a failure",
+  generated_artifact_edit: "editing generated artifacts",
+  analytics_inspection: "inspecting analytics data",
+};
+const TOOL_LABELS = {
+  read: "reading files",
+  bash: "running shell commands",
+  exec_command: "running shell commands",
+  write_stdin: "interacting with a running process",
+  search: "searching the codebase",
+  edit: "editing files",
+  write: "writing files",
+  browser: "using the browser",
+  find: "finding files",
+};
 
 function helpBadge(text){
   const escaped = escapeHtml(text);
@@ -195,6 +244,10 @@ let searchPayload = null;
 let selectedRow = null;
 let currentWindow = null;
 let selectedChunkIndex = -1;
+let staticWindowRows = [];
+let staticCommandRows = [];
+const staticWindowCache = Object.create(null);
+const staticScriptLoads = Object.create(null);
 const state = {
   range: "30d",
   from: "",
@@ -218,6 +271,60 @@ function escapeHtml(value){
 function money(value){ return "$" + Number(value || 0).toLocaleString(undefined, { minimumFractionDigits:2, maximumFractionDigits:2 }); }
 function count(value){ return Number(value || 0).toLocaleString(); }
 function tokens(value){ return Number(value || 0).toLocaleString(undefined, { maximumFractionDigits:0 }); }
+function compactText(value, limit = 180){
+  let text = String(value || "").replace(/\s+/g, " ").trim();
+  if(limit > 0 && text.length > limit) text = text.slice(0, limit - 3).trimEnd() + "...";
+  return text;
+}
+function counterField(rows, field){
+  const counts = new Map();
+  rows.forEach(row => {
+    const value = String(row[field] || "").trim();
+    if(!value) return;
+    counts.set(value, (counts.get(value) || 0) + 1);
+  });
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+function chunkCommandRows(payload, chunk){
+  return (payload.commands || []).filter(row => {
+    const index = Number(row.command_index);
+    return index >= Number(chunk.start_command_index) && index <= Number(chunk.end_command_index);
+  });
+}
+function chunkUserAsk(chunk){
+  const userEntry = (chunk.conversation_entries || []).find(entry => entry.role_label === "User" && compactText(entry.text, 0));
+  return compactText(userEntry ? userEntry.text : (chunk.message_preview || (chunk.examples || [])[0] || ""), 220);
+}
+function summarizeChunk(payload, chunk){
+  const rows = chunkCommandRows(payload, chunk);
+  const intents = counterField(rows, "agent_tool_intention");
+  const tools = counterField(rows, "function_name");
+  const verbs = counterField(rows, "shell_verb");
+  const intentPhrase = intents.length ? (INTENT_LABELS[intents[0][0]] || intents[0][0].replaceAll("_", " ")) : "working on the request";
+  const summaryLead = chunkUserAsk(chunk) || compactText(chunk.message_preview || "", 220) || "Follow-up request in the session";
+  const summaryText = `${summaryLead.replace(/[.?!]+$/, "")}. Mostly ${intentPhrase}.`;
+  const activityParts = tools.slice(0, 3).map(([name, total]) => `${TOOL_LABELS[name] || name} (${total}x)`);
+  const shellParts = verbs.slice(0, 3).map(([name]) => name).filter(Boolean);
+  if(shellParts.length) activityParts.push(`shell: ${shellParts.join(", ")}`);
+  const actionLines = [];
+  if(activityParts.length) actionLines.push(`Agent activity: ${activityParts.join("; ")}`);
+  if(intents.length) actionLines.push(`Work type: ${intents.slice(0, 2).map(([name]) => INTENT_LABELS[name] || name.replaceAll("_", " ")).join(", ")}`);
+  const exampleCommands = [];
+  rows.forEach(row => {
+    const preview = compactText(row.preview || row.stdin_preview || "", 100);
+    if(!preview || exampleCommands.includes(preview) || exampleCommands.length >= 2) return;
+    exampleCommands.push(preview);
+  });
+  exampleCommands.forEach(command => actionLines.push(`Example command: ${command}`));
+  return {
+    commandCount: Number(chunk.events || rows.length || 0),
+    costSharePct: Number(payload.total_cost_usd || 0) > 0 ? (100 * Number(chunk.cost_usd || 0) / Number(payload.total_cost_usd || 0)) : 0,
+    summaryText,
+    actionLines,
+    userAsked: summaryLead,
+  };
+}
+function isLocalFileMode(){ return window.location.protocol === "file:"; }
 function fetchJson(url){
   return fetch(url).then(async res => {
     const data = await res.json().catch(() => ({}));
@@ -228,6 +335,192 @@ function fetchJson(url){
     }
     return data;
   });
+}
+function loadScriptOnce(src){
+  if(staticScriptLoads[src]) return staticScriptLoads[src];
+  staticScriptLoads[src] = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`Could not load ${src}`));
+    document.head.appendChild(script);
+  });
+  return staticScriptLoads[src];
+}
+function explorerStateFilters(){
+  return {
+    issue_kind: state.issue_kind || "fixing_cause",
+    issue_value: state.issue_value || "",
+    token_bucket: state.token_bucket || "all",
+    text: state.text || "",
+    task_type: state.task_type || "",
+    request_pattern: state.request_pattern || "",
+    agent_tool_intention: state.agent_tool_intention || "",
+    function_name: state.function_name || "",
+    shell_verb: state.shell_verb || "",
+    model: state.model || "",
+    origin: state.origin || "",
+    limit: 50,
+    offset: 0,
+  };
+}
+function tokenBucketField(tokenBucket){
+  return ({ all: "allocated_total_cost_usd", context: "headline_context_cost_usd", cache_read: "headline_cache_read_cost_usd", output: "headline_output_cost_usd" })[tokenBucket || "all"] || "allocated_total_cost_usd";
+}
+function toNumber(value){
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+function applyLoadedSummary(metaText){
+  document.getElementById("meta").textContent = metaText;
+  document.getElementById("issueKind").value = state.issue_kind;
+  document.getElementById("textSearch").value = state.text;
+  document.getElementById("fromDate").value = state.from;
+  document.getElementById("toDate").value = state.to;
+  document.getElementById("customRange").style.display = state.range === "custom" ? "flex" : "none";
+  setActiveButtons("rangeBtns", "range", state.range);
+  setActiveButtons("tokenBtns", "tokenBucket", state.token_bucket);
+  renderIssueValueOptions();
+  renderChipGroups();
+}
+function staticWindowMatches(row, from, to){
+  const sessionDate = String(row.session_date || "");
+  if(from && sessionDate && sessionDate < from) return false;
+  if(to && sessionDate && sessionDate > to) return false;
+  if(state.task_type && String(row.task_type || "") !== state.task_type) return false;
+  if(state.request_pattern && String(row.request_pattern || "") !== state.request_pattern) return false;
+  if(state.model && String(row.model || "") !== state.model) return false;
+  if(state.origin && String(row.origin || "") !== state.origin) return false;
+  const needle = (state.text || "").trim().toLowerCase();
+  if(needle){
+    const haystack = [row.short_title, row.prompt_preview, row.task_label].map(value => String(value || "").toLowerCase()).join("\n");
+    if(!haystack.includes(needle)) return false;
+  }
+  return true;
+}
+function staticCommandMatches(row){
+  if(state.agent_tool_intention && String(row.agent_tool_intention || "") !== state.agent_tool_intention) return false;
+  if(state.function_name && String(row.function_name || "") !== state.function_name) return false;
+  if(state.shell_verb && String(row.shell_verb || "") !== state.shell_verb) return false;
+  const issueField = state.issue_kind || "fixing_cause";
+  const issueValue = String(row[issueField] || "").trim();
+  if(!issueValue) return false;
+  if(state.issue_value && issueValue !== state.issue_value) return false;
+  return true;
+}
+function buildStaticSearchPayload(filters){
+  const [from, to] = rangeBounds();
+  const windowMap = new Map();
+  for(const row of staticWindowRows){
+    if(staticWindowMatches(row, from, to)) windowMap.set(resultKey(row), row);
+  }
+  const grouped = new Map();
+  const matchingField = tokenBucketField(filters.token_bucket);
+  for(const row of staticCommandRows){
+    const key = resultKey(row);
+    const windowRow = windowMap.get(key);
+    if(!windowRow) continue;
+    if(!staticCommandMatches(row)) continue;
+    const matchingCost = toNumber(row[matchingField]);
+    if(matchingCost <= 0) continue;
+    const bucket = grouped.get(key) || {
+      session_id: String(windowRow.session_id || ""),
+      prompt_index: Number(windowRow.prompt_index || 0),
+      session_date: String(windowRow.session_date || ""),
+      window_file: String(windowRow.window_file || ""),
+      short_title: String(windowRow.short_title || ""),
+      request_pattern: String(windowRow.request_pattern || ""),
+      task_type: String(windowRow.task_type || ""),
+      task_type_label: String(windowRow.task_type_label || ""),
+      dominant_fixing_cause: String(windowRow.dominant_fixing_cause || ""),
+      origin: String(windowRow.origin || ""),
+      model: String(windowRow.model || ""),
+      matching_cost_usd: 0,
+      total_cost_usd: toNumber(windowRow.total_cost_usd),
+      headline_context_cost_usd: toNumber(windowRow.headline_context_cost_usd),
+      headline_cache_read_cost_usd: toNumber(windowRow.headline_cache_read_cost_usd),
+      headline_output_cost_usd: toNumber(windowRow.headline_output_cost_usd),
+    };
+    bucket.matching_cost_usd += matchingCost;
+    grouped.set(key, bucket);
+  }
+  const rows = [...grouped.values()].sort((a, b) =>
+    (b.matching_cost_usd - a.matching_cost_usd)
+    || (b.total_cost_usd - a.total_cost_usd)
+    || String(b.session_date || "").localeCompare(String(a.session_date || ""))
+  );
+  const totals = rows.reduce((acc, row) => {
+    acc.matching_cost_usd += row.matching_cost_usd;
+    acc.headline_context_cost_usd += row.headline_context_cost_usd;
+    acc.headline_cache_read_cost_usd += row.headline_cache_read_cost_usd;
+    acc.headline_output_cost_usd += row.headline_output_cost_usd;
+    return acc;
+  }, { matching_cost_usd: 0, headline_context_cost_usd: 0, headline_cache_read_cost_usd: 0, headline_output_cost_usd: 0, prompt_window_count: rows.length });
+  return {
+    rows: rows.slice(filters.offset || 0, (filters.offset || 0) + (filters.limit || 50)).map(row => ({
+      ...row,
+      matching_cost_usd: Number(row.matching_cost_usd.toFixed(4)),
+      total_cost_usd: Number(row.total_cost_usd.toFixed(4)),
+      headline_context_cost_usd: Number(row.headline_context_cost_usd.toFixed(4)),
+      headline_cache_read_cost_usd: Number(row.headline_cache_read_cost_usd.toFixed(4)),
+      headline_output_cost_usd: Number(row.headline_output_cost_usd.toFixed(4)),
+    })),
+    totals: {
+      matching_cost_usd: Number(totals.matching_cost_usd.toFixed(4)),
+      headline_context_cost_usd: Number(totals.headline_context_cost_usd.toFixed(4)),
+      headline_cache_read_cost_usd: Number(totals.headline_cache_read_cost_usd.toFixed(4)),
+      headline_output_cost_usd: Number(totals.headline_output_cost_usd.toFixed(4)),
+      prompt_window_count: totals.prompt_window_count,
+    },
+    filters,
+    total_rows: rows.length,
+  };
+}
+async function loadStaticBootstrap(){
+  await loadScriptOnce("./summary.js");
+  await loadScriptOnce("./window-rows.js");
+  await loadScriptOnce("./command-rows.js");
+  summary = window.__COST_EXPLORER_STATIC_SUMMARY__ || null;
+  staticWindowRows = Array.isArray(window.__COST_EXPLORER_STATIC_WINDOW_ROWS__) ? window.__COST_EXPLORER_STATIC_WINDOW_ROWS__ : [];
+  staticCommandRows = Array.isArray(window.__COST_EXPLORER_STATIC_COMMAND_ROWS__) ? window.__COST_EXPLORER_STATIC_COMMAND_ROWS__ : [];
+  if(!summary || !summary.headline_totals || !staticWindowRows.length || !staticCommandRows.length){
+    throw new Error("Static explorer artifacts are missing.");
+  }
+}
+async function loadStaticWindow(windowFile){
+  if(staticWindowCache[windowFile]) return staticWindowCache[windowFile];
+  await loadScriptOnce(`./windows-js/${windowFile}.js`);
+  const payloads = window.__COST_EXPLORER_STATIC_WINDOWS__ || {};
+  const payload = payloads[windowFile];
+  if(!payload) throw new Error(`Static window payload missing: ${windowFile}`);
+  staticWindowCache[windowFile] = payload;
+  return payload;
+}
+function showRequestPatternAcrossSessions(requestPattern){
+  if(!requestPattern) return;
+  state.range = "all";
+  state.from = "";
+  state.to = "";
+  state.issue_kind = "request_pattern";
+  state.issue_value = requestPattern;
+  state.request_pattern = requestPattern;
+  state.text = "";
+  state.task_type = "";
+  state.agent_tool_intention = "";
+  state.function_name = "";
+  state.shell_verb = "";
+  state.model = "";
+  state.origin = "";
+  document.getElementById("issueKind").value = state.issue_kind;
+  document.getElementById("textSearch").value = "";
+  document.getElementById("fromDate").value = "";
+  document.getElementById("toDate").value = "";
+  document.getElementById("customRange").style.display = "none";
+  setActiveButtons("rangeBtns", "range", state.range);
+  renderIssueValueOptions();
+  document.getElementById("issueValue").value = state.issue_value;
+  renderChipGroups();
+  runSearch();
 }
 function resultKey(row){ return `${row.session_id}::${row.prompt_index}`; }
 function setActiveButtons(containerId, attr, value){
@@ -366,6 +659,26 @@ function bucketCell(cost, tokenCount){
 function reasoningCell(tokenCount){
   return `${tokens(tokenCount)} tok<div class="muted">tracked only</div>`;
 }
+function conversationLabel(entry){
+  const role = ({ User: "User", Assistant: "Assistant", Tool: "Tool", Meta: "Meta" })[String(entry.role_label || "")] || "Meta";
+  let label = role;
+  if(entry.tool_name) label += ` · ${entry.tool_name}`;
+  if(entry.command_index !== undefined && entry.command_index !== null && entry.command_index !== "") label += ` · #${entry.command_index}`;
+  return label;
+}
+function renderConversationBlock(chunk){
+  const entries = chunk.conversation_entries || [];
+  if(entries.length){
+    const transcript = entries.map(entry => `${conversationLabel(entry)}\n${entry.text || ""}`).join("\n\n");
+    return `<div class="step-subsection">Conversation</div>
+      <pre class="conversation-transcript">${escapeHtml(transcript)}</pre>`;
+  }
+  const examples = chunk.examples || [];
+  if(examples.length){
+    return `<div class="step-subsection">Command previews</div><ul class="command-preview-list">${examples.map(example => `<li>${escapeHtml(example)}</li>`).join("")}</ul>`;
+  }
+  return `<div class="step-subsection">Command previews</div><div class="muted">No conversation captured for this bucket.</div>`;
+}
 function renderDetail(){
   const root = document.getElementById("explorerDetail");
   if(!currentWindow || !selectedRow){
@@ -385,7 +698,7 @@ function renderDetail(){
     </div>
     <div class="tags">
       <span class="tag">${escapeHtml(payload.task_type_label || "")}</span>
-      <span class="tag">${escapeHtml(payload.request_pattern || "")}</span>
+      ${payload.request_pattern ? `<button class="tag-button" type="button" data-request-pattern-jump="${escapeHtml(payload.request_pattern)}" title="Show this request pattern across all sessions">${escapeHtml(payload.request_pattern)}</button>` : ""}
       <span class="tag">${escapeHtml(payload.dominant_fixing_cause || "")}</span>
       <span class="tag">${escapeHtml(selectedRow.model || "")}</span>
       <span class="tag">${escapeHtml(selectedRow.origin || "")}</span>
@@ -400,27 +713,38 @@ function renderDetail(){
     <div class="table-wrap"><table><thead><tr><th>Cause</th><th class="n">Cost</th><th class="n">Share</th><th class="n">Events</th></tr></thead><tbody>
       ${(payload.fixing_cause_rollup || []).map(row => `<tr><td>${escapeHtml(row.cause || "")}</td><td class="n">${money(row.cost_usd || 0)}</td><td class="n">${Number(row.cost_pct || 0).toFixed(1)}%</td><td class="n">${count(row.events || 0)}</td></tr>`).join("") || '<tr><td colspan="4" class="muted">No fixing-cause rows.</td></tr>'}
     </tbody></table></div>
-    <h4>Chunk timeline</h4>
-    <div class="timeline" id="chunkTimeline">
-      ${timeline.map((chunk, index) => `<div class="chunk-card${index === selectedChunkIndex ? ' is-active' : ''}" data-chunk-index="${index}">
-        <div><strong>${escapeHtml(chunk.start_command_index)}-${escapeHtml(chunk.end_command_index)}</strong></div>
-        <div class="chunk-meta"><span>${escapeHtml(chunk.workflow_phase || "")}</span><span>${escapeHtml(chunk.efficiency_label || "")}</span><span>${escapeHtml(chunk.fixing_cause || "")}</span><span>${money(chunk.cost_usd || 0)}</span></div>
-        <div class="muted">Context ${money(chunk.headline_context_cost_usd || 0)} · Cache ${money(chunk.headline_cache_read_cost_usd || 0)} · Output ${money(chunk.headline_output_cost_usd || 0)}</div>
-      </div>`).join("") || '<div class="empty">No chunk timeline.</div>'}
+    <h4>Session steps (cost + summary)</h4>
+    <div id="chunkTimeline">
+      ${timeline.map((chunk, index) => {
+        const isActive = index === selectedChunkIndex;
+        const chunkSummary = summarizeChunk(payload, chunk);
+        return `<section class="chunk-card${isActive ? ' is-active' : ''}" data-chunk-index="${index}">
+          <div class="chunk-summary" data-chunk-index="${index}" aria-expanded="${isActive ? 'true' : 'false'}">
+            <div class="chunk-title-row">
+              <div class="chunk-title">${escapeHtml(chunk.display_title || `Step ${index + 1} · ${chunk.workflow_phase || ""}`)} · ${count(chunkSummary.commandCount)} commands</div>
+              <div class="chunk-toggle">${isActive ? 'Collapse' : 'Expand'}</div>
+            </div>
+            <div class="muted">Commands ${escapeHtml(chunk.start_command_index)}-${escapeHtml(chunk.end_command_index)}</div>
+            <div class="chunk-meta"><span>${escapeHtml(chunk.workflow_phase || "")}</span><span>${escapeHtml(chunk.efficiency_label || "")}</span><span>${escapeHtml(chunk.fixing_cause || "")}</span></div>
+            <div class="chunk-cost">${money(chunk.cost_usd || 0)} (${chunkSummary.costSharePct.toFixed(0)}%)</div>
+            <div class="muted">Context ${money(chunk.headline_context_cost_usd || 0)} · Cache ${money(chunk.headline_cache_read_cost_usd || 0)} · Output ${money(chunk.headline_output_cost_usd || 0)}</div>
+            <div class="chunk-summary-text">${escapeHtml(chunkSummary.summaryText)}</div>
+            ${chunkSummary.actionLines.length ? `<ul class="chunk-detail-list">${chunkSummary.actionLines.map(line => `<li>${escapeHtml(line)}</li>`).join("")}</ul>` : ""}
+            ${chunkSummary.userAsked ? `<div class="chunk-preview">User asked: ${escapeHtml(chunkSummary.userAsked)}</div>` : ""}
+          </div>
+          <div class="chunk-body" ${isActive ? '' : 'hidden'}>
+            <div class="table-wrap"><table><thead><tr><th>Metric</th><th class="n">Value</th></tr></thead><tbody>
+              <tr><td>Total cost</td><td class="n">${money(chunk.cost_usd || 0)}</td></tr>
+              <tr><td>Context</td><td class="n">${bucketCell(chunk.headline_context_cost_usd || 0, chunk.headline_context_tokens || 0)}</td></tr>
+              <tr><td>Cache read</td><td class="n">${bucketCell(chunk.headline_cache_read_cost_usd || 0, chunk.headline_cache_read_tokens || 0)}</td></tr>
+              <tr><td>Output</td><td class="n">${bucketCell(chunk.headline_output_cost_usd || 0, chunk.headline_output_tokens || 0)}</td></tr>
+              <tr><td>Reasoning</td><td class="n">${reasoningCell(chunk.reasoning_tokens || 0)}</td></tr>
+            </tbody></table></div>
+            ${renderConversationBlock(chunk)}
+          </div>
+        </section>`;
+      }).join("") || '<div class="empty">No chunk timeline.</div>'}
     </div>
-    <h4>Prompt steps</h4>
-    ${((timeline.map((chunk, index) => `<section class="step-section${index === selectedChunkIndex ? ' is-active' : ''}">
-      <h4>Step ${index + 1} · ${escapeHtml(chunk.workflow_phase || "")}</h4>
-      <div class="chunk-meta"><span>${escapeHtml(chunk.efficiency_label || "")}</span><span>${escapeHtml(chunk.fixing_cause || 'No fixing cause')}</span><span>Commands ${escapeHtml(chunk.start_command_index)}-${escapeHtml(chunk.end_command_index)}</span></div>
-      <div class="table-wrap"><table><thead><tr><th>Metric</th><th class="n">Value</th></tr></thead><tbody>
-        <tr><td>Total cost</td><td class="n">${money(chunk.cost_usd || 0)}</td></tr>
-        <tr><td>Context</td><td class="n">${bucketCell(chunk.headline_context_cost_usd || 0, chunk.headline_context_tokens || 0)}</td></tr>
-        <tr><td>Cache read</td><td class="n">${bucketCell(chunk.headline_cache_read_cost_usd || 0, chunk.headline_cache_read_tokens || 0)}</td></tr>
-        <tr><td>Output</td><td class="n">${bucketCell(chunk.headline_output_cost_usd || 0, chunk.headline_output_tokens || 0)}</td></tr>
-        <tr><td>Reasoning</td><td class="n">${reasoningCell(chunk.reasoning_tokens || 0)}</td></tr>
-      </tbody></table></div>
-      <ul>${(chunk.examples || []).map(example => `<li>${escapeHtml(example)}</li>`).join("") || '<li class="muted">No examples.</li>'}</ul>
-    </section>`).join("")) || '<div class="empty">No prompt steps.</div>')}
     <h4>Command table</h4>
     <div class="table-wrap">
       <table id="commandTable">
@@ -443,7 +767,9 @@ async function loadWindow(row){
   renderResults(searchPayload.rows || []);
   document.getElementById("explorerDetail").innerHTML = '<div class="detail-empty">Loading proof payload…</div>';
   try{
-    const payload = await fetchJson(`/api/cost-explorer-window?session_id=${encodeURIComponent(row.session_id)}&prompt_index=${encodeURIComponent(row.prompt_index)}`);
+    const payload = isLocalFileMode()
+      ? await loadStaticWindow(String(row.window_file || ""))
+      : await fetchJson(`/api/cost-explorer-window?session_id=${encodeURIComponent(row.session_id)}&prompt_index=${encodeURIComponent(row.prompt_index)}`);
     currentWindow = payload;
     selectedChunkIndex = chooseDefaultChunk(payload);
     renderResults(searchPayload.rows || []);
@@ -462,22 +788,25 @@ async function runSearch(){
   const params = new URLSearchParams();
   if(from) params.set("from", from);
   if(to) params.set("to", to);
-  params.set("issue_kind", state.issue_kind || "fixing_cause");
-  if(state.issue_value) params.set("issue_value", state.issue_value);
-  params.set("token_bucket", state.token_bucket || "all");
-  if(state.text) params.set("text", state.text);
-  if(state.task_type) params.set("task_type", state.task_type);
-  if(state.request_pattern) params.set("request_pattern", state.request_pattern);
-  if(state.function_name) params.set("function_name", state.function_name);
-  if(state.shell_verb) params.set("shell_verb", state.shell_verb);
-  if(state.model) params.set("model", state.model);
-  if(state.origin) params.set("origin", state.origin);
-  if(state.agent_tool_intention) params.set("agent_tool_intention", state.agent_tool_intention);
-  params.set("limit", "50");
-  params.set("offset", "0");
+  const filters = explorerStateFilters();
+  params.set("issue_kind", filters.issue_kind);
+  if(filters.issue_value) params.set("issue_value", filters.issue_value);
+  params.set("token_bucket", filters.token_bucket);
+  if(filters.text) params.set("text", filters.text);
+  if(filters.task_type) params.set("task_type", filters.task_type);
+  if(filters.request_pattern) params.set("request_pattern", filters.request_pattern);
+  if(filters.function_name) params.set("function_name", filters.function_name);
+  if(filters.shell_verb) params.set("shell_verb", filters.shell_verb);
+  if(filters.model) params.set("model", filters.model);
+  if(filters.origin) params.set("origin", filters.origin);
+  if(filters.agent_tool_intention) params.set("agent_tool_intention", filters.agent_tool_intention);
+  params.set("limit", String(filters.limit));
+  params.set("offset", String(filters.offset));
   try{
     document.getElementById("err").textContent = "";
-    const payload = await fetchJson(`/api/cost-explorer-search?${params.toString()}`);
+    const payload = isLocalFileMode()
+      ? buildStaticSearchPayload(filters)
+      : await fetchJson(`/api/cost-explorer-search?${params.toString()}`);
     searchPayload = payload;
     renderSummaryStrip(payload.totals || {});
     renderResults(payload.rows || []);
@@ -486,7 +815,9 @@ async function runSearch(){
       await loadWindow(keep || payload.rows[0]);
     }
   }catch(error){
-    document.getElementById("err").textContent = `Failed to load explorer search: ${error.message}`;
+    document.getElementById("err").textContent = isLocalFileMode()
+      ? "Could not load static explorer data. Rebuild the explorer output and reopen explorer.html."
+      : `Failed to load explorer search: ${error.message}`;
     document.getElementById("explorerResults").innerHTML = '<div class="empty">No prompt windows match the current filters.</div>';
     document.getElementById("explorerDetail").innerHTML = '<div class="detail-empty">Select a prompt window.</div>';
   }
@@ -535,30 +866,47 @@ function bindControls(){
     if(target) loadWindow(target);
   });
   document.getElementById("explorerDetail").addEventListener("click", event => {
-    const chunk = event.target.closest(".chunk-card[data-chunk-index]");
+    const requestPatternJump = event.target.closest("button[data-request-pattern-jump]");
+    if(requestPatternJump){
+      showRequestPatternAcrossSessions(requestPatternJump.dataset.requestPatternJump || "");
+      return;
+    }
+    const chunk = event.target.closest(".chunk-summary[data-chunk-index]");
     if(!chunk || !currentWindow) return;
-    selectedChunkIndex = Number(chunk.dataset.chunkIndex || -1);
+    const chunkIndex = Number(chunk.dataset.chunkIndex || -1);
+    selectedChunkIndex = selectedChunkIndex === chunkIndex ? -1 : chunkIndex;
     renderDetail();
   });
 }
+function renderLocalFileMode(){
+  summary = { date_range: {}, headline_totals: {}, filter_options: {} };
+  document.getElementById("err").textContent = "";
+  applyLoadedSummary("Open the generated explorer.html file from a cost-explorer output folder to load local data.");
+  renderSummaryStrip({});
+  document.getElementById("resultsMeta").textContent = "Local file mode did not find static explorer data.";
+  document.getElementById("explorerResults").innerHTML = '<div class="empty">Run cost_explorer_report.py, then open the generated explorer.html file from that output folder.</div>';
+  document.getElementById("explorerDetail").innerHTML = '<div class="detail-empty">Local file mode does not load explorer detail until static artifacts exist beside explorer.html.</div>';
+}
+
 async function init(){
   applyUrlState();
   bindControls();
+  if(isLocalFileMode()){
+    try{
+      await loadStaticBootstrap();
+      applyLoadedSummary(`Local explorer data · ${summary.date_range?.from || ''} → ${summary.date_range?.to || ''} · ${count(summary.headline_totals?.command_count || 0)} commands indexed`);
+      await runSearch();
+    }catch(error){
+      renderLocalFileMode();
+    }
+    return;
+  }
   try{
     summary = await fetchJson("/api/cost-explorer-summary");
-    document.getElementById("meta").textContent = `Warehouse-backed detail · ${summary.date_range?.from || ''} → ${summary.date_range?.to || ''} · ${count(summary.headline_totals?.command_count || 0)} commands indexed`;
-    document.getElementById("issueKind").value = state.issue_kind;
-    document.getElementById("textSearch").value = state.text;
-    document.getElementById("fromDate").value = state.from;
-    document.getElementById("toDate").value = state.to;
-    document.getElementById("customRange").style.display = state.range === "custom" ? "flex" : "none";
-    setActiveButtons("rangeBtns", "range", state.range);
-    setActiveButtons("tokenBtns", "tokenBucket", state.token_bucket);
-    renderIssueValueOptions();
-    renderChipGroups();
+    applyLoadedSummary(`Warehouse-backed detail · ${summary.date_range?.from || ''} → ${summary.date_range?.to || ''} · ${count(summary.headline_totals?.command_count || 0)} commands indexed`);
     await runSearch();
   }catch(error){
-    document.getElementById("err").textContent = `Failed to load explorer summary: ${error.message}`;
+    document.getElementById("err").textContent = "Could not load explorer data. Start the local insights server and reload.";
     document.getElementById("meta").textContent = "Cost explorer data is unavailable.";
   }
 }
