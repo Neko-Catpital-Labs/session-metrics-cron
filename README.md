@@ -8,7 +8,72 @@ This repository collects Codex/Claude session usage across local and SSH hosts, 
 
 - Nightly pipeline: collects session usage, computes cache and attribution reports, and exports Mixpanel events through `scripts/nightly_usage_pipeline.sh`.
 - Publishing analytics: exports the normalized warehouse table, loads BigQuery and ClickHouse, and creates Metabase dashboards through `scripts/run-warehouse-analytics.sh`.
+- Local insights dashboards: fleet spend, fixing/CI explainer, and cost explorer served by `scripts/run-local-insights.sh` (no Metabase required).
 - Benchmark harness: runs the Invoker nightly model/mode benchmark tooling from `invoker-benchmarks/`.
+
+## Local insights dashboards
+
+Serve the HTML dashboards against local fleet facts + BigQuery warehouse panels:
+
+```bash
+bash scripts/run-local-insights.sh
+# -> http://127.0.0.1:8899/insights
+```
+
+| Route | Page |
+|---|---|
+| `/insights` | Hub |
+| `/cost` | Fleet Cost Dashboard |
+| `/fixing-cost` | Fixing cost explainer |
+| `/cost-explorer` | Cost Explorer (prompt-window search) |
+| `/cost-summary` | Static fleet cost summary |
+
+Snapshot from the **2026-07-18** refresh (full numbers in
+[`docs/screenshots/insights-2026-07-18/VALUES.md`](docs/screenshots/insights-2026-07-18/VALUES.md)):
+
+### Insights hub
+
+![Insights hub](docs/screenshots/insights-2026-07-18/01-insights-hub.png)
+
+### Fleet cost (`/cost`, default 30d)
+
+| KPI | Value |
+|---|---|
+| Modeled cost | $13,849.87 |
+| Actual billed | $14,161.89 |
+| Δ vs billed | −2.2% (−$312.02) |
+| Tokens | 19,167,420,769 |
+| Cache hit rate | 99.1% |
+
+![Fleet cost dashboard](docs/screenshots/insights-2026-07-18/02-fleet-cost.png)
+
+### Fixing cost explainer (`/fixing-cost`, all-time)
+
+| KPI | Value |
+|---|---|
+| Total attributed cost | $20,901.66 |
+| Context / prompt-window | $3,733.55 |
+| Cache-read | $14,118.19 |
+| Output | $2,957.90 |
+| Prompt windows / commands | 10,427 / 304,920 |
+
+Top cause: Orientation in service of fixing — **$7,292.97**.
+
+![Fixing cost explainer](docs/screenshots/insights-2026-07-18/03-fixing-cost.png)
+
+### Cost Explorer (`/cost-explorer`)
+
+304,920 commands indexed for 2026-03-26 → 2026-07-18.
+
+![Cost Explorer](docs/screenshots/insights-2026-07-18/04-cost-explorer.png)
+
+### Fleet cost summary (`/cost-summary`)
+
+All-time fleet fact: **$20,286.89** · 28.3B tokens · 55,903 prompts · 8 hosts.
+
+![Fleet cost summary](docs/screenshots/insights-2026-07-18/05-cost-summary.png)
+
+Details and setup: [`docs/cost-dashboard.md`](docs/cost-dashboard.md).
 
 ## Nightly Pipeline
 
