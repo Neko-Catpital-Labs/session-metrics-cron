@@ -98,6 +98,7 @@ class RequestPatternCategorizationTests(unittest.TestCase):
     def test_fixture_categories_and_uncategorized_cost_gate(self) -> None:
         categorizer = exporter.RequestPatternCategorizer(base_config())
         cases = [
+            ("Read program.md in autoresearch-mlx and kick off a new experiment. This is an autoresearch experiment loop.", "autoresearch_experiment_loop", "2.0"),
             ("A previous agent produced the plan below. Implement the plan in a fresh context and carry the work through.", "previous_agent_plan_resume", "3.0"),
             ("Capture experiment proof artifacts for this workflow run.", "experiment_proof", "2.0"),
             ("Recreate all workflows and rebase the workflow branch stack.", "workflow_recreate_rebase", "2.0"),

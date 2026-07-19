@@ -659,10 +659,23 @@ function renderIssueValueOptions(){
     select.value = "";
   }
 }
+function chipRowsForGroup(group){
+  const all = summaryOptions(group.summaryKey);
+  // Request patterns are few (~25); show the full list so long-tail buckets stay discoverable.
+  // Other dimensions can be large, so keep a short top-cost strip and pin the active filter.
+  const limit = group.field === "request_pattern" ? 40 : 12;
+  const rows = all.slice(0, limit);
+  const selected = String(state[group.field] || "").trim();
+  if(selected && !rows.some(row => String(row[group.summaryKey] || "") === selected)){
+    const extra = all.find(row => String(row[group.summaryKey] || "") === selected);
+    rows.push(extra || { [group.summaryKey]: selected, label: selected });
+  }
+  return rows;
+}
 function renderChipGroups(){
   const root = document.getElementById("chipGroups");
   root.innerHTML = CHIP_GROUPS.map(group => {
-    const rows = summaryOptions(group.summaryKey).slice(0, 12);
+    const rows = chipRowsForGroup(group);
     const chips = rows.map(row => {
       const value = row[group.summaryKey] || "";
       const label = group.labelField(row);

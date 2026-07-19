@@ -879,6 +879,138 @@ def cost_explorer_search_payload(rows: list[dict[str, Any]], filters: dict[str, 
     }
 
 
+def cost_explorer_window_issue_value(row: dict[str, str], issue_kind: str) -> str:
+    if issue_kind == "fixing_cause":
+        return str(row.get("dominant_fixing_cause") or "")
+    if issue_kind == "function_name":
+        return str(row.get("top_function_name") or "")
+    if issue_kind == "shell_verb":
+        return str(row.get("top_shell_verb") or "")
+    return str(row.get(issue_kind) or "")
+
+
+def cost_explorer_window_match_cost(row: dict[str, str], token_bucket: str) -> float:
+    field = {
+        "all": "total_cost_usd",
+        "context": "headline_context_cost_usd",
+        "cache_read": "headline_cache_read_cost_usd",
+        "output": "headline_output_cost_usd",
+    }.get(token_bucket, "total_cost_usd")
+    return to_float(row.get(field)) or 0.0
+
+
+def local_cost_explorer_search(
+    windows: list[dict[str, str]],
+    *,
+    filters: dict[str, Any],
+) -> dict[str, Any]:
+    """Search local cost-explorer windows.csv when BigQuery is unavailable."""
+    start = str(filters.get("from") or "")
+    end = str(filters.get("to") or "")
+    issue_kind = str(filters.get("issue_kind") or "")
+    issue_value = str(filters.get("issue_value") or "")
+    token_bucket = str(filters.get("token_bucket") or "all")
+    task_type = str(filters.get("task_type") or "")
+    request_pattern = str(filters.get("request_pattern") or "")
+    function_name = str(filters.get("function_name") or "")
+    shell_verb = str(filters.get("shell_verb") or "")
+    model = str(filters.get("model") or "")
+    origin = str(filters.get("origin") or "")
+    text = str(filters.get("text") or "").lower()
+    limit = int(filters.get("limit") or DEFAULT_COST_EXPLORER_ROWS)
+    offset = int(filters.get("offset") or 0)
+
+    matched: list[dict[str, Any]] = []
+    for row in windows:
+        session_date = str(row.get("session_date") or "")
+        if start and session_date and session_date < start:
+            continue
+        if end and session_date and session_date > end:
+            continue
+        if task_type and str(row.get("task_type") or "") != task_type:
+            continue
+        if request_pattern and str(row.get("request_pattern") or "") != request_pattern:
+            continue
+        if function_name and str(row.get("top_function_name") or "") != function_name:
+            continue
+        if shell_verb and str(row.get("top_shell_verb") or "") != shell_verb:
+            continue
+        if model and str(row.get("model") or "") != model:
+            continue
+        if origin and str(row.get("origin") or "") != origin:
+            continue
+        if text:
+            haystack = " ".join(
+                [
+                    str(row.get("short_title") or ""),
+                    str(row.get("prompt_preview") or ""),
+                    str(row.get("task_label") or ""),
+                ]
+            ).lower()
+            if text not in haystack:
+                continue
+        if issue_kind:
+            current = cost_explorer_window_issue_value(row, issue_kind)
+            if issue_kind == "request_pattern" and not issue_value:
+                if current in {"", "uncategorized"}:
+                    continue
+            elif not current:
+                continue
+            if issue_value and current != issue_value:
+                continue
+        matching_cost = cost_explorer_window_match_cost(row, token_bucket)
+        if matching_cost <= 0:
+            continue
+        matched.append(
+            {
+                "session_id": str(row.get("session_id") or ""),
+                "prompt_index": to_int(row.get("prompt_index")) or 0,
+                "session_date": session_date,
+                "window_file": str(row.get("window_file") or ""),
+                "short_title": str(row.get("short_title") or ""),
+                "request_pattern": request_pattern or str(row.get("request_pattern") or ""),
+                "task_type": str(row.get("task_type") or ""),
+                "task_type_label": str(row.get("task_type_label") or ""),
+                "dominant_fixing_cause": str(row.get("dominant_fixing_cause") or ""),
+                "origin": str(row.get("origin") or ""),
+                "model": str(row.get("model") or ""),
+                "matching_cost_usd": matching_cost,
+                "total_cost_usd": to_float(row.get("total_cost_usd")) or 0.0,
+                "headline_context_cost_usd": to_float(row.get("headline_context_cost_usd")) or 0.0,
+                "headline_cache_read_cost_usd": to_float(row.get("headline_cache_read_cost_usd")) or 0.0,
+                "headline_output_cost_usd": to_float(row.get("headline_output_cost_usd")) or 0.0,
+            }
+        )
+
+    matched.sort(
+        key=lambda item: (
+            -(to_float(item.get("matching_cost_usd")) or 0.0),
+            -(to_float(item.get("total_cost_usd")) or 0.0),
+            str(item.get("session_date") or ""),
+        )
+    )
+    total_rows = len(matched)
+    matching_cost_total = sum(to_float(item.get("matching_cost_usd")) or 0.0 for item in matched)
+    context_total = sum(to_float(item.get("headline_context_cost_usd")) or 0.0 for item in matched)
+    cache_total = sum(to_float(item.get("headline_cache_read_cost_usd")) or 0.0 for item in matched)
+    output_total = sum(to_float(item.get("headline_output_cost_usd")) or 0.0 for item in matched)
+    page = matched[offset : offset + limit]
+    for item in page:
+        item["matching_cost_total"] = matching_cost_total
+        item["headline_context_cost_total"] = context_total
+        item["headline_cache_read_cost_total"] = cache_total
+        item["headline_output_cost_total"] = output_total
+        item["total_rows"] = total_rows
+    return cost_explorer_search_payload(page, filters)
+
+
+def warehouse_bigquery_available() -> bool:
+    try:
+        return importlib.util.find_spec("google.cloud.bigquery") is not None
+    except ModuleNotFoundError:
+        return False
+
+
 def run_warehouse_query(
     sql: str,
     *,
@@ -2249,32 +2381,41 @@ def make_handler(
                 cache_key = "cost-explorer-search:" + json.dumps(filters, sort_keys=True)
                 payload = cache.get(cache_key)
                 if payload is None:
-                    rows = run_warehouse_query(
-                        cost_explorer_search_sql(
-                            cost_explorer_table,
-                            start=start,
-                            end=end,
-                            issue_kind=issue_kind,
-                            issue_value=issue_value,
-                            token_bucket=token_bucket,
-                            task_type=filters["task_type"],
-                            request_pattern=filters["request_pattern"],
-                            agent_tool_intention=filters["agent_tool_intention"],
-                            function_name=filters["function_name"],
-                            shell_verb=filters["shell_verb"],
-                            model=filters["model"],
-                            origin=filters["origin"],
-                            text=filters["text"],
-                            limit=limit,
-                            offset=offset,
-                        ),
-                        backend=backend,
-                        project_id=project_id,
-                        metabase_url=metabase_url,
-                        metabase_api_key=metabase_api_key,
-                        metabase_database_id=metabase_database_id,
-                    )
-                    payload = cost_explorer_search_payload(rows, filters)
+                    use_local = backend != "metabase" and not warehouse_bigquery_available()
+                    if use_local:
+                        windows = load_cost_explorer_windows_index(cost_explorer_dir, cache)
+                        payload = local_cost_explorer_search(windows, filters=filters)
+                    else:
+                        try:
+                            rows = run_warehouse_query(
+                                cost_explorer_search_sql(
+                                    cost_explorer_table,
+                                    start=start,
+                                    end=end,
+                                    issue_kind=issue_kind,
+                                    issue_value=issue_value,
+                                    token_bucket=token_bucket,
+                                    task_type=filters["task_type"],
+                                    request_pattern=filters["request_pattern"],
+                                    agent_tool_intention=filters["agent_tool_intention"],
+                                    function_name=filters["function_name"],
+                                    shell_verb=filters["shell_verb"],
+                                    model=filters["model"],
+                                    origin=filters["origin"],
+                                    text=filters["text"],
+                                    limit=limit,
+                                    offset=offset,
+                                ),
+                                backend=backend,
+                                project_id=project_id,
+                                metabase_url=metabase_url,
+                                metabase_api_key=metabase_api_key,
+                                metabase_database_id=metabase_database_id,
+                            )
+                            payload = cost_explorer_search_payload(rows, filters)
+                        except ModuleNotFoundError:
+                            windows = load_cost_explorer_windows_index(cost_explorer_dir, cache)
+                            payload = local_cost_explorer_search(windows, filters=filters)
                     cache.set(cache_key, payload)
                 self.send_json(payload)
             except ValueError as exc:

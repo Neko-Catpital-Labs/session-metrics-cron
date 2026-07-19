@@ -63,6 +63,8 @@ class TaskCategorizationTests(unittest.TestCase):
     def test_regex_categories(self) -> None:
         categorizer = exporter.TaskCategorizer(base_config())
         cases = {
+            "Read program.md in autoresearch-mlx and kick off a new experiment loop": "autoresearch",
+            "Lower val_bpb with uv run train.py keep-or-revert": "autoresearch",
             "please review this PR body": "pr_review",
             "submit to invoker as a workflow chain": "invoker_plan_submission",
             "rename the Invoker context menu button label": "uncategorized",

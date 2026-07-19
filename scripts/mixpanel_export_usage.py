@@ -46,6 +46,7 @@ DEFAULT_TASK_CATEGORIZATION_CONFIG: dict[str, Any] = {
         ],
     },
     "categories": [
+        {"id": "autoresearch", "label": "Autoresearch"},
         {"id": "pr_review", "label": "PR Review"},
         {"id": "invoker_plan_submission", "label": "Invoker Plan Submission"},
         {"id": "git_branch_stack", "label": "Git Branch / Stack"},
@@ -63,6 +64,7 @@ DEFAULT_TASK_CATEGORIZATION_CONFIG: dict[str, Any] = {
             "type": "regex",
             "enabled": True,
             "rules": [
+                {"id": "autoresearch", "priority": 920, "confidence": "high", "regex": ["autoresearch", "autoresearch-mlx", r"program\.md", "val_bpb", r"uv run train\.py", "experiment loop", "hyperparam", "keep-or-revert", r"results\.tsv"]},
                 {"id": "pr_review", "priority": 900, "confidence": "high", "regex": [r"\bpr\b", r"\bpull request\b", r"\breview\b", "pr summary", "pr body", "auto-stamp", "landed", "merged"]},
                 {"id": "invoker_plan_submission", "priority": 850, "confidence": "high", "regex": ["plan-to-invoker", "submit to invoker", "workflow chain", "workflow submission", "generate invoker yaml", "generated-plan"]},
                 {"id": "git_branch_stack", "priority": 800, "confidence": "high", "regex": [r"\brebase\b", r"\bmerge\b", r"\bstack\b", "upstream/master", "origin/master", "branch stack", "recreate all workflows"]},
@@ -107,6 +109,7 @@ DEFAULT_REQUEST_PATTERN_CONFIG: dict[str, Any] = {
             "default": "uncategorized",
             "continue_from": ["other"],
             "rules": [
+                {"id": "autoresearch", "confidence": "high", "priority": 920, "regex": ["autoresearch", "autoresearch-mlx", r"program\.md", "val_bpb", r"uv run train\.py", "experiment loop", "hyperparam", "keep-or-revert", r"results\.tsv"]},
                 {"id": "pr_review", "confidence": "high", "regex": ["\\bpr\\b", "\\bpull request\\b", "\\breview\\b", "pr summary", "pr body"]},
                 {"id": "invoker_plan_submission", "confidence": "high", "regex": ["plan-to-invoker", "submit to invoker", "workflow chain", "workflow submission", "generate invoker yaml", "generated-plan"]},
                 {"id": "ui_terminal_visual", "confidence": "high", "regex": ["\\bui\\b", "terminal", "screenshot", "visual proof", "playwright", "embedded pty", "graph"]},
@@ -130,9 +133,11 @@ DEFAULT_REQUEST_PATTERN_CONFIG: dict[str, Any] = {
                 "git_branch_stack",
                 "debug_repro",
                 "ui_terminal_visual",
+                "autoresearch",
                 "uncategorized",
             ],
             "rules": [
+                {"id": "autoresearch_experiment_loop", "confidence": "high", "priority": 930, "regex": ["kick off a new experiment", "NEVER STOP", "one experiment iteration", "exactly ONE iteration", "baseline.*val_bpb", r"results\.tsv", "autoresearch experiment loop"]},
                 {"id": "previous_agent_plan_resume", "confidence": "high", "regex": ["fresh context", "carry the work through", "previous agent produced the plan below"]},
                 {"id": "experiment_proof", "confidence": "high", "regex": ["experiment proof", "proof artifact", "capture.*proof"]},
                 {"id": "workflow_recreate_rebase", "confidence": "high", "regex": ["recreate all workflows", "workflow.*rebase", "rebase.*workflow"]},

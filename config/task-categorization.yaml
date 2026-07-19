@@ -21,6 +21,8 @@ context:
       weight: 0.3
 
 categories:
+  - id: autoresearch
+    label: Autoresearch
   - id: pr_review
     label: PR Review
   - id: invoker_plan_submission
@@ -47,6 +49,20 @@ classifiers:
     type: regex
     enabled: true
     rules:
+      - id: autoresearch
+        priority: 920
+        confidence: high
+        regex:
+          - "autoresearch"
+          - "autoresearch-mlx"
+          - "program\\.md"
+          - "val_bpb"
+          - "uv run train\\.py"
+          - "experiment loop"
+          - "hyperparam"
+          - "keep-or-revert"
+          - "results\\.tsv"
+
       - id: pr_review
         priority: 900
         confidence: high
