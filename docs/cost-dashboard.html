@@ -51,6 +51,7 @@
 </style>
 </head>
 <body>
+  <div class="sub" style="margin-bottom:.5rem"><a href="/insights">← All insights</a> · <a href="/fixing-cost">Fixing &amp; CI breakdown</a></div>
   <h1>Invoker Fleet Cost Dashboard</h1>
   <div class="sub" id="meta">loading…</div>
   <div class="kpis" id="kpis"></div>
@@ -351,7 +352,10 @@
       data:{ labels: top.map(r=>r.intent.replace(/_/g," ")), datasets:[{ label:"cost", data: top.map(r=>r.cost_usd), backgroundColor: top.map((_,i)=>PALETTE[i%PALETTE.length]), borderWidth:0 }] },
       options:{ indexAxis:"y", maintainAspectRatio:false, animation:false,
         plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>fmtMoney(c.parsed.x)}} },
-        scales:{ x:{ ticks:{ callback:v=>"$"+v.toLocaleString() } } } }
+        scales:{
+          x:{ beginAtZero:true, ticks:{ callback:v=>{ const n=Number(v); return Number.isFinite(n)?fmtMoney(n):v; } } },
+          y:{ ticks:{ autoSkip:false, font:{ size:10 } } },
+        } }
     });
   }
 
