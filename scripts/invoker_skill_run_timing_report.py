@@ -21,8 +21,15 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CLAUDE_DIR = Path.home() / ".claude" / "projects"
+DEFAULT_CODEX_SESSIONS_DIRS = [Path.home() / ".codex" / "sessions", Path.home() / ".omp" / "agent" / "sessions"]
 DEFAULT_SKILL_SCRIPTS_DIR = Path.home() / ".claude" / "skills" / "invoker-plan-to-invoker" / "scripts"
+DEFAULT_CODEX_SKILL_SCRIPTS_DIR = Path.home() / ".codex" / "skills" / "invoker-plan-to-invoker" / "scripts"
 SCHEMA_VERSION = "invoker_skill_run_timing_v1"
+
+# Codex (Responses API-style) transcripts use exec_command/shell/bash function calls
+# instead of Claude's dedicated Bash tool; the command string lives under a different key.
+CODEX_SHELL_TOOL_NAMES = {"exec_command", "shell", "bash", "local_shell"}
+PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Update|Add) File: (.+)$", re.MULTILINE)
 
 START_PHRASES = [
     "invoker-plan-to-invoker",
@@ -106,6 +113,7 @@ class ParsedSession:
     assistant_events: list[AssistantEvent]
     malformed_lines: int
     total_lines: int
+    provider: str = "claude"
 
 
 def parse_ts(value: Any) -> datetime | None:
@@ -143,8 +151,7 @@ def _read_lines(path: Path) -> tuple[list[tuple[int, dict[str, Any]]], int]:
     return out, malformed
 
 
-def parse_session(path: Path) -> ParsedSession:
-    lines, malformed = _read_lines(path)
+def _parse_claude_session_lines(lines: list[tuple[int, dict[str, Any]]], malformed: int) -> ParsedSession:
     tool_uses: dict[str, ToolUse] = {}
     tool_results: dict[str, ToolResult] = {}
     user_texts: list[UserTextEvent] = []
@@ -190,7 +197,117 @@ def parse_session(path: Path) -> ParsedSession:
             preview = _text_preview("\n".join(p for p in text_parts if p.strip()))
             assistant_events.append(AssistantEvent(line_no, uuid, ts, preview, tool_ids))
 
-    return ParsedSession(tool_uses, tool_results, user_texts, assistant_events, malformed, len(lines))
+    return ParsedSession(tool_uses, tool_results, user_texts, assistant_events, malformed, len(lines), provider="claude")
+
+
+def _codex_tool_input(payload: dict[str, Any]) -> dict[str, Any]:
+    name = str(payload.get("name") or payload.get("type") or "unknown")
+    if name == "apply_patch" or "input" in payload:
+        return {"patch": str(payload.get("input") or "")}
+    arguments = payload.get("arguments")
+    if isinstance(arguments, str):
+        try:
+            parsed = json.loads(arguments)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+        return {"raw": arguments}
+    return {}
+
+
+def _parse_codex_session_lines(lines: list[tuple[int, dict[str, Any]]], malformed: int) -> ParsedSession:
+    tool_uses: dict[str, ToolUse] = {}
+    tool_results: dict[str, ToolResult] = {}
+    user_texts: list[UserTextEvent] = []
+    assistant_events: list[AssistantEvent] = []
+
+    # Codex logs each parallel tool call as its own response_item line (unlike Claude,
+    # which bundles same-turn tool_use blocks into one assistant message/timestamp), so
+    # consecutive *_call lines with no intervening reasoning/message/user text between
+    # them are buffered into a single batch and flushed as one AssistantEvent -- using
+    # the first call's timestamp -- exactly mirroring how Claude's batching works. Without
+    # this, an early call's own result can push the cursor past the next call's earlier
+    # request timestamp and produce a spurious negative-duration segment.
+    pending_batch_ids: list[str] = []
+    pending_batch_line: int | None = None
+    pending_batch_ts: datetime | None = None
+
+    def flush_pending() -> None:
+        nonlocal pending_batch_ids, pending_batch_line, pending_batch_ts
+        if pending_batch_ids:
+            assistant_events.append(
+                AssistantEvent(pending_batch_line, f"codex-{pending_batch_line}", pending_batch_ts, "", list(pending_batch_ids))
+            )
+        pending_batch_ids = []
+        pending_batch_line = None
+        pending_batch_ts = None
+
+    for line_no, obj in lines:
+        ts = parse_ts(obj.get("timestamp"))
+        typ = obj.get("type")
+        payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
+        payload_type = str(payload.get("type") or "")
+
+        if typ == "event_msg" and payload_type == "user_message":
+            flush_pending()
+            text = str(payload.get("message") or "")
+            if text.strip():
+                user_texts.append(UserTextEvent(line_no, f"codex-{line_no}", ts, text))
+            continue
+
+        if typ == "event_msg" and payload_type == "agent_message":
+            flush_pending()
+            text = str(payload.get("message") or "")
+            assistant_events.append(AssistantEvent(line_no, f"codex-{line_no}", ts, _text_preview(text), []))
+            continue
+
+        if typ == "response_item" and payload_type == "reasoning":
+            flush_pending()
+            assistant_events.append(AssistantEvent(line_no, f"codex-{line_no}", ts, "", []))
+            continue
+
+        if typ == "response_item" and payload_type.endswith("_call"):
+            call_id = str(payload.get("call_id") or f"codex-call-{line_no}")
+            name = str(payload.get("name") or payload_type[: -len("_call")])
+            tool_uses[call_id] = ToolUse(call_id, name, _codex_tool_input(payload), ts, line_no, f"codex-{line_no}")
+            if not pending_batch_ids:
+                pending_batch_line = line_no
+                pending_batch_ts = ts
+            pending_batch_ids.append(call_id)
+            continue
+
+        if typ == "response_item" and payload_type.endswith("_output"):
+            call_id = str(payload.get("call_id") or "")
+            if call_id and call_id not in tool_results:
+                tool_results[call_id] = ToolResult(call_id, ts, line_no)
+            continue
+
+    flush_pending()
+    return ParsedSession(tool_uses, tool_results, user_texts, assistant_events, malformed, len(lines), provider="codex")
+
+
+def _detect_provider_from_lines(lines: list[tuple[int, dict[str, Any]]]) -> str:
+    for _, obj in lines[:20]:
+        typ = obj.get("type")
+        if typ in ("response_item", "event_msg", "turn_context", "session_meta", "compacted"):
+            return "codex"
+        if typ in ("user", "assistant") and isinstance(obj.get("message"), dict):
+            return "claude"
+    return "claude"
+
+
+def detect_provider(path: Path) -> str:
+    lines, _ = _read_lines(path)
+    return _detect_provider_from_lines(lines)
+
+
+def parse_session(path: Path) -> ParsedSession:
+    lines, malformed = _read_lines(path)
+    provider = _detect_provider_from_lines(lines)
+    if provider == "codex":
+        return _parse_codex_session_lines(lines, malformed)
+    return _parse_claude_session_lines(lines, malformed)
 
 
 # --------------------------------------------------------------------------
@@ -217,10 +334,7 @@ def find_start_candidates(session: ParsedSession, pattern: re.Pattern[str]) -> l
 def find_end_candidates(session: ParsedSession, path_glob: str) -> list[ToolUse]:
     candidates = []
     for tu in session.tool_uses.values():
-        if tu.name != "Write":
-            continue
-        file_path = str(tu.input.get("file_path") or "")
-        if file_path and fnmatch.fnmatch(file_path, path_glob):
+        if any(fnmatch.fnmatch(fp, path_glob) for fp in _candidate_file_paths(tu)):
             candidates.append(tu)
     candidates.sort(key=lambda t: (t.ts or datetime.min.replace(tzinfo=timezone.utc), t.line_no))
     return candidates
@@ -254,7 +368,7 @@ def resolve_start(session: ParsedSession, args: Any) -> Boundary:
     return Boundary("start", u.line_no, u.uuid, u.ts, "start_pattern", {"text_preview": _text_preview(u.text)})
 
 
-def _boundary_from_tool_use(tu: ToolUse, session: ParsedSession, match_rule: str) -> Boundary:
+def _boundary_from_tool_use(tu: ToolUse, session: ParsedSession, match_rule: str, file_path: str = "") -> Boundary:
     result = session.tool_results.get(tu.id)
     if result is not None and result.ts is not None:
         ts = result.ts
@@ -264,6 +378,9 @@ def _boundary_from_tool_use(tu: ToolUse, session: ParsedSession, match_rule: str
         ts = tu.ts
         result_missing = True
         line_no = tu.line_no
+    if not file_path:
+        paths = _candidate_file_paths(tu)
+        file_path = paths[0] if paths else ""
     return Boundary(
         "end",
         line_no,
@@ -272,7 +389,7 @@ def _boundary_from_tool_use(tu: ToolUse, session: ParsedSession, match_rule: str
         match_rule,
         {
             "tool_use_id": tu.id,
-            "file_path": str(tu.input.get("file_path") or ""),
+            "file_path": file_path,
             "end_marker_found": True,
             "end_marker_result_missing": result_missing,
         },
@@ -300,7 +417,9 @@ def resolve_end(session: ParsedSession, args: Any) -> Boundary:
     occurrence = getattr(args, "end_occurrence", "last") or "last"
     index = 0 if occurrence == "first" else len(candidates) - 1
     match_rule = "first_yaml_write" if occurrence == "first" else "last_yaml_write"
-    return _boundary_from_tool_use(candidates[index], session, match_rule)
+    tu = candidates[index]
+    matched_path = next((fp for fp in _candidate_file_paths(tu) if fnmatch.fnmatch(fp, path_glob)), "")
+    return _boundary_from_tool_use(tu, session, match_rule, file_path=matched_path)
 
 
 # --------------------------------------------------------------------------
@@ -326,18 +445,35 @@ def classify_bash_command(command: str, script_names: set[str]) -> str:
     return "bash:other"
 
 
-def _label_for_tool_use(tu: ToolUse, script_names: set[str]) -> str:
+def _command_string(tu: ToolUse) -> str:
     if tu.name == "Bash":
-        return classify_bash_command(str(tu.input.get("command") or ""), script_names)
+        return str(tu.input.get("command") or "")
+    if tu.name in CODEX_SHELL_TOOL_NAMES:
+        return str(tu.input.get("cmd") or tu.input.get("command") or "")
+    return ""
+
+
+def _label_for_tool_use(tu: ToolUse, script_names: set[str]) -> str:
+    if tu.name == "Bash" or tu.name in CODEX_SHELL_TOOL_NAMES:
+        return classify_bash_command(_command_string(tu), script_names)
     return f"tool:{tu.name}"
 
 
-def discover_skill_scripts(skill_scripts_dir: Path | None) -> set[str]:
-    if skill_scripts_dir and skill_scripts_dir.is_dir():
-        names = {p.name for p in skill_scripts_dir.iterdir() if p.is_file() and p.suffix in (".sh", ".mjs", ".ts")}
-        if names:
-            return names
-    return set(DEFAULT_SKILL_SCRIPTS)
+def _candidate_file_paths(tu: ToolUse) -> list[str]:
+    if tu.name == "Write":
+        fp = str(tu.input.get("file_path") or "")
+        return [fp] if fp else []
+    if tu.name == "apply_patch":
+        return PATCH_FILE_RE.findall(str(tu.input.get("patch") or ""))
+    return []
+
+
+def discover_skill_scripts(skill_scripts_dirs: list[Path]) -> set[str]:
+    names: set[str] = set()
+    for skill_scripts_dir in skill_scripts_dirs:
+        if skill_scripts_dir and skill_scripts_dir.is_dir():
+            names |= {p.name for p in skill_scripts_dir.iterdir() if p.is_file() and p.suffix in (".sh", ".mjs", ".ts")}
+    return names or set(DEFAULT_SKILL_SCRIPTS)
 
 
 def build_timeline(
@@ -556,7 +692,7 @@ def build_result(
 
     return {
         "schema_version": SCHEMA_VERSION,
-        "session": {"path": str(session_path)},
+        "session": {"path": str(session_path), "provider": session.provider},
         "skill": "invoker-plan-to-invoker",
         "boundaries": {
             "start": _boundary_to_dict(start),
@@ -592,9 +728,14 @@ def resolve_session_path(args: argparse.Namespace) -> Path:
         return Path(args.session).expanduser()
     if args.session_id:
         matches = sorted(DEFAULT_CLAUDE_DIR.glob(f"*/{args.session_id}.jsonl"))
-        if not matches:
-            raise SystemExit(f"No session found for --session-id {args.session_id} under {DEFAULT_CLAUDE_DIR}")
-        return matches[0]
+        if matches:
+            return matches[0]
+        for codex_dir in DEFAULT_CODEX_SESSIONS_DIRS:
+            matches = sorted(codex_dir.glob(f"**/*{args.session_id}*.jsonl"))
+            if matches:
+                return matches[0]
+        searched = [str(DEFAULT_CLAUDE_DIR)] + [str(d) for d in DEFAULT_CODEX_SESSIONS_DIRS]
+        raise SystemExit(f"No session found for --session-id {args.session_id} under {searched}")
     raise SystemExit("Provide --session PATH or --session-id UUID")
 
 
@@ -602,7 +743,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Ad-hoc end-to-end timing breakdown for an invoker-plan-to-invoker skill run.")
     parser.add_argument("--session", help="Path to a Claude Code session JSONL transcript")
     parser.add_argument("--session-id", help="Session UUID; resolved under ~/.claude/projects/*/<uuid>.jsonl")
-    parser.add_argument("--skill-scripts-dir", default=str(DEFAULT_SKILL_SCRIPTS_DIR))
+    parser.add_argument(
+        "--skill-scripts-dir", help="Override the skill scripts directory (default: search both Claude and Codex skill installs)"
+    )
     parser.add_argument("--start-pattern", help="Override the default skill-invocation regex")
     parser.add_argument("--end-path-glob", default="*plans/*.yaml")
     parser.add_argument("--start-line", type=int)
@@ -622,18 +765,23 @@ def main() -> int:
     args = parse_args()
     session_path = resolve_session_path(args)
     session = parse_session(session_path)
-    script_names = discover_skill_scripts(Path(args.skill_scripts_dir).expanduser())
+    if args.skill_scripts_dir:
+        script_names = discover_skill_scripts([Path(args.skill_scripts_dir).expanduser()])
+    else:
+        script_names = discover_skill_scripts([DEFAULT_SKILL_SCRIPTS_DIR, DEFAULT_CODEX_SKILL_SCRIPTS_DIR])
 
     if args.list_candidates:
         pattern = re.compile(args.start_pattern, re.IGNORECASE) if args.start_pattern else START_RE
         starts = find_start_candidates(session, pattern)
         ends = find_end_candidates(session, args.end_path_glob)
+        print(f"Provider: {session.provider}")
         print(f"Start candidates ({len(starts)}):")
         for u in starts:
             print(f"  line={u.line_no} uuid={u.uuid} ts={u.ts} text={_text_preview(u.text, 100)!r}")
         print(f"\nEnd candidates ({len(ends)}):")
         for tu in ends:
-            print(f"  line={tu.line_no} tool_use_id={tu.id} ts={tu.ts} file_path={tu.input.get('file_path')!r}")
+            paths = _candidate_file_paths(tu)
+            print(f"  line={tu.line_no} tool_use_id={tu.id} ts={tu.ts} file_path(s)={paths!r}")
         return 0
 
     start = resolve_start(session, args)

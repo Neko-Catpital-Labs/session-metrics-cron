@@ -199,12 +199,154 @@ def scenario_multiple_invocations() -> list[dict[str, Any]]:
     ]
 
 
+# --------------------------------------------------------------------------
+# Codex-shaped lines (response_item / event_msg), matching the real schema
+# observed under ~/.codex/sessions on this machine.
+# --------------------------------------------------------------------------
+
+
+def codex_user_message_line(offset_seconds: float, text: str) -> dict[str, Any]:
+    return {
+        "timestamp": _ts(offset_seconds),
+        "type": "event_msg",
+        "payload": {"type": "user_message", "message": text, "images": [], "local_images": [], "text_elements": []},
+    }
+
+
+def codex_reasoning_line(offset_seconds: float) -> dict[str, Any]:
+    return {
+        "timestamp": _ts(offset_seconds),
+        "type": "response_item",
+        "payload": {"type": "reasoning", "summary": [], "encrypted_content": "opaque"},
+    }
+
+
+def codex_agent_message_line(offset_seconds: float, text: str) -> dict[str, Any]:
+    return {
+        "timestamp": _ts(offset_seconds),
+        "type": "event_msg",
+        "payload": {"type": "agent_message", "message": text, "phase": "commentary", "memory_citation": None},
+    }
+
+
+def codex_function_call_line(offset_seconds: float, call_id: str, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "timestamp": _ts(offset_seconds),
+        "type": "response_item",
+        "payload": {"type": "function_call", "name": name, "arguments": json.dumps(arguments), "call_id": call_id},
+    }
+
+
+def codex_function_call_output_line(offset_seconds: float, call_id: str, output: str = "ok") -> dict[str, Any]:
+    return {
+        "timestamp": _ts(offset_seconds),
+        "type": "response_item",
+        "payload": {"type": "function_call_output", "call_id": call_id, "output": output},
+    }
+
+
+def codex_custom_tool_call_line(offset_seconds: float, call_id: str, name: str, patch: str) -> dict[str, Any]:
+    return {
+        "timestamp": _ts(offset_seconds),
+        "type": "response_item",
+        "payload": {"type": "custom_tool_call", "status": "completed", "call_id": call_id, "name": name, "input": patch},
+    }
+
+
+def codex_custom_tool_call_output_line(offset_seconds: float, call_id: str, output: str = "ok") -> dict[str, Any]:
+    return {
+        "timestamp": _ts(offset_seconds),
+        "type": "response_item",
+        "payload": {"type": "custom_tool_call_output", "call_id": call_id, "output": output},
+    }
+
+
+def scenario_codex_happy_path() -> list[dict[str, Any]]:
+    return [
+        codex_user_message_line(0, "/invoker-plan-to-invoker please generate the yaml plan"),
+        codex_reasoning_line(5),
+        codex_agent_message_line(7, "I'll look at the plan first."),
+        codex_function_call_line(
+            15, "call_sd", "exec_command", {"cmd": "bash skills/plan-to-invoker/scripts/skill-doctor.sh plans/foo.yaml"}
+        ),
+        codex_function_call_output_line(45, "call_sd", "all checks passed"),
+        codex_reasoning_line(50),
+        codex_function_call_line(
+            52,
+            "call_ea",
+            "exec_command",
+            {"cmd": "bash skills/plan-to-invoker/scripts/extract-assumptions.sh plans/foo.yaml"},
+        ),
+        codex_function_call_output_line(64, "call_ea", "assumptions ok"),
+        codex_agent_message_line(70, "Writing the final plan."),
+        codex_custom_tool_call_line(
+            72,
+            "call_write",
+            "apply_patch",
+            "*** Begin Patch\n*** Add File: plans/invoker-handoff.yaml\n+name: demo\n*** End Patch",
+        ),
+        codex_custom_tool_call_output_line(74, "call_write", "Success. Updated the following files:\nA plans/invoker-handoff.yaml\n"),
+    ]
+
+
+def scenario_codex_multi_file_patch() -> list[dict[str, Any]]:
+    return [
+        codex_user_message_line(0, "/invoker-plan-to-invoker please generate the yaml plan"),
+        codex_reasoning_line(3),
+        codex_custom_tool_call_line(
+            10,
+            "call_write",
+            "apply_patch",
+            "*** Begin Patch\n"
+            "*** Update File: docs/README.md\n"
+            "+notes\n"
+            "*** Add File: plans/invoker-handoff.yaml\n"
+            "+name: demo\n"
+            "*** End Patch",
+        ),
+        codex_custom_tool_call_output_line(
+            12, "call_write", "Success. Updated the following files:\nM docs/README.md\nA plans/invoker-handoff.yaml\n"
+        ),
+    ]
+
+
+def scenario_codex_parallel_calls() -> list[dict[str, Any]]:
+    return [
+        codex_user_message_line(0, "/invoker-plan-to-invoker please generate the yaml plan"),
+        codex_reasoning_line(5),
+        codex_agent_message_line(7, "Running three checks in parallel."),
+        codex_function_call_line(
+            8, "call_a", "exec_command", {"cmd": "bash skills/plan-to-invoker/scripts/validate-plan.sh plans/foo.yaml"}
+        ),
+        codex_function_call_line(
+            8, "call_b", "exec_command", {"cmd": "bash skills/plan-to-invoker/scripts/check-policy-coverage.sh plans/foo.yaml"}
+        ),
+        codex_function_call_line(
+            8, "call_c", "exec_command", {"cmd": "bash skills/plan-to-invoker/scripts/check-stack-manifest.sh plans/foo.yaml"}
+        ),
+        codex_function_call_output_line(10, "call_a", "validate ok"),
+        codex_function_call_output_line(9, "call_b", "policy ok"),
+        codex_function_call_output_line(15, "call_c", "manifest ok"),
+        codex_agent_message_line(20, "All checks passed, writing the plan."),
+        codex_custom_tool_call_line(
+            22,
+            "call_write",
+            "apply_patch",
+            "*** Begin Patch\n*** Add File: plans/invoker-handoff.yaml\n+name: demo\n*** End Patch",
+        ),
+        codex_custom_tool_call_output_line(24, "call_write", "Success. Updated the following files:\nA plans/invoker-handoff.yaml\n"),
+    ]
+
+
 SCENARIOS = {
     "happy_path": scenario_happy_path,
     "unterminated": scenario_unterminated,
     "missing_timestamp": scenario_missing_timestamp,
     "two_step_write": scenario_two_step_write,
     "multiple_invocations": scenario_multiple_invocations,
+    "codex_happy_path": scenario_codex_happy_path,
+    "codex_multi_file_patch": scenario_codex_multi_file_patch,
+    "codex_parallel_calls": scenario_codex_parallel_calls,
 }
 
 
