@@ -45,13 +45,17 @@ DURATION_FIELDS = (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="PR automation retry-thrash breakdown.")
-    parser.add_argument("--input", default=str(REPO_ROOT / "reports" / "planning-vs-execution-prompts.csv"))
+    parser.add_argument("--reports-dir", default=str(REPO_ROOT / "reports"))
+    parser.add_argument("--input")
     parser.add_argument("--json-out", default=str(REPO_ROOT / "reports" / "pr-automation-breakdown.json"))
     parser.add_argument("--markdown-out", default=str(REPO_ROOT / "reports" / "pr-automation-breakdown.md"))
     parser.add_argument("--html-out", default=str(REPO_ROOT / "reports" / "pr-automation-breakdown.html"))
     parser.add_argument("--top-thrash", type=int, default=20)
     parser.add_argument("--duration-cap-seconds", type=float, default=3600.0)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.input:
+        args.input = str(Path(args.reports_dir) / "planning-vs-execution-prompts.csv")
+    return args
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
