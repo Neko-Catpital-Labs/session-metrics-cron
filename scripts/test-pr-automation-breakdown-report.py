@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +60,19 @@ def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
 
 
 class PrAutomationBreakdownTests(unittest.TestCase):
+    def test_reports_dir_sets_default_input_csv(self) -> None:
+        with patch(
+            "sys.argv",
+            [
+                "pr_automation_breakdown_report.py",
+                "--reports-dir",
+                "/tmp/custom-reports",
+            ],
+        ):
+            args = report.parse_args()
+
+        self.assertEqual(args.input, "/tmp/custom-reports/planning-vs-execution-prompts.csv")
+
     def test_attempts_detail_and_uncapped_thrashing_targets(self) -> None:
         rows = [
             row(
