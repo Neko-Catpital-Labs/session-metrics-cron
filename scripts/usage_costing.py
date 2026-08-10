@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -59,7 +60,15 @@ def resolve_billable_model(provider: str, observed: str) -> tuple[str, str]:
 
 
 def load_pricing_table(path_or_url: str | None) -> dict[str, Any]:
-    source = path_or_url or DEFAULT_PRICING_URL
+    source = path_or_url
+    if not source:
+        source = os.environ.get("LANGFUSE_PRICING_URL")
+        if not source:
+            langfuse_host = os.environ.get("LANGFUSE_HOST")
+            if langfuse_host:
+                source = f"{langfuse_host}/api/public/models"
+        if not source:
+            source = DEFAULT_PRICING_URL
     try:
         if source.startswith(("http://", "https://")):
             with urllib.request.urlopen(source, timeout=20) as response:  # noqa: S310
