@@ -3,7 +3,13 @@
 
 from __future__ import annotations
 
-from usage_costing import build_cost_calculation, derive_cost, resolve_billable_model
+import json
+import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import usage_costing as usage_costing_module
+from usage_costing import build_cost_calculation, derive_cost, load_pricing_table, resolve_billable_model
 
 
 def assert_close(actual: float | None, expected: float) -> None:
@@ -71,7 +77,37 @@ def test_missing_pricing_and_model_resolution() -> None:
     assert cost["derived_total_cost_usd"] is None
 
 
+def test_pricing_source_fallback_and_override_resolution() -> None:
+    original_default = usage_costing_module.DEFAULT_PRICING_URL
+    original_env = {name: os.environ.get(name) for name in ("LANGFUSE_PRICING_URL", "LANGFUSE_HOST")}
+    try:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            fallback_path = root / "fallback.json"
+            override_path = root / "override.json"
+            fallback_table = {"fallback-model": {"input_cost_per_token": 1}}
+            override_table = {"override-model": {"input_cost_per_token": 2}}
+            fallback_path.write_text(json.dumps(fallback_table))
+            override_path.write_text(json.dumps(override_table))
+
+            os.environ.pop("LANGFUSE_PRICING_URL", None)
+            os.environ.pop("LANGFUSE_HOST", None)
+            usage_costing_module.DEFAULT_PRICING_URL = str(fallback_path)
+            assert load_pricing_table(None) == fallback_table
+
+            os.environ["LANGFUSE_PRICING_URL"] = str(override_path)
+            assert load_pricing_table(None) == override_table
+    finally:
+        usage_costing_module.DEFAULT_PRICING_URL = original_default
+        for name, value in original_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 if __name__ == "__main__":
     test_cache_aware_cost()
     test_missing_pricing_and_model_resolution()
+    test_pricing_source_fallback_and_override_resolution()
     print("OK: usage costing")
