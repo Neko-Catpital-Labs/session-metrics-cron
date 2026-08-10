@@ -54,11 +54,22 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def collect_fleet_sessions(stage: Path, local_only: bool, no_collect: bool) -> dict[str, list[Any]]:
-    """Parse codex/claude/omp sessions across local + SSH hosts, deduped by content."""
+def load_collection_hosts(local_only: bool) -> list[dict[str, Any]]:
     hosts = fleet.load_hosts(include_local=True)
     if local_only:
         hosts = [h for h in hosts if h.get("local")]
+    return hosts
+
+
+def collect_fleet_sessions(
+    stage: Path,
+    local_only: bool,
+    no_collect: bool,
+    hosts: list[dict[str, Any]] | None = None,
+) -> dict[str, list[Any]]:
+    """Parse codex/claude/omp sessions across local + SSH hosts, deduped by content."""
+    if hosts is None:
+        hosts = load_collection_hosts(local_only)
     parsers = {
         "codex": pve.parse_codex_session,
         "claude": pve.parse_claude_session,
@@ -126,7 +137,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     pricing_table = load_pricing_table(None)
-    fam = collect_fleet_sessions(Path(args.stage_dir), args.local_only, args.no_collect)
+    hosts = load_collection_hosts(args.local_only)
+    fam = collect_fleet_sessions(Path(args.stage_dir), args.local_only, args.no_collect, hosts=hosts)
 
     codex_total = family_pricing_total(fam["codex"], pricing_table)
     claude_total = family_pricing_total(fam["claude"], pricing_table)
@@ -145,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = Path(args.out_dir)
     write_csv(out_dir / "usage-command-attribution-v4_5.csv", v4_5_rows)
+    pve.write_scope_marker(out_dir, "fleet", hosts=[str(host["name"]) for host in hosts])
     write_csv(out_dir / "usage-command-attribution-v4_5-review.csv", v4_5_review_rows)
 
     total_cost = sum(float(r.get("allocated_total_cost_usd") or 0.0) for r in v4_5_rows)
