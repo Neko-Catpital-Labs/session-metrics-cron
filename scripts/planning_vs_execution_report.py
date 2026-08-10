@@ -61,6 +61,7 @@ COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_3 = "classifier_v4_3"
 COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_4 = "classifier_v4_4"
 COMMAND_ATTRIBUTION_CLASSIFIER_REVISION_V4_5 = "classifier_v4_5"
 COMMAND_COST_ALLOCATION_METHOD = "prompt_cost_output_weighted_v1"
+SCOPE_MARKER_NAME = "usage-command-attribution-v4_5.scope.json"
 
 MOTIVATION_FIELD_RENAMES_V4_5 = {
     "primary_why": "request_origin",
@@ -78,6 +79,27 @@ REVIEW_FIELD_RENAMES_V4_5 = {
     "codex_primary_why": "codex_request_origin",
     "codex_prompt_task_kind": "codex_work_motivation",
 }
+
+
+def read_scope_marker(out_dir: Path) -> dict | None:
+    marker_path = out_dir / SCOPE_MARKER_NAME
+    if not marker_path.exists():
+        return None
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return marker if isinstance(marker, dict) else None
+
+
+def write_scope_marker(out_dir: Path, scope: str, hosts: list[str]) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    marker = {
+        "scope": scope,
+        "hosts": hosts,
+        "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    (out_dir / SCOPE_MARKER_NAME).write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
 
 PRIMARY_WHY_BUCKETS_V4_2 = {
     "generated_invoker_task",
@@ -2698,6 +2720,7 @@ def build_report(
     claude_dir: Path,
     v4_2_cluster_labels: dict[str, dict[str, str]] | None = None,
     omp_dir: Path | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
     codex_dir, claude_dir = audit_dedup_dirs(audit_path, codex_dir, claude_dir)
     model_totals = load_model_totals(audit_path)
@@ -2818,7 +2841,18 @@ def build_report(
     write_csv(out_dir / "usage-command-attribution-v4_4-review.csv", all_command_rows_v4_4_review)
     (out_dir / "usage-command-attribution-v4_4-summary.json").write_text(json.dumps(command_summary(all_command_rows_v4_4), indent=2))
     (out_dir / "usage-command-attribution-v4_4-report.md").write_text(render_command_markdown(all_command_rows_v4_4))
-    write_csv(out_dir / "usage-command-attribution-v4_5.csv", all_command_rows_v4_5)
+    v4_5_path = out_dir / "usage-command-attribution-v4_5.csv"
+    scope_marker = read_scope_marker(out_dir)
+    if scope_marker is not None and scope_marker.get("scope") == "fleet" and not force:
+        print(
+            f"Refusing to overwrite {v4_5_path}: scope marker generated_utc="
+            f"{scope_marker.get('generated_utc', 'unknown')} indicates this file is fleet-scoped; "
+            "writing local-only data would replace it. Pass --force to overwrite and update the marker.",
+            file=sys.stderr,
+        )
+    else:
+        write_csv(v4_5_path, all_command_rows_v4_5)
+        write_scope_marker(out_dir, "local", hosts=["local"])
     write_csv(out_dir / "usage-command-attribution-v4_5-review.csv", all_command_rows_v4_5_review)
     (out_dir / "usage-command-attribution-v4_5-summary.json").write_text(json.dumps(command_summary(all_command_rows_v4_5), indent=2))
     (out_dir / "usage-command-attribution-v4_5-report.md").write_text(render_command_markdown(all_command_rows_v4_5))
@@ -3066,6 +3100,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--codex-sessions-dir", default=str(DEFAULT_CODEX_DIR), help="Codex sessions directory")
     parser.add_argument("--claude-sessions-dir", default=str(DEFAULT_CLAUDE_DIR), help="Claude sessions directory")
     parser.add_argument("--omp-sessions-dir", default=str(DEFAULT_OMP_DIR), help="Oh My Pi (omp) agent sessions directory (optional)")
+    parser.add_argument("--force", action="store_true", help="Overwrite a fleet-scoped v4.5 attribution CSV with local-only data")
     parser.add_argument(
         "--v4-2-cluster-labels",
         default="",
@@ -3091,7 +3126,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Failed to load v4.2 cluster labels: {exc}", file=sys.stderr)
         return 1
 
-    report = build_report(out_dir, audit_path, codex_dir, claude_dir, v4_2_cluster_labels, omp_dir=omp_dir)
+    report = build_report(out_dir, audit_path, codex_dir, claude_dir, v4_2_cluster_labels, omp_dir=omp_dir, force=args.force)
     print(f"Report written to: {out_dir}")
     for sec_name in ("combined", "codex", "claude"):
         sec = report[sec_name]
