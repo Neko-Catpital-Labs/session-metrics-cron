@@ -3,7 +3,19 @@
 
 from __future__ import annotations
 
-from usage_costing import build_cost_calculation, derive_cost, resolve_billable_model
+import json
+import os
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+from usage_costing import (
+    DEFAULT_PRICING_URL,
+    build_cost_calculation,
+    derive_cost,
+    load_pricing_table,
+    resolve_billable_model,
+)
 
 
 def assert_close(actual: float | None, expected: float) -> None:
@@ -71,7 +83,50 @@ def test_missing_pricing_and_model_resolution() -> None:
     assert cost["derived_total_cost_usd"] is None
 
 
+def test_load_pricing_table_defaults_to_litellm_url_without_env() -> None:
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("LANGFUSE_PRICING_URL", None)
+        os.environ.pop("LANGFUSE_HOST", None)
+
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b"{}"
+
+        captured_urls: list[str] = []
+
+        def fake_urlopen(url: str, timeout: int = 20) -> FakeResponse:
+            captured_urls.append(url)
+            return FakeResponse()
+
+        with patch("usage_costing.urllib.request.urlopen", fake_urlopen):
+            result = load_pricing_table(None)
+
+        assert captured_urls == [DEFAULT_PRICING_URL]
+        assert result == {}
+
+
+def test_load_pricing_table_prefers_langfuse_pricing_url_env() -> None:
+    fixture = {"langfuse-model": {"input_cost_per_token": 0.000002, "output_cost_per_token": 0.000005}}
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        fixture_path = Path(tmp_dir) / "langfuse_pricing.json"
+        fixture_path.write_text(json.dumps(fixture))
+
+        with patch.dict(os.environ, {"LANGFUSE_PRICING_URL": str(fixture_path)}, clear=False):
+            os.environ.pop("LANGFUSE_HOST", None)
+            result = load_pricing_table(None)
+
+    assert result == fixture
+
+
 if __name__ == "__main__":
     test_cache_aware_cost()
     test_missing_pricing_and_model_resolution()
+    test_load_pricing_table_defaults_to_litellm_url_without_env()
+    test_load_pricing_table_prefers_langfuse_pricing_url_env()
     print("OK: usage costing")
