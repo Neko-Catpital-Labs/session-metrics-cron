@@ -2231,10 +2231,6 @@ def build_rows_for_model(
     model_totals: dict[str, float],
     pricing_table: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    eff_corpus = sum(s.final_input + 0.1 * s.final_cached for s in sessions) or 0.0
-    cost_total = float(model_totals.get("costUSD", 0.0))
-    cost_per_eff = safe_div(cost_total, eff_corpus)
-
     session_rows: list[dict[str, Any]] = []
     prompt_rows: list[dict[str, Any]] = []
     attribution_rows: list[dict[str, Any]] = []
@@ -2242,7 +2238,6 @@ def build_rows_for_model(
 
     for s in sessions:
         eff = s.final_input + 0.1 * s.final_cached
-        cost = eff * cost_per_eff
         chp = safe_div(s.final_cached, s.final_input + s.final_cached) * 100.0
         session_cost = derive_cost(
             pricing_table,
@@ -2253,6 +2248,7 @@ def build_rows_for_model(
             output_tokens=s.final_output,
             input_includes_cache=s.input_includes_cache,
         )
+        cost = float(session_cost.get("derived_total_cost_usd") or 0.0)
         session_total_tokens = raw_total_tokens(
             s.model,
             input_tokens=s.final_input,
@@ -2294,7 +2290,6 @@ def build_rows_for_model(
         )
         for w in s.prompt_windows:
             weff = w.input_delta + 0.1 * w.cached_delta
-            wcost = weff * cost_per_eff
             wchp = safe_div(w.cached_delta, w.input_delta + w.cached_delta) * 100.0
             prompt_cost = derive_cost(
                 pricing_table,
@@ -2305,6 +2300,7 @@ def build_rows_for_model(
                 output_tokens=w.output_delta,
                 input_includes_cache=s.input_includes_cache,
             )
+            wcost = float(prompt_cost.get("derived_total_cost_usd") or 0.0)
             prompt_total_tokens = raw_total_tokens(
                 s.model,
                 input_tokens=w.input_delta,
@@ -2766,8 +2762,7 @@ def build_report(
             "audit_report": str(audit_path),
             "planning_phrases": PLANNING_PHRASES,
             "cost_model": {
-                "method": "proportional-to-ccusage",
-                "effective_formula": "input_tokens + 0.1 * cached_input_tokens",
+                "method": "usage_costing.derive_cost",
                 "model_totals": model_totals,
                 "pricing_source": DEFAULT_PRICING_URL,
             },
