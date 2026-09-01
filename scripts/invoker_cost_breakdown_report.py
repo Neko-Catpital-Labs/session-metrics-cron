@@ -194,6 +194,36 @@ def by_host_rollup(prompts: list[dict[str, str]]) -> list[dict[str, Any]]:
         bucket["omp_cost_usd" if origin == "omp" else "native_cost_usd"] += cost
     return sorted(hosts.values(), key=lambda item: item["cost_usd"], reverse=True)
 
+def spend_axis_rollup(prompts: list[dict[str, str]], pattern_categorizer: Any) -> list[dict[str, Any]]:
+    axes: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    session_costs: dict[str, float] = defaultdict(float)
+    for row in prompts:
+        sid, cost = session_identity(row.get("file", "")), prompt_cost(row)
+        session_costs[sid] += cost
+        values = {"scenario": pattern_categorizer.classify(row).request_pattern_path or "unknown",
+                  "origin_model": f"{row.get('origin') or 'native'}+{row.get('model') or 'unknown'}",
+                  "host": (row.get("host") or "local").strip() or "local",
+                  "model": row.get("model") or "unknown", "date": (row.get("session_date") or "unknown").strip() or "unknown"}
+        for axis, category in values.items():
+            b = axes[axis].setdefault(category, {"category": category, "cost_usd": 0.0, "total_tokens": 0.0, "prompts": 0, "sessions": set(), "session_costs": defaultdict(float)})
+            b["cost_usd"] += cost; b["total_tokens"] += to_float(row.get("total_tokens_delta")); b["prompts"] += 1; b["sessions"].add(sid); b["session_costs"][sid] += cost
+    total = sum(prompt_cost(row) for row in prompts)
+    return [{"axis": axis, "rows": sorted([{"category": b["category"], "cost_usd": b["cost_usd"], "share": b["cost_usd"] / total if total else 0.0, "total_tokens": b["total_tokens"], "prompts": b["prompts"], "session_count": len(b["sessions"]), "recurring": len(b["sessions"]) >= 3, "max_session_share": max((v / session_costs[s] for s, v in b["session_costs"].items() if session_costs[s]), default=0.0)} for b in buckets.values()], key=lambda x: x["cost_usd"], reverse=True)} for axis, buckets in axes.items()]
+
+def spend_cause_rollup(reports_dir: Path, selected: set[tuple[str, str, str, int]]) -> list[dict[str, Any]]:
+    path = reports_dir / "planning-vs-execution-command-attribution.csv"
+    if not path.exists(): return []
+    groups: dict[str, dict[str, Any]] = {}
+    for row in read_csv(path):
+        key = (row.get("model", ""), row.get("bucket", ""), session_identity(row.get("file", "")), to_int(row.get("prompt_index")))
+        if key not in selected: continue
+        text = " ".join(row.get(k, "") for k in ("command_preview", "target", "primary_why")).lower()
+        is_log = any(x in text for x in ("gh run view", "--log", "build log", "test-results", "junit", ".github"))
+        cause = "unbounded_ci_log_read" if is_log else (row.get("primary_why") or "uncategorized_command")
+        b = groups.setdefault(cause, {"cause": cause, "cost_usd": 0.0, "tokens": 0.0, "sessions": set(), "examples": []})
+        b["cost_usd"] += to_float(row.get("allocated_total_cost_usd")); b["tokens"] += to_float(row.get("output_token_estimate")); b["sessions"].add(session_identity(row.get("file", ""))); b["examples"].append(row.get("command_preview") or row.get("target") or "unknown")
+    return [{"cause": b["cause"], "cost_usd": b["cost_usd"], "tokens": b["tokens"], "session_count": len(b["sessions"]), "recurring": len(b["sessions"]) >= 3, "examples": list(dict.fromkeys(b["examples"]))[:3]} for b in sorted(groups.values(), key=lambda x: x["cost_usd"], reverse=True)]
+
 
 
 def build_hierarchy(args: argparse.Namespace) -> dict[str, Any]:
@@ -214,6 +244,7 @@ def build_hierarchy(args: argparse.Namespace) -> dict[str, Any]:
     origin_model = origin_model_rollup(selected_prompts)
     over_time = over_time_rollup(selected_prompts)
     by_host = by_host_rollup(selected_prompts)
+    spend_axes = spend_axis_rollup(selected_prompts, pattern_categorizer)
 
     selected: dict[tuple[str, str, str, int], dict[str, Any]] = {}
     scenarios: dict[str, dict[str, Any]] = {}
@@ -278,6 +309,8 @@ def build_hierarchy(args: argparse.Namespace) -> dict[str, Any]:
         total["cache_read_tokens"] += prompt["cache_read_tokens"]
         total["prompts"] += 1
 
+    spend_causes = spend_cause_rollup(reports_dir, set(selected))
+
     for row in tool_rows:
         key = (
             row.get("model", ""),
@@ -328,6 +361,8 @@ def build_hierarchy(args: argparse.Namespace) -> dict[str, Any]:
         "origin_model": origin_model,
         "over_time": over_time,
         "by_host": by_host,
+        "spend_axes": spend_axes,
+        "spend_causes": spend_causes,
     }
 
 
@@ -423,6 +458,15 @@ def render_markdown(data: dict[str, Any], args: argparse.Namespace) -> str:
                 )
             lines.append("")
 
+    if data.get("spend_causes"):
+        lines.append("## Spend Causes")
+        lines.append("")
+        lines.append("| Cause | Cost | Output tokens | Sessions | Recurring | Examples |")
+        lines.append("|---|---:|---:|---:|---|---|")
+        for row in data["spend_causes"]:
+            lines.append(f"| `{row['cause']}` | {money(row['cost_usd'])} | {int(row['tokens']):,} | {row['session_count']:,} | {'yes' if row['recurring'] else 'no'} | {'; '.join(row['examples'])} |")
+        lines.append("")
+
     lines.append("---")
     lines.append("")
     lines.append(
@@ -488,6 +532,7 @@ def render_html(data: dict[str, Any], args: argparse.Namespace) -> str:
             esc(r["date"]), (r["total_tokens"] ** 0.5) / max_tok * 100.0, int(r["total_tokens"]))
         for r in rows
     )
+    cause_rows = "".join("<tr><td><code>{}</code></td><td class='n'>{}</td><td class='n'>{:,}</td><td class='n'>{:,}</td><td>{}</td><td>{}</td></tr>".format(esc(r["cause"]), money(r["cost_usd"]), int(r["tokens"]), r["session_count"], "yes" if r["recurring"] else "no", esc("; ".join(r["examples"]))) for r in data.get("spend_causes", []))
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     return (
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -506,6 +551,7 @@ def render_html(data: dict[str, Any], args: argparse.Namespace) -> str:
         + table(["Origin + Model", "Cost", "Share", "Prompts", "Tokens", "Cache-read"], om_rows)
         + "<h2>Cost by host</h2>"
         + table(["Host", "Cost", "omp cost", "native cost", "Prompts", "Tokens"], host_rows)
+        + ("<h2>Spend causes</h2>" + table(["Cause", "Cost", "Output tokens", "Sessions", "Recurring", "Examples"], cause_rows) if cause_rows else "")
         + "<h2>Cost over time</h2><p class=\"sub\">Bar width is sqrt-scaled so low-volume days stay visible; the dollar values are exact.</p><div>" + (cost_bars or "<p class='sub'>no dated rows</p>") + "</div>"
         + "<h2>Tokens over time</h2><p class=\"sub\">Bar width is sqrt-scaled; token counts are exact.</p><div>" + (tok_bars or "<p class='sub'>no dated rows</p>") + "</div>"
         + "</body></html>\n"

@@ -191,7 +191,8 @@ def build_daily_fact(sessions: list[tuple[Any, str]], rates: dict[str, dict[str,
 
 
 def emit_rows(ss: Any, host: str, rates: dict[str, dict[str, float]],
-              prompt_rows: list[dict[str, Any]], attribution_rows: list[dict[str, Any]]) -> None:
+              prompt_rows: list[dict[str, Any]], attribution_rows: list[dict[str, Any]],
+              command_rows: list[dict[str, Any]]) -> None:
     for w in ss.prompt_windows:
         cost = w.omp_prompt_cost_usd if ss.origin == "omp" else native_window_cost(ss, w, rates)
         total_tokens = w.total_delta or (w.input_delta + w.cached_delta + w.cache_creation_delta + w.output_delta + w.reasoning_delta)
@@ -237,6 +238,21 @@ def emit_rows(ss: Any, host: str, rates: dict[str, dict[str, float]],
                     "allocated_total_cost_usd": cost * share,
                     "allocated_total_tokens": total_tokens * share,
                 })
+        weight_total = sum(max(1, c.output_token_estimate) for c in w.command_calls) or len(w.command_calls)
+        for call in w.command_calls:
+            weight = (max(1, call.output_token_estimate) / weight_total) if weight_total else 0.0
+            why, classifier = pve.classify_command_why(call.function_name, call.shell_verb, call.command_text, call.target, "")
+            command_rows.append({
+                "model": ss.model, "origin": ss.origin, "host": host, "file": ss.file,
+                "session_date": ss.session_date, "bucket": ss.bucket, "prompt_index": w.prompt_index,
+                "command_index": call.command_index, "function_name": call.function_name,
+                "shell_verb": call.shell_verb, "command_preview": call.command_preview,
+                "target_type": call.target_type, "target": call.target,
+                "output_chars": call.output_chars, "output_token_estimate": call.output_token_estimate,
+                "allocated_total_tokens": total_tokens * weight,
+                "allocated_total_cost_usd": cost * weight,
+                "primary_why": why, "why_classifier": classifier,
+            })
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -305,12 +321,14 @@ def main() -> int:
 
     prompt_rows: list[dict[str, Any]] = []
     attribution_rows: list[dict[str, Any]] = []
+    command_rows: list[dict[str, Any]] = []
     for ss, name in sessions:
-        emit_rows(ss, name, rates, prompt_rows, attribution_rows)
+        emit_rows(ss, name, rates, prompt_rows, attribution_rows, command_rows)
 
     out = Path(args.out_dir)
     write_csv(out / "planning-vs-execution-prompts.csv", prompt_rows)
     write_csv(out / "planning-vs-execution-tool-attribution.csv", attribution_rows)
+    write_csv(out / "planning-vs-execution-command-attribution.csv", command_rows)
     fact = build_daily_fact(sessions, rates)
     fact_path = out / "cost-daily-fact.json"
     fact_path.write_text(json.dumps({
@@ -320,7 +338,7 @@ def main() -> int:
     }, separators=(",", ":")), encoding="utf-8")
     print(f"wrote {fact_path} ({len(fact)} fact rows)")
     total = sum(r["derived_total_cost_usd"] for r in prompt_rows)
-    print(f"sessions={len(sessions)} prompts={len(prompt_rows)} tool_rows={len(attribution_rows)} total_cost=${total:,.2f}")
+    print(f"sessions={len(sessions)} prompts={len(prompt_rows)} tool_rows={len(attribution_rows)} command_rows={len(command_rows)} total_cost=${total:,.2f}")
     print(f"wrote {out}/planning-vs-execution-prompts.csv")
     return 0
 
