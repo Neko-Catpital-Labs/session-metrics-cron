@@ -200,22 +200,26 @@ def build_hierarchy(args: argparse.Namespace) -> dict[str, Any]:
     reports_dir = Path(args.reports_dir)
     prompts = read_csv(reports_dir / "planning-vs-execution-prompts.csv")
     tool_rows = read_csv(reports_dir / "planning-vs-execution-tool-attribution.csv")
-    origin_model = origin_model_rollup(prompts)
-    over_time = over_time_rollup(prompts)
-    by_host = by_host_rollup(prompts)
-
     task_categorizer = load_task_categorizer(args.task_categorization_config)
     pattern_config = exporter.load_request_pattern_config(args.request_pattern_config)
     pattern_categorizer = exporter.RequestPatternCategorizer(pattern_config)
+
+    # Every section in this report describes the selected task bucket. Filter
+    # once at the boundary so the headline total and comparison rollups share
+    # the same population.
+    selected_prompts = [
+        row for row in prompts
+        if task_categorizer.classify(row).task_type_label == args.task_type_label
+    ]
+    origin_model = origin_model_rollup(selected_prompts)
+    over_time = over_time_rollup(selected_prompts)
+    by_host = by_host_rollup(selected_prompts)
 
     selected: dict[tuple[str, str, str, int], dict[str, Any]] = {}
     scenarios: dict[str, dict[str, Any]] = {}
     total = {"cost_usd": 0.0, "total_tokens": 0.0, "cache_read_tokens": 0.0, "prompts": 0}
 
-    for row in prompts:
-        task = task_categorizer.classify(row)
-        if task.task_type_label != args.task_type_label:
-            continue
+    for row in selected_prompts:
         pattern = pattern_categorizer.classify(row)
         cost = prompt_cost(row)
         key = (
